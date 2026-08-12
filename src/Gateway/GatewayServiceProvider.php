@@ -12,9 +12,11 @@ class GatewayServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        $this->app->singleton(SpendCollector::class, fn (Application $app) => new ContextSpendCollector(
+        $this->app->singleton(ContextSpendCollector::class, fn (Application $app) => new ContextSpendCollector(
             $app['config']->get('ai-kit.gateway.spend_context_prefix', 'ai'),
         ));
+
+        $this->app->singleton(SpendCollector::class, fn (Application $app) => $app->make(ContextSpendCollector::class));
 
         $this->app->bind(ReasoningOpenRouterGateway::class, fn (Application $app) => new ReasoningOpenRouterGateway(
             $app['events'],
