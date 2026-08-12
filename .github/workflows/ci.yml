@@ -35,8 +35,20 @@ jobs:
       - name: Install dependencies
         run: composer update --${{ matrix.stability }} --prefer-dist --no-interaction
 
-      - run: composer lint
       - run: composer test
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - run: composer update --prefer-dist --no-interaction
+      - run: composer lint
 
   canary:
     # Signal-only: does the NEXT laravel/ai minor break us? Never gates merges.
