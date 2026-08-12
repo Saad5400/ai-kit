@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly canary: fresh dependency resolution catches new laravel/ai + mcp releases.
+    - cron: '0 6 * * 1'
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        laravel: ['12', '13']
+        stability: [prefer-lowest, prefer-stable]
+    name: L${{ matrix.laravel }} php8.4 ${{ matrix.stability }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Constrain illuminate to Laravel ${{ matrix.laravel }}
+        run: >
+          composer require
+          "illuminate/contracts:^${{ matrix.laravel }}.0"
+          "illuminate/database:^${{ matrix.laravel }}.0"
+          "illuminate/support:^${{ matrix.laravel }}.0"
+          --no-interaction --no-update
+
+      - name: Install dependencies
+        run: composer update --${{ matrix.stability }} --prefer-dist --no-interaction
+
+      - run: composer lint
+      - run: composer test
+
+  canary:
+    # Signal-only: does the NEXT laravel/ai minor break us? Never gates merges.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Allow laravel/ai and laravel/mcp beyond the pinned minor
+        run: composer require "laravel/ai:*" "laravel/mcp:*" --no-interaction --no-update
+
+      - run: composer update --prefer-dist --no-interaction
+      - run: composer test
