@@ -29,6 +29,35 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Gateway
+    |--------------------------------------------------------------------------
+    |
+    | The canonical ReasoningOpenRouterGateway replaces the stock openrouter
+    | driver's text gateway. Retries cover transient statuses only —
+    | connection timeouts are deliberately not retried. The final-step nudge
+    | is sent to the model when tools are withheld on the last step; it is
+    | model-facing text, so it ships bilingual rather than localized.
+    |
+    */
+
+    'gateway' => [
+        'register_openrouter_driver' => true,
+        'spend_context_prefix' => 'ai',
+        'force_usage_accounting' => true,
+        'retry' => [
+            'attempts' => 3,
+            'backoff_ms' => 500,
+            'statuses' => [408, 409, 429, 500, 502, 503, 504],
+        ],
+        'final_step' => [
+            'withhold_tools' => true,
+            'message' => 'انتهت خطوات استخدام الأدوات. قدّم الآن إجابتك النهائية للمستخدم نصاً بناءً على ما توصلت إليه، وإن لم تجد المعلومة فقل ذلك صراحةً. '
+                .'Tool steps are over — write your complete final answer as plain text now; if the information was not found, say so plainly.',
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Safety
     |--------------------------------------------------------------------------
     |
