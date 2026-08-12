@@ -45,8 +45,14 @@ class AiKitServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        $this->loadTranslationsFrom(__DIR__.'/../lang', 'ai-kit');
+
         $this->publishes([
             __DIR__.'/../config/ai-kit.php' => config_path('ai-kit.php'),
         ], 'ai-kit-config');
+
+        $this->publishes([
+            __DIR__.'/../lang' => $this->app->langPath('vendor/ai-kit'),
+        ], 'ai-kit-lang');
     }
 }
