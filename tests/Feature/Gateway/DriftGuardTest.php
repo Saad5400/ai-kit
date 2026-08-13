@@ -1,5 +1,6 @@
 <?php
 
+use Composer\InstalledVersions;
 use Laravel\Ai\Ai;
 
 /**
@@ -9,8 +10,26 @@ use Laravel\Ai\Ai;
  * patch (re-diff processTextStream against the new stock body), or shipped
  * behavior our copy now misses (port it). After reconciling, refresh the
  * hash here. Recorded against laravel/ai v0.10.3.
+ *
+ * Versions BELOW the rebase version (the prefer-lowest CI cells) skip: their
+ * sources are known to differ and there is nothing to reconcile — functional
+ * tests carry compatibility there. At or above, the pins are enforced; a new
+ * patch release changing these files is exactly the alarm this test exists
+ * to raise.
  */
+const DRIFT_GUARD_REBASED_ON = '0.10.3';
+
 it('vendor gateway sources are unchanged since the fork was rebased', function () {
+    $installed = ltrim((string) InstalledVersions::getPrettyVersion('laravel/ai'), 'v');
+
+    if (version_compare($installed, DRIFT_GUARD_REBASED_ON, '<')) {
+        $this->markTestSkipped(sprintf(
+            'Drift guard pins laravel/ai v%s sources; v%s is older (prefer-lowest).',
+            DRIFT_GUARD_REBASED_ON,
+            $installed,
+        ));
+    }
+
     $pinned = [
         'Gateway/OpenRouter/Concerns/HandlesTextStreaming.php' => 'cb63bf8302651b5beddfcd7b0926f8f6e4dd2385e9bfd4e8511c6bb3e681a317',
         'Gateway/OpenRouter/Concerns/ParsesTextResponses.php' => '42dc89bb18f4bbd592dd4ba1153991427af54046c1809680dc2ae021e928dc2b',
