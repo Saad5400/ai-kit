@@ -18,6 +18,13 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         'Gateway/OpenRouter/Concerns/CreatesOpenRouterClient.php' => '0eb8db8712cf6fe41c50431047a3da6fdbc5b331268d63e60d9591a0b12af375',
         'Gateway/OpenAiCompatible/Concerns/PerformsChatCompletionSteps.php' => 'b0a6c3786124f9cca8898f424d8efb0fdddaccf280e3bec17aaeb96bc9735167',
         'Gateway/Concerns/ParsesServerSentEvents.php' => '6429c2393b9f9d3d1d6e6cee92d356bda84067151c3bca050635a6c06de7b649',
+        // M2 additions — failover semantics the fallback chains and circuit
+        // breaker ride on, and the event dispatch points metering listens to.
+        'Promptable.php' => '678556e53a2d4400caf75805b90708ff114ffde061c95b50153d05f3fd0994ab',
+        'Gateway/Concerns/HandlesFailoverErrors.php' => '3e6a4b5abfa72b9ff56963987933e45f5280db8b37609f2bcf65eac1895fc079',
+        'Providers/Concerns/GeneratesText.php' => '4759993fe6fd0352a054743cceac90378f61662bd8190bf16b2fa12d270fc9dd',
+        'Providers/Concerns/StreamsText.php' => '3f8a298dd9a6a20584ea9e5672d7096215b4103ed327d02c1efe8e67640852c1',
+        'Models/Conversation.php' => '0e51a0f5a3a8b8cfba83fd72dfb3dc30040071f124713420c96730706e0107ff',
     ];
 
     $sourceRoot = dirname((new ReflectionClass(Ai::class))->getFileName());

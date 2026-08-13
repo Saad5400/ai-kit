@@ -7,18 +7,20 @@ use Laravel\Ai\Contracts\Tool;
 use Laravel\Ai\Providers\OpenRouterProvider;
 use Laravel\Ai\Tools\Request;
 use ReflectionMethod;
+use Saad\AiKit\Gateway\ModelCircuitBreaker;
 use Saad\AiKit\Gateway\ReasoningOpenRouterGateway;
 use Saad\AiKit\Gateway\SpendCollector;
 use Stringable;
 
 class GatewayFactory
 {
-    public static function gateway(array $config = []): ReasoningOpenRouterGateway
+    public static function gateway(array $config = [], ?ModelCircuitBreaker $breaker = null): ReasoningOpenRouterGateway
     {
         return new ReasoningOpenRouterGateway(
             app('events'),
             app(SpendCollector::class),
             array_replace_recursive(config('ai-kit.gateway'), $config),
+            $breaker,
         );
     }
 

@@ -4,9 +4,12 @@ namespace Saad\AiKit\Gateway;
 
 use Generator;
 use Illuminate\Contracts\Events\Dispatcher;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
+use Laravel\Ai\Contracts\Providers\TextProvider;
 use Laravel\Ai\Exceptions\AiException;
+use Laravel\Ai\Exceptions\FailoverableException;
 use Laravel\Ai\Gateway\OpenRouter\OpenRouterGateway;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Gateway\StepResponse;
@@ -28,6 +31,7 @@ use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\TextEnd;
 use Laravel\Ai\Streaming\Events\TextStart;
 use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
+use Saad\AiKit\Support\TurnContext;
 use Throwable;
 
 /**
@@ -42,7 +46,12 @@ use Throwable;
  *    step would be silently discarded by TextGenerationLoop)
  *  - parseTextResponse(): captures generation id + exact cost (non-streamed)
  *  - processTextStream(): copy of the stock method with reasoning re-emission
- *    (stock drops delta.reasoning), generation-id + cost capture
+ *    (stock drops delta.reasoning), generation-id + cost capture, and a
+ *    time-to-first-token stamp at the first reasoning/text token
+ *  - generateTextStep()/generateStreamStep(): circuit-breaker guard before
+ *    the request, success/failure recording around it
+ *  - overloadedStatusCodes(): widened from [503] so post-retry 5xx failures
+ *    convert to FailoverableException and move chains to the next model
  *
  * processTextStream is the only wholesale copy; the drift-guard test pins the
  * vendor sources it was copied from and fails when upstream changes them.
@@ -56,8 +65,118 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         Dispatcher $events,
         protected SpendCollector $spend,
         protected array $config = [],
+        protected ?ModelCircuitBreaker $breaker = null,
     ) {
         parent::__construct($events);
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function generateTextStep(
+        TextProvider $provider,
+        string $model,
+        ?string $instructions,
+        array $messages,
+        array $tools,
+        ?array $schema,
+        ?TextGenerationOptions $options,
+        ?int $timeout,
+        StepContext $stepContext,
+    ): StepResponse {
+        $this->breaker?->guard($provider->name(), $model);
+
+        try {
+            $response = parent::generateTextStep(
+                $provider, $model, $instructions, $messages, $tools, $schema, $options, $timeout, $stepContext,
+            );
+        } catch (Throwable $exception) {
+            $this->recordStepFailure($provider->name(), $model, $exception);
+
+            throw $exception;
+        }
+
+        $this->breaker?->recordSuccess($provider->name(), $model);
+
+        return $response;
+    }
+
+    /**
+     * The parent is a generator function, so its body — including the POST —
+     * only runs on first iteration. The breaker guard must run eagerly, and
+     * outcomes are recorded from inside a delegating generator.
+     *
+     * {@inheritdoc}
+     */
+    public function generateStreamStep(
+        string $invocationId,
+        TextProvider $provider,
+        string $model,
+        ?string $instructions,
+        array $messages,
+        array $tools,
+        ?array $schema,
+        ?TextGenerationOptions $options,
+        ?int $timeout,
+        StepContext $stepContext,
+    ): Generator {
+        $this->breaker?->guard($provider->name(), $model);
+
+        return $this->recordingStream($provider->name(), $model, parent::generateStreamStep(
+            $invocationId, $provider, $model, $instructions, $messages, $tools, $schema, $options, $timeout, $stepContext,
+        ));
+    }
+
+    /**
+     * Delegate a step's stream while reporting its outcome to the breaker:
+     * any throw (initial connection or mid-stream) counts as a failure, full
+     * completion as a success.
+     */
+    protected function recordingStream(string $providerName, string $model, Generator $stream): Generator
+    {
+        try {
+            yield from $stream;
+        } catch (Throwable $exception) {
+            $this->recordStepFailure($providerName, $model, $exception);
+
+            throw $exception;
+        }
+
+        $this->breaker?->recordSuccess($providerName, $model);
+
+        return $stream->getReturn();
+    }
+
+    /**
+     * Only provider-health failures move the breaker: failoverable errors,
+     * connection failures, and 5xx responses. Client errors (bad request,
+     * auth) say nothing about the model being down.
+     */
+    protected function recordStepFailure(string $providerName, string $model, Throwable $exception): void
+    {
+        if ($this->breaker === null) {
+            return;
+        }
+
+        $unhealthy = $exception instanceof FailoverableException
+            || $exception instanceof ConnectionException
+            || ($exception instanceof RequestException && $exception->response?->status() >= 500);
+
+        if ($unhealthy) {
+            $this->breaker->recordFailure($providerName, $model);
+        }
+    }
+
+    /**
+     * Statuses that convert into ProviderOverloadedException — and therefore
+     * fail over to the next model in a declared chain — once the client's
+     * own retries are exhausted. Stock only maps 503.
+     *
+     * @return list<int>
+     */
+    protected function overloadedStatusCodes(): array
+    {
+        return $this->config['failover']['overloaded_statuses'] ?? [500, 502, 503, 504, 529];
     }
 
     /**
@@ -273,6 +392,8 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
                     $inReasoning = true;
                     $reasoningId = $this->generateEventId();
 
+                    TurnContext::stampTtftOnce();
+
                     yield (new ReasoningStart(
                         $this->generateEventId(),
                         $reasoningId,
@@ -291,6 +412,8 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             if (isset($delta['content']) && $delta['content'] !== '') {
                 if (! $textStartEmitted) {
                     $textStartEmitted = true;
+
+                    TurnContext::stampTtftOnce();
 
                     yield (new TextStart(
                         $this->generateEventId(),

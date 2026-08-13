@@ -54,6 +54,84 @@ return [
             'message' => 'انتهت خطوات استخدام الأدوات. قدّم الآن إجابتك النهائية للمستخدم نصاً بناءً على ما توصلت إليه، وإن لم تجد المعلومة فقل ذلك صراحةً. '
                 .'Tool steps are over — write your complete final answer as plain text now; if the information was not found, say so plainly.',
         ],
+
+        // Statuses that convert to ProviderOverloadedException after retries
+        // are exhausted — the trigger for failing over to the next model in
+        // a declared chain. Stock laravel/ai only maps 503.
+        'failover' => [
+            'overloaded_statuses' => [500, 502, 503, 504, 529],
+        ],
+
+        // Enough step failures inside the window open the circuit for the
+        // cooldown; while open, requests to that model fail over immediately
+        // without touching the network. Uses the default cache store unless
+        // one is named — it must be shared across workers in production.
+        'circuit_breaker' => [
+            'enabled' => true,
+            'cache_store' => env('AI_KIT_BREAKER_CACHE_STORE'),
+            'failure_threshold' => 5,
+            'window_seconds' => 120,
+            'cooldown_seconds' => 60,
+            'half_open_seconds' => 30,
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Usage
+    |--------------------------------------------------------------------------
+    |
+    | Every completed agent turn writes one canonical row to `table`,
+    | recorded from laravel/ai's AgentPrompted / AgentStreamed events — no
+    | app code involved. `drain_spend` clears the spend collector after each
+    | turn; set it to false while an app still drains the collector itself
+    | (dual-write transition). Apps label turns by setting the
+    | `feature_context_key` Context value before prompting.
+    |
+    */
+
+    'usage' => [
+        'table' => 'ai_usage_events',
+        'drain_spend' => true,
+        'feature_context_key' => 'ai-kit.feature',
+        'record_failovers' => true,
+
+        // One structured log record per turn / failover attempt, with OTel
+        // GenAI attribute names. null channel = the default log channel.
+        'trace' => [
+            'enabled' => env('AI_KIT_TURN_TRACES', true),
+            'channel' => env('AI_KIT_TRACE_CHANNEL'),
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Catalog
+    |--------------------------------------------------------------------------
+    |
+    | The models the app routes turns to, keyed by provider-facing model id.
+    | Prices are USD per million tokens (optional — metering prefers the
+    | provider-reported cost). `fallbacks` declares the failover chain for a
+    | model; alias provider entries are registered automatically so chains
+    | ride laravel/ai's native failover. `cheapest`/`smartest` feed the SDK's
+    | UseCheapestModel / UseSmartestModel attributes.
+    |
+    */
+
+    'catalog' => [
+        'provider' => 'openrouter',
+        'cheapest' => null,
+        'smartest' => null,
+        'models' => [
+            // 'google/gemini-3.5-flash' => [
+            //     'label' => 'Gemini 3.5 Flash',
+            //     'input_usd_per_million' => 0.30,
+            //     'output_usd_per_million' => 2.50,
+            //     'context_length' => 1048576,
+            //     'capabilities' => ['tools', 'vision', 'reasoning'],
+            //     'fallbacks' => ['deepseek/deepseek-v4-flash'],
+            // ],
+        ],
     ],
 
     /*
