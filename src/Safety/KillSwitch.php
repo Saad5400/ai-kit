@@ -13,6 +13,7 @@ class KillSwitch
     public function __construct(
         protected Repository $cache,
         protected Dispatcher $events,
+        protected ?SafetySettings $settings = null,
     ) {}
 
     /**
@@ -37,11 +38,16 @@ class KillSwitch
     }
 
     /**
-     * A scope is considered engaged when either the global switch or the
-     * scope's own switch is on.
+     * A scope is considered engaged when the global switch is on, the
+     * scope's own switch is on, or the app's settings store disables the
+     * surface (the scope doubles as the settings feature name).
      */
     public function engaged(?string $scope = null): bool
     {
+        if ($this->settings !== null && ! $this->settings->enabled($scope)) {
+            return true;
+        }
+
         if ($this->cache->has($this->key(null))) {
             return true;
         }
