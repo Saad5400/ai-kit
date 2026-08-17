@@ -73,20 +73,33 @@ Hard constraints the kit must never break:
 ### ✅ M2 (v0.2.0) — catalog (config), usage metering, circuit breaker + fallback chains, turn traces, drift guard
 ### ✅ M3 shipped 2026-08-17 as v0.3.0 (243 tests; review-hardened pre-release)
 
-**uqucc migration status (branch `feat/ai-kit-v0.3`, draft PR #127):**
-- ✅ Kit pin v0.1.1 → v0.3.0; suite at parity with main (1166 passed; the 2
-  homepage-404 failures pre-exist on main).
+v0.3.1 (same day): the approvals executor's card-facing error strings moved to
+`ai-kit::approvals` lang lines (en + ar).
+
+**✅ uqucc migration COMPLETE — PR #127 squash-merged to main 2026-08-17**
+(uqucc pins ^0.3.1; suite 1167 passed, the 2 homepage-404 failures pre-exist):
 - ✅ Stage A: SpendLedger deleted → usage module + BudgetGuard via
   `App\Ai\KitSafetySettings` (AiSettings adapter); `ai_usage` history imported
   into `ai_usage_events` then dropped; PageCopilot unmetered-spend gap closed.
-- ⏳ Stage B: `ConversationOwnership` for the five ownership guards (adds the
-  missing participant_type filter), kit prune command + ConversationsPruning
-  listener for ChatAttachment cascade, drop the app's own prune command.
-- ⏳ Stage C: SseStream + StreamEventMapper to dedupe the two byte-identical
-  controller `emit()`s (and Telegram's fold).
-- ⏳ Stage D: admin proposal flow onto the kit approvals module
-  (`AdminPendingAction` → kit `Proposal`; needs a data migration — the kit
-  table adds `category`, proposed_by becomes a string owner key).
+- ✅ Stage B: `ConversationOwnership` for the five ownership guards (now checks
+  participant type AND id); schedule runs `ai-kit:prune-conversations --days=7`;
+  `App\Listeners\PruneChatAttachments` cascades attachments off
+  ConversationsPruning; app prune command deleted.
+- ✅ Stage C: both controllers fold through StreamEventMapper into SseStream
+  (link guard as TextTransformer, citations via beforeDone, proposal cards via
+  ToolResult hook); duplicated `emit()`s deleted. Telegram's fold deliberately
+  stays app-side (raw events → throttled progress editor, not the SSE contract).
+- ✅ Stage D: kit approvals — `AdminPendingAction` + app executor/extractor
+  replaced by kit `Proposal`/`ProposalExecutor`/`ProposalTrailer`; the app's
+  unified `AdminActionRegistry` backs the kit `ActionRegistry` via the lazy
+  `ProposableAdminAction` adapter (actions still execute as the proposing
+  admin); data migration kept ULIDs so stored trailer ids resolve.
+
+Migration learnings for catodemy/s-grade: keep old-table create migrations,
+import with a fresh-marker (`cost_source: imported`) or preserved ULIDs where
+ids travel through stored content; test-create conversations must set
+`participant_type` to the owner class; kit Proposal has no factory — create
+rows directly in tests.
 
 ### M3 (v0.3.0) — what uqucc needs to finish its migration
 
@@ -117,10 +130,7 @@ Hard constraints the kit must never break:
    (turn_id, sequence)` unique, inserted in the same transaction as the write.
    Undo = contract + `undoable` flag only in M3 (s-grade's ledger informs M4).
 
-Release: tag v0.3.0. **Then: uqucc migration PR** (catch pin up from v0.1.1; replace
-`SpendLedger` with usage module + budget wiring; adopt SseStream + mapper; move
-`AdminPendingAction` machinery onto approvals; adopt ownership helper + prune; fix the
-two flagged defects — PageCopilot unmetered spend, participant_type in ownership checks).
+Release: tagged v0.3.0 + v0.3.1. ✅ uqucc migration PR #127 merged (see status above).
 
 ### M4 (v0.4.0) — what catodemy + s-grade additionally need
 
@@ -156,8 +166,9 @@ catodemy extras: rewrite the five raw-HTTP OpenRouter callers onto kit plumbing.
 
 ## Migration checklists (apps)
 
-**uqucc** (~1 PR): pin bump, SpendLedger→usage, AiSettings→SafetySettings adapter,
-SSE dedup, approvals adoption, ownership helper, prune command, two defect fixes.
+**uqucc** ✅ DONE (PR #127, merged 2026-08-17): pin bump, SpendLedger→usage,
+AiSettings→SafetySettings adapter, SSE dedup, approvals adoption, ownership
+helper, prune command, two defect fixes.
 
 **catodemy** (~150 files touched, ~60 absorbed): gateway subclass deleted for kit's;
 TurnBuffer/SSE/reader contract from kit; EncryptedConversationStore from kit;
