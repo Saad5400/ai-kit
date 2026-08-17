@@ -4,8 +4,10 @@ namespace Saad\AiKit\Approvals;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUlids;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Carbon;
+use Saad\AiKit\Testing\ProposalFactory;
 
 /**
  * One change the assistant PROPOSED but never applied itself — the stored
@@ -30,6 +32,9 @@ use Illuminate\Support\Carbon;
  */
 class Proposal extends Model
 {
+    /** @use HasFactory<ProposalFactory> */
+    use HasFactory;
+
     use HasUlids;
 
     protected $guarded = [];
@@ -41,6 +46,11 @@ class Proposal extends Model
     public function getTable(): string
     {
         return config('ai-kit.approvals.proposals_table', 'ai_proposals');
+    }
+
+    protected static function newFactory(): ProposalFactory
+    {
+        return ProposalFactory::new();
     }
 
     /**
