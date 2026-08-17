@@ -174,10 +174,22 @@ return [
     | ride laravel/ai's native failover. `cheapest`/`smartest` feed the SDK's
     | UseCheapestModel / UseSmartestModel attributes.
     |
+    | `source` picks where models() reads from: 'config' serves this file
+    | live; 'database' serves the `table` rows that `ai-kit:sync-models`
+    | materializes from this same file (the reviewed config stays the source
+    | of truth — the table adds enable/disable ops control and app metadata).
+    | Entries may also declare `tasks` (routing labels like chat/mcq),
+    | `tags` (of which `recommended` is enforced: exactly one recommended
+    | model per declared task), `provider_max_price` ({prompt, completion}
+    | routing caps), `provider`/`provider_model_id`, `enabled`, `sort_order`
+    | and a `meta` bag the kit never reads.
+    |
     */
 
     'catalog' => [
         'provider' => 'openrouter',
+        'source' => 'config',
+        'table' => 'ai_models',
         'cheapest' => null,
         'smartest' => null,
         'models' => [

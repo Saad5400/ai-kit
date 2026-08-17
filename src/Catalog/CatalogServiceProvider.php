@@ -4,6 +4,7 @@ namespace Saad\AiKit\Catalog;
 
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
+use Saad\AiKit\Catalog\Console\SyncModelsCommand;
 
 class CatalogServiceProvider extends ServiceProvider
 {
@@ -13,7 +14,18 @@ class CatalogServiceProvider extends ServiceProvider
             $app['config'],
         ));
 
-        $this->app->singleton(CatalogSource::class, fn (Application $app) => $app->make(ConfigCatalogSource::class));
+        $this->app->singleton(DatabaseCatalogSource::class);
+
+        // 'config' reads ai-kit.catalog.models live; 'database' reads the
+        // ai_models table `ai-kit:sync-models` materializes from that same
+        // config — the reviewed config stays the source of truth either way.
+        $this->app->singleton(CatalogSource::class, fn (Application $app) => $app->make(
+            $app['config']->get('ai-kit.catalog.source', 'config') === 'database'
+                ? DatabaseCatalogSource::class
+                : ConfigCatalogSource::class,
+        ));
+
+        $this->app->singleton(Catalog::class);
 
         $this->app->singleton(FallbackChains::class, fn (Application $app) => new FallbackChains(
             $app->make(CatalogSource::class),
@@ -23,6 +35,16 @@ class CatalogServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        // The ai_models table exists only for database-sourced catalogs —
+        // config-catalog apps must not grow an empty table.
+        if ($this->app['config']->get('ai-kit.catalog.source', 'config') === 'database') {
+            $this->loadMigrationsFrom(__DIR__.'/../../database/migrations/catalog');
+        }
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([SyncModelsCommand::class]);
+        }
+
         $this->registerProviderAliases();
         $this->publishModelExtremes();
     }
