@@ -16,5 +16,8 @@ abstract class TestCase extends Orchestra
     protected function defineEnvironment($app): void
     {
         $app['config']->set('ai.providers.openrouter.key', 'test-key');
+
+        // The encrypted conversation store needs a real app key.
+        $app['config']->set('app.key', 'base64:'.base64_encode(random_bytes(32)));
     }
 }

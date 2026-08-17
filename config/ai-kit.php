@@ -78,6 +78,36 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Conversations
+    |--------------------------------------------------------------------------
+    |
+    | `encrypt` binds the kit's EncryptedConversationStore over laravel/ai's
+    | ConversationStore contract: message content is encrypted with the app
+    | key before it touches the database, and pre-encryption plaintext rows
+    | still read back. Set it to false to keep the vendor store (or bind
+    | your own). Table names and the connection follow the vendor keys
+    | (`ai.conversations.tables.*`, `ai.conversations.connection`).
+    |
+    | `persist_tool_traces` keeps attachments / tool_calls / tool_results /
+    | usage / meta on message rows. Off by default — traces can carry user
+    | data at rest. laravel/ai's built-in tool-approval pause/resume
+    | reconstructs turns from those traces, so enable this if you use it.
+    |
+    | `retention_days` is the idle window `ai-kit:prune-conversations`
+    | deletes beyond (the --days option overrides per run). The command
+    | fires a ConversationsPruning event with the doomed ids first, so apps
+    | can cascade their own per-conversation resources.
+    |
+    */
+
+    'conversations' => [
+        'encrypt' => true,
+        'persist_tool_traces' => false,
+        'retention_days' => 30,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Usage
     |--------------------------------------------------------------------------
     |

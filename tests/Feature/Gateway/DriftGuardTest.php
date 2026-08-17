@@ -44,6 +44,10 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         'Providers/Concerns/GeneratesText.php' => '4759993fe6fd0352a054743cceac90378f61662bd8190bf16b2fa12d270fc9dd',
         'Providers/Concerns/StreamsText.php' => '3f8a298dd9a6a20584ea9e5672d7096215b4103ed327d02c1efe8e67640852c1',
         'Models/Conversation.php' => '0e51a0f5a3a8b8cfba83fd72dfb3dc30040071f124713420c96730706e0107ff',
+        // M3 addition — EncryptedConversationStore extends this and rides its
+        // messageAttributes() seam plus the reconstruction in
+        // getLatestConversationMessages(); re-diff on any change.
+        'Storage/DatabaseConversationStore.php' => '915f37bec63d68e68f5d70fd99fcf7d01f2fdbf64c76cd5307e9291f4136df6a',
     ];
 
     $sourceRoot = dirname((new ReflectionClass(Ai::class))->getFileName());
