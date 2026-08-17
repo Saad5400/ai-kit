@@ -136,6 +136,28 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Approvals
+    |--------------------------------------------------------------------------
+    |
+    | The propose → confirm → execute pattern: proposals persist in
+    | `proposals_table`, executed plan steps claim exactly-once rows in
+    | `write_executions_table`, and proposed plans wait for their confirm
+    | turn in the plan cache store for `plan_ttl_seconds` (an abandoned plan
+    | quietly lapses). `auto_approve` lets a single non-destructive, undoable
+    | step skip the approval card; turn it off to always show the card.
+    |
+    */
+
+    'approvals' => [
+        'proposals_table' => 'ai_proposals',
+        'write_executions_table' => 'ai_write_executions',
+        'plan_cache_store' => env('AI_KIT_PLAN_CACHE_STORE'),
+        'plan_ttl_seconds' => (int) env('AI_KIT_PLAN_TTL_SECONDS', 3600),
+        'auto_approve' => true,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Safety
     |--------------------------------------------------------------------------
     |
