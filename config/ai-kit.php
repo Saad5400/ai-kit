@@ -228,6 +228,28 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Credits
+    |--------------------------------------------------------------------------
+    |
+    | The cost → credits math and the turn-metering waivers. Margin applies
+    | AT CONSUMPTION (never at sale) and conversion always rounds up, so a
+    | charge can never fall below cost. `free_turn_max_cost_usd` is the
+    | chit-chat waiver ceiling on RESOLVED USD cost (0 disables it). Wallet
+    | policy — which wallets pay, resets, caps — stays in the app: bind the
+    | CreditDebitor contract to use the CreditMeter.
+    |
+    */
+
+    'credits' => [
+        'margin' => (float) env('AI_KIT_CREDITS_MARGIN', 0.10),
+        'credit_unit_usd' => (float) env('AI_KIT_CREDIT_UNIT_USD', 0.0004),
+        'usd_to_sar' => 3.75,
+        'free_turn_max_cost_usd' => (float) env('AI_KIT_FREE_TURN_MAX_COST_USD', 0.0006),
+        'credits_per_message_estimate' => 10,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Safety
     |--------------------------------------------------------------------------
     |
