@@ -6,7 +6,6 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Crypt;
 use Laravel\Ai\Messages\Message;
 use Laravel\Ai\Storage\DatabaseConversationStore;
-use Throwable;
 
 /**
  * Conversation store that keeps chat history private at rest.
@@ -113,17 +112,11 @@ class EncryptedConversationStore extends DatabaseConversationStore
 
     /**
      * Decrypt a stored value, tolerating pre-encryption plaintext rows.
+     * Apps reading message rows directly use the same logic through
+     * {@see ConversationContent::reveal()}.
      */
     protected function decrypt(?string $value): ?string
     {
-        if ($value === null || $value === '') {
-            return $value;
-        }
-
-        try {
-            return Crypt::decryptString($value);
-        } catch (Throwable) {
-            return $value;
-        }
+        return ConversationContent::reveal($value);
     }
 }
