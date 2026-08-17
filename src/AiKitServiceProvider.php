@@ -45,6 +45,15 @@ class AiKitServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        // Loaded once here rather than per module: the modules share one
+        // migrations directory, and three providers loading the same path
+        // is just three chances to register it twice.
+        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+
+        $this->publishes([
+            __DIR__.'/../database/migrations' => database_path('migrations'),
+        ], 'ai-kit-migrations');
+
         $this->loadTranslationsFrom(__DIR__.'/../lang', 'ai-kit');
 
         $this->publishes([

@@ -2,7 +2,9 @@
 
 namespace Saad\AiKit\Conversations\Console;
 
+use Carbon\CarbonInterface;
 use Illuminate\Console\Command;
+use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Saad\AiKit\Conversations\Events\ConversationsPruning;
@@ -12,14 +14,22 @@ use Saad\AiKit\Conversations\Events\ConversationsPruning;
  * window. Anonymous-participant apps have no other way to reach old threads,
  * so this keeps the tables from growing forever; schedule it daily.
  *
- * A ConversationsPruning event fires with the doomed ids BEFORE anything is
- * deleted — listen to it to cascade app-owned resources (chat attachments
- * and their stored files, per-conversation caches, …).
+ * Work happens in id-ordered chunks — a mature table never lands in memory
+ * at once — and the retention cutoff is RE-APPLIED to every delete. A
+ * conversation revived between being read and being deleted therefore
+ * survives with its messages intact: the run only ever deletes the messages
+ * of conversations whose rows it actually removed.
+ *
+ * A ConversationsPruning event fires per chunk with the doomed ids BEFORE
+ * anything in that chunk is deleted — listen to it to cascade app-owned
+ * resources (chat attachments and their stored files, per-conversation
+ * caches, …).
  */
 class PruneConversationsCommand extends Command
 {
     protected $signature = 'ai-kit:prune-conversations
-        {--days= : Prune conversations idle for more than this many days (default: ai-kit.conversations.retention_days)}';
+        {--days= : Prune conversations idle for more than this many days (default: ai-kit.conversations.retention_days)}
+        {--chunk=500 : How many conversations to read, announce and delete per batch}';
 
     protected $description = 'Delete AI conversations and their messages idle longer than the retention window';
 
@@ -29,45 +39,87 @@ class PruneConversationsCommand extends Command
             ? (int) $this->option('days')
             : (int) config('ai-kit.conversations.retention_days', 30));
 
+        $chunkSize = max(1, (int) $this->option('chunk'));
         $cutoff = now()->subDays($days);
 
         $connection = DB::connection(config('ai.conversations.connection'));
         $conversationsTable = config('ai.conversations.tables.conversations', 'agent_conversations');
         $messagesTable = config('ai.conversations.tables.messages', 'agent_conversation_messages');
 
-        $conversationIds = $connection->table($conversationsTable)
-            ->where('updated_at', '<', $cutoff)
-            ->pluck('id')
-            ->map(fn ($id): string => (string) $id)
-            ->all();
+        $conversationsDeleted = 0;
+        $messagesDeleted = 0;
+        $after = null;
 
-        if ($conversationIds === []) {
+        while (true) {
+            $candidates = $connection->table($conversationsTable)
+                ->where('updated_at', '<', $cutoff)
+                ->when($after !== null, fn ($query) => $query->where('id', '>', $after))
+                ->orderBy('id')
+                ->limit($chunkSize)
+                ->pluck('id')
+                ->map(fn ($id): string => (string) $id)
+                ->all();
+
+            if ($candidates === []) {
+                break;
+            }
+
+            $after = end($candidates);
+
+            Event::dispatch(new ConversationsPruning($candidates, $cutoff));
+
+            $deleted = $this->deleteChunk($connection, $conversationsTable, $candidates, $cutoff);
+
+            if ($deleted !== []) {
+                $conversationsDeleted += count($deleted);
+                $messagesDeleted += $connection->table($messagesTable)
+                    ->whereIn('conversation_id', $deleted)
+                    ->delete();
+            }
+        }
+
+        if ($conversationsDeleted === 0) {
             $this->info(sprintf('No conversations idle for more than %d days.', $days));
 
             return self::SUCCESS;
         }
 
-        Event::dispatch(new ConversationsPruning($conversationIds, $cutoff));
-
-        $messagesDeleted = 0;
-
-        foreach (array_chunk($conversationIds, 500) as $chunk) {
-            $messagesDeleted += $connection->table($messagesTable)
-                ->whereIn('conversation_id', $chunk)
-                ->delete();
-
-            $connection->table($conversationsTable)
-                ->whereIn('id', $chunk)
-                ->delete();
-        }
-
         $this->info(sprintf(
             'Pruned %d conversations (%d messages) idle for more than %d days.',
-            count($conversationIds),
+            $conversationsDeleted,
             $messagesDeleted,
             $days,
         ));
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Delete the chunk's still-idle conversations and report which ids
+     * actually went. The cutoff on the DELETE is what spares a revived
+     * conversation, and reading back the survivors is what keeps its
+     * messages: only the rows this run removed have their messages deleted.
+     *
+     * @param  list<string>  $candidates
+     * @return list<string>
+     */
+    protected function deleteChunk(
+        ConnectionInterface $connection,
+        string $table,
+        array $candidates,
+        CarbonInterface $cutoff,
+    ): array {
+        $connection->table($table)
+            ->whereIn('id', $candidates)
+            ->where('updated_at', '<', $cutoff)
+            ->delete();
+
+        $survivors = $connection->table($table)
+            ->whereIn('id', $candidates)
+            ->pluck('id')
+            ->map(fn ($id): string => (string) $id)
+            ->all();
+
+        return array_values(array_diff($candidates, $survivors));
     }
 }

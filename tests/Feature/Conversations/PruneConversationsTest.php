@@ -80,6 +80,46 @@ it('defaults the window to ai-kit.conversations.retention_days', function () {
     Event::assertDispatched(ConversationsPruning::class);
 });
 
+it('spares a conversation revived between the announcement and the delete, messages included', function () {
+    $doomed = prunableConversation(idleDays: 10);
+    $revived = prunableConversation(idleDays: 10, messages: 3);
+
+    // The listener runs in exactly the window the race lives in: the ids are
+    // read, and this thread gets a new message before the delete lands.
+    Event::listen(ConversationsPruning::class, function () use ($revived) {
+        DB::table('agent_conversations')->where('id', $revived)->update(['updated_at' => now()]);
+    });
+
+    $this->artisan('ai-kit:prune-conversations', ['--days' => 7])
+        ->expectsOutputToContain('Pruned 1 conversations (1 messages)')
+        ->assertSuccessful();
+
+    expect(DB::table('agent_conversations')->pluck('id')->all())->toBe([$revived])
+        ->and(DB::table('agent_conversation_messages')->where('conversation_id', $revived)->count())->toBe(3)
+        ->and(DB::table('agent_conversation_messages')->where('conversation_id', $doomed)->count())->toBe(0);
+});
+
+it('works through the table in id-ordered chunks, announcing each one', function () {
+    $announced = [];
+
+    Event::listen(ConversationsPruning::class, function (ConversationsPruning $event) use (&$announced) {
+        $announced[] = $event->conversationIds;
+    });
+
+    $ids = collect(range(1, 5))->map(fn () => prunableConversation(idleDays: 10))->sort()->values()->all();
+
+    $this->artisan('ai-kit:prune-conversations', ['--days' => 7, '--chunk' => 2])
+        ->expectsOutputToContain('Pruned 5 conversations')
+        ->assertSuccessful();
+
+    expect($announced)->toBe([
+        [$ids[0], $ids[1]],
+        [$ids[2], $ids[3]],
+        [$ids[4]],
+    ])->and(DB::table('agent_conversations')->count())->toBe(0)
+        ->and(DB::table('agent_conversation_messages')->count())->toBe(0);
+});
+
 it('deletes nothing and stays silent on the event when nothing is stale', function () {
     Event::fake([ConversationsPruning::class]);
 

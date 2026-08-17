@@ -22,12 +22,6 @@ class UsageServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        $this->loadMigrationsFrom(__DIR__.'/../../database/migrations');
-
-        $this->publishes([
-            __DIR__.'/../../database/migrations' => database_path('migrations'),
-        ], 'ai-kit-migrations');
-
         // AgentStreamed extends AgentPrompted, but Laravel only fans events
         // out to interface listeners, never parent-class ones — both need
         // explicit registration, and nothing double-fires.

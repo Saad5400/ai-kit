@@ -4,10 +4,10 @@ use Laravel\Ai\Contracts\ConversationStore;
 use Laravel\Ai\Storage\DatabaseConversationStore;
 use Saad\AiKit\Conversations\EncryptedConversationStore;
 
-it('binds the encrypted store over the vendor contract by default', function () {
+it('leaves the vendor store bound by default, since encryption is opt-in', function () {
     expect(app(ConversationStore::class))
-        ->toBeInstanceOf(EncryptedConversationStore::class)
-        ->toBe(app(ConversationStore::class)); // singleton
+        ->toBeInstanceOf(DatabaseConversationStore::class)
+        ->not->toBeInstanceOf(EncryptedConversationStore::class);
 });
 
 it('stays rebindable so apps can supply their own store', function () {

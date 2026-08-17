@@ -2,17 +2,17 @@
 
 namespace Saad\AiKit\Tests;
 
-abstract class ConversationsEncryptDisabledTestCase extends TestCase
+abstract class ConversationsEncryptEnabledTestCase extends TestCase
 {
     /**
      * The encrypt toggle is read when the conversations provider registers,
-     * which Testbench runs before defineEnvironment() — so the override must
+     * which Testbench runs before defineEnvironment() — so the opt-in must
      * land at configuration resolution time.
      */
     protected function resolveApplicationConfiguration($app)
     {
         parent::resolveApplicationConfiguration($app);
 
-        $app['config']->set('ai-kit.conversations.encrypt', false);
+        $app['config']->set('ai-kit.conversations.encrypt', true);
     }
 }

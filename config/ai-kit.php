@@ -108,9 +108,13 @@ return [
     | `encrypt` binds the kit's EncryptedConversationStore over laravel/ai's
     | ConversationStore contract: message content is encrypted with the app
     | key before it touches the database, and pre-encryption plaintext rows
-    | still read back. Set it to false to keep the vendor store (or bind
-    | your own). Table names and the connection follow the vendor keys
-    | (`ai.conversations.tables.*`, `ai.conversations.connection`).
+    | still read back. It is OPT-IN, and turning it on is a one-way door for
+    | every row written while it is on: those rows are readable only through
+    | this store and only with the app key that wrote them. Decide before you
+    | have traffic, keep the key, and do not flip it back and forth. With it
+    | off the vendor store stays bound (or bind your own). Table names and
+    | the connection follow the vendor keys (`ai.conversations.tables.*`,
+    | `ai.conversations.connection`).
     |
     | `persist_tool_traces` keeps attachments / tool_calls / tool_results /
     | usage / meta on message rows. Off by default — traces can carry user
@@ -125,7 +129,7 @@ return [
     */
 
     'conversations' => [
-        'encrypt' => true,
+        'encrypt' => false,
         'persist_tool_traces' => false,
         'retention_days' => 30,
     ],

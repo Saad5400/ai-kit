@@ -14,11 +14,13 @@ class ConversationsServiceProvider extends ServiceProvider
             $app['config']->get('ai.conversations.connection'),
         ));
 
-        // Rebindable on purpose: this registers after laravel/ai's provider
-        // (kit depends on it) so the encrypted store wins over the vendor
-        // default, and an app binding registered later wins over the kit.
-        // With encrypt off, the vendor store binding is left untouched.
-        if ($this->app['config']->get('ai-kit.conversations.encrypt', true) === true) {
+        // Opt-in, because binding this store rewrites how every message row
+        // is written from that deploy on and there is no going back for the
+        // rows already encrypted. Rebindable on purpose: this registers
+        // after laravel/ai's provider (kit depends on it) so the encrypted
+        // store wins over the vendor default when it IS enabled, and an app
+        // binding registered later wins over the kit.
+        if ($this->app['config']->get('ai-kit.conversations.encrypt', false) === true) {
             $this->app->singleton(ConversationStore::class, fn ($app) => new EncryptedConversationStore(
                 $app['config']->get('ai.conversations.connection'),
             ));
@@ -27,12 +29,6 @@ class ConversationsServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        $this->loadMigrationsFrom(__DIR__.'/../../database/migrations');
-
-        $this->publishes([
-            __DIR__.'/../../database/migrations' => database_path('migrations'),
-        ], 'ai-kit-migrations');
-
         if ($this->app->runningInConsole()) {
             $this->commands([PruneConversationsCommand::class]);
         }

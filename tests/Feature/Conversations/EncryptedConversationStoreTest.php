@@ -6,7 +6,6 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Laravel\Ai\AiManager;
 use Laravel\Ai\Contracts\Agent;
-use Laravel\Ai\Contracts\ConversationStore;
 use Laravel\Ai\Messages\AssistantMessage;
 use Laravel\Ai\Promptable;
 use Laravel\Ai\Prompts\AgentPrompt;
@@ -18,6 +17,15 @@ use Laravel\Ai\Responses\Data\Usage;
 use Saad\AiKit\Conversations\EncryptedConversationStore;
 
 uses(RefreshDatabase::class);
+
+/**
+ * Encryption is opt-in, so these tests drive the store directly rather than
+ * the bound contract — ConversationStoreEncryptOptInTest owns the binding.
+ */
+function encryptedStore(): EncryptedConversationStore
+{
+    return new EncryptedConversationStore;
+}
 
 function conversationsAgent(): Agent
 {
@@ -63,7 +71,7 @@ function conversationsResponse(string $text = 'assistant reply', bool $withTools
 }
 
 it('encrypts message content at rest and decrypts it on read', function () {
-    $store = app(ConversationStore::class);
+    $store = encryptedStore();
 
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
     $store->storeUserMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt('the user secret'));
@@ -89,7 +97,7 @@ it('encrypts message content at rest and decrypts it on read', function () {
 });
 
 it('stores empty JSON for attachments and tool traces by default', function () {
-    $store = app(ConversationStore::class);
+    $store = encryptedStore();
 
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
     $prompt = conversationsPrompt('with attachment', [['type' => 'file', 'name' => 'cv.pdf']]);
@@ -109,7 +117,7 @@ it('stores empty JSON for attachments and tool traces by default', function () {
 it('persists tool traces when configured, still encrypting content', function () {
     config()->set('ai-kit.conversations.persist_tool_traces', true);
 
-    $store = app(ConversationStore::class);
+    $store = encryptedStore();
 
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
     $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt(), conversationsResponse('traced reply', withTools: true));
@@ -128,7 +136,7 @@ it('persists tool traces when configured, still encrypting content', function ()
 });
 
 it('reads pre-encryption plaintext rows back as-is', function () {
-    $store = app(ConversationStore::class);
+    $store = encryptedStore();
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'Legacy chat');
 
     DB::table('agent_conversation_messages')->insert([
@@ -156,7 +164,7 @@ it('reads pre-encryption plaintext rows back as-is', function () {
 });
 
 it('keeps blank content blank so stored-row filled checks stay truthful', function () {
-    $store = app(ConversationStore::class);
+    $store = encryptedStore();
 
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
     $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt(), conversationsResponse(''));
@@ -165,7 +173,7 @@ it('keeps blank content blank so stored-row filled checks stay truthful', functi
 });
 
 it('supports string participant ids end to end', function () {
-    $store = app(ConversationStore::class);
+    $store = encryptedStore();
 
     $conversationId = $store->storeConversation(null, 'telegram:123456789', 'Anonymous chat');
     $store->storeUserMessage($conversationId, null, 'telegram:123456789', conversationsPrompt('anonymous message'));
@@ -179,9 +187,7 @@ it('supports string participant ids end to end', function () {
         ->and($store->getLatestConversationMessages($conversationId, 5)->first()->content)->toBe('anonymous message');
 });
 
-it('is the bound store and honors an explicit persistToolTraces constructor override', function () {
-    expect(app(ConversationStore::class))->toBeInstanceOf(EncryptedConversationStore::class);
-
+it('honors an explicit persistToolTraces constructor override', function () {
     config()->set('ai-kit.conversations.persist_tool_traces', false);
 
     $store = new EncryptedConversationStore(persistToolTraces: true);
