@@ -40,6 +40,20 @@ class TurnConcurrencyLimiter
         }
     }
 
+    /**
+     * Pre-flight capacity check: throws when the owner is already at the
+     * cap, without reserving a slot. Racy by design — use run()/acquire()
+     * to actually hold one.
+     *
+     * @throws TooManyConcurrentTurnsException
+     */
+    public function enforce(string $owner): void
+    {
+        if ($this->maxConcurrent !== null && $this->inFlight($owner) >= $this->maxConcurrent) {
+            throw new TooManyConcurrentTurnsException($owner, $this->maxConcurrent);
+        }
+    }
+
     public function release(string $owner): void
     {
         if ($this->maxConcurrent === null) {

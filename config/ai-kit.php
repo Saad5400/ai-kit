@@ -143,16 +143,28 @@ return [
     | store. Use a persistent shared store (redis, database) in production —
     | an engaged kill switch must survive restarts. The daily budget resets
     | at midnight in the given timezone (null = app timezone). A null
-    | daily_usd_limit or max_concurrent_turns disables that gate.
+    | daily_usd_limit or max_concurrent_turns disables that gate; a
+    | daily_usd_limit <= 0 reads as exhausted (an operator kill switch for
+    | budget-gated surfaces). `enabled` and `features` back the default
+    | config-driven SafetySettings — a feature missing from `features`
+    | counts as enabled. Apps with an operator-editable settings store
+    | rebind the SafetySettings contract instead of using these keys.
+    | `record_spend_from_usage` feeds each metered turn's cost from the
+    | usage module into the budget counter (requires the usage module).
     |
     */
 
     'safety' => [
         'cache_store' => env('AI_KIT_SAFETY_CACHE_STORE'),
+        'enabled' => env('AI_KIT_AI_ENABLED', true),
+        'features' => [
+            // 'chat' => true,
+        ],
         'daily_usd_limit' => env('AI_KIT_DAILY_USD_LIMIT') !== null
             ? (float) env('AI_KIT_DAILY_USD_LIMIT')
             : null,
         'timezone' => env('AI_KIT_BUDGET_TIMEZONE'),
+        'record_spend_from_usage' => true,
         'max_concurrent_turns' => env('AI_KIT_MAX_CONCURRENT_TURNS') !== null
             ? (int) env('AI_KIT_MAX_CONCURRENT_TURNS')
             : 3,

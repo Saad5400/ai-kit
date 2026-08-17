@@ -25,6 +25,7 @@ class BudgetGuard
         protected Dispatcher $events,
         protected ?float $dailyLimit,
         protected ?string $timezone = null,
+        protected ?SafetySettings $settings = null,
     ) {}
 
     /**
@@ -43,7 +44,7 @@ class BudgetGuard
         $total = $this->cache->increment($key, (int) round($usd * self::MICRO)) / self::MICRO;
 
         if ($this->limitReached($total) && $this->cache->add($this->key().':notified', 1, now()->addDays(2))) {
-            $this->events->dispatch(new DailyBudgetExceeded($total, $this->dailyLimit));
+            $this->events->dispatch(new DailyBudgetExceeded($total, $this->limit()));
         }
 
         return $total;
@@ -54,16 +55,25 @@ class BudgetGuard
         return ((int) $this->cache->get($this->key(), 0)) / self::MICRO;
     }
 
+    /**
+     * The effective limit: the app's settings store when one is bound
+     * (a value <= 0 reads as exhausted outright), otherwise the
+     * construction-time value. Null means unlimited.
+     */
     public function limit(): ?float
     {
-        return $this->dailyLimit;
+        return $this->settings !== null
+            ? $this->settings->dailyBudgetUsd()
+            : $this->dailyLimit;
     }
 
     public function remaining(): ?float
     {
-        return $this->dailyLimit === null
+        $limit = $this->limit();
+
+        return $limit === null
             ? null
-            : max(0.0, $this->dailyLimit - $this->spentToday());
+            : max(0.0, $limit - $this->spentToday());
     }
 
     public function exceeded(): bool
@@ -79,7 +89,7 @@ class BudgetGuard
         if ($this->exceeded()) {
             throw new BudgetExceededException(
                 $this->spentToday(),
-                $this->dailyLimit,
+                $this->limit(),
                 $this->secondsUntilTomorrow(),
             );
         }
@@ -87,7 +97,11 @@ class BudgetGuard
 
     protected function limitReached(float $total): bool
     {
-        return $this->dailyLimit !== null && $total >= $this->dailyLimit;
+        $limit = $this->limit();
+
+        // A limit <= 0 always reads as reached — an operator zeroing the
+        // budget uses it as a kill switch for budget-gated surfaces.
+        return $limit !== null && $total >= $limit;
     }
 
     protected function key(): string
