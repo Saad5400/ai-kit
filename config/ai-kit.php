@@ -228,6 +228,36 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Attachments
+    |--------------------------------------------------------------------------
+    |
+    | The extraction split: images route to the app's vision agent, PDFs
+    | take the born-digital decision (a real text layer parses for free via
+    | poppler; a scanned or garbled one routes to vision), OOXML/HTML/plain
+    | formats parse locally. Text results are cached content-addressed
+    | (sha-256 of the bytes + `version` — bump it when the extraction
+    | strategy changes). Poppler is best-effort: a missing binary just
+    | routes PDFs to vision.
+    |
+    */
+
+    'attachments' => [
+        'cache' => [
+            'store' => env('AI_KIT_EXTRACTION_CACHE_STORE'),
+            'version' => 'v1',
+            'ttl_days' => (int) env('AI_KIT_EXTRACTION_CACHE_TTL_DAYS', 14),
+        ],
+        'pdf' => [
+            'min_chars_per_page' => 80,
+            'max_junk_ratio' => 0.10,
+            'timeout' => 60,
+            'pdftotext_binary' => env('AI_KIT_PDFTOTEXT_BINARY', 'pdftotext'),
+            'pdfinfo_binary' => env('AI_KIT_PDFINFO_BINARY', 'pdfinfo'),
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Credits
     |--------------------------------------------------------------------------
     |
