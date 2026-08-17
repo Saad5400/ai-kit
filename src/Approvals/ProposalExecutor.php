@@ -87,7 +87,7 @@ class ProposalExecutor
                 $action = $this->registry->get($proposal->type);
 
                 if ($action === null) {
-                    throw new ActionValidationException('The proposed action type is unknown or no longer supported.');
+                    throw new ActionValidationException(__('ai-kit::approvals.unknown_type'));
                 }
 
                 /** @var array<string, mixed> $input */
@@ -119,7 +119,7 @@ class ProposalExecutor
 
             $proposal->update([
                 'status' => ProposalStatus::Failed,
-                'error' => 'An unexpected error occurred while executing the proposal.',
+                'error' => __('ai-kit::approvals.unexpected_error'),
             ]);
         }
 
