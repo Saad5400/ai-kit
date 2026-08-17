@@ -56,15 +56,29 @@ class BudgetGuard
     }
 
     /**
-     * The effective limit: the app's settings store when one is bound
-     * (a value <= 0 reads as exhausted outright), otherwise the
-     * construction-time value. Null means unlimited.
+     * The effective limit: the app's settings store when one is bound and
+     * answers (a value <= 0 reads as exhausted outright), falling back to
+     * the construction-time value when the store returns null — an explicit
+     * cap must never be silently voided by a store that simply has no
+     * budget configured. Null from both means unlimited.
      */
     public function limit(): ?float
     {
-        return $this->settings !== null
-            ? $this->settings->dailyBudgetUsd()
-            : $this->dailyLimit;
+        return $this->settings?->dailyBudgetUsd() ?? $this->dailyLimit;
+    }
+
+    /**
+     * Record spend exactly once per idempotency key (the turn's invocation
+     * id) and return the day's running total. A replayed usage event or a
+     * double-registered listener re-presents the same key and adds nothing.
+     */
+    public function recordOnce(string $key, float $usd): float
+    {
+        if (! $this->cache->add('ai-kit:budget:seen:'.$key, 1, now()->addDays(2))) {
+            return $this->spentToday();
+        }
+
+        return $this->record($usd);
     }
 
     public function remaining(): ?float

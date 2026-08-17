@@ -23,9 +23,18 @@ class RecordBudgetSpend
         rescue(function () use ($event) {
             $cost = $event->usage->cost_usd;
 
-            if ($cost !== null) {
-                $this->budget->record((float) $cost);
+            if ($cost === null) {
+                return;
             }
+
+            // Keyed on the invocation so a replayed event or a listener
+            // registered twice can never double-count a turn's spend. A row
+            // with no identifier can't be deduplicated — record it plainly.
+            $key = (string) ($event->usage->invocation_id ?? $event->usage->getKey() ?? '');
+
+            $key === ''
+                ? $this->budget->record((float) $cost)
+                : $this->budget->recordOnce($key, (float) $cost);
         });
     }
 }

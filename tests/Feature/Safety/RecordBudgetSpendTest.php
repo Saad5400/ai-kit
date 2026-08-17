@@ -53,3 +53,12 @@ it('never lets a recording failure escape the event', function () {
 
     expect(true)->toBeTrue();
 });
+
+it('counts a replayed usage event only once', function () {
+    $usage = new UsageEvent(['cost_usd' => 1.0, 'invocation_id' => 'inv-1']);
+
+    event(new TurnUsageRecorded($usage));
+    event(new TurnUsageRecorded($usage));
+
+    expect(app(BudgetGuard::class)->spentToday())->toEqualWithDelta(1.0, 0.000001);
+});

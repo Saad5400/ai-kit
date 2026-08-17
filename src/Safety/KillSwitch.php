@@ -30,11 +30,24 @@ class KillSwitch
         $this->events->dispatch(new KillSwitchEngaged($scope, $reason));
     }
 
-    public function release(?string $scope = null): void
+    /**
+     * Clear the scope's cache switch. Returns whether the scope is now
+     * actually live — false when it stays engaged through another switch
+     * (the global one, or the app's settings store), in which case no
+     * KillSwitchReleased is dispatched: dashboards must not announce a
+     * recovery that did not happen.
+     */
+    public function release(?string $scope = null): bool
     {
         $this->cache->forget($this->key($scope));
 
+        if ($this->engaged($scope)) {
+            return false;
+        }
+
         $this->events->dispatch(new KillSwitchReleased($scope));
+
+        return true;
     }
 
     /**
@@ -55,6 +68,12 @@ class KillSwitch
         return $scope !== null && $this->cache->has($this->key($scope));
     }
 
+    /**
+     * Why the scope is off: the engaging cache entry's reason, or — when
+     * the engagement comes from the settings store instead — a translated
+     * generic reason, so a settings-disabled surface never reads as
+     * "engaged with no explanation".
+     */
     public function reason(?string $scope = null): ?string
     {
         $value = $this->cache->get($this->key(null));
@@ -63,7 +82,13 @@ class KillSwitch
             $value = $this->cache->get($this->key($scope));
         }
 
-        return $value['reason'] ?? null;
+        $reason = $value['reason'] ?? null;
+
+        if ($reason === null && $this->settings !== null && ! $this->settings->enabled($scope)) {
+            return __('ai-kit::safety.disabled_by_settings');
+        }
+
+        return $reason;
     }
 
     /**

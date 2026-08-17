@@ -16,6 +16,13 @@ use Illuminate\Contracts\Cache\Repository as Cache;
  * of entries per turn), keeping the read-modify-write cheap on any cache
  * driver.
  *
+ * TERMINAL-EVENT CONTRACT (identical here and on the inline path through
+ * {@see StreamEventMapper}): a turn ends with EXACTLY ONE terminal event —
+ * `done {...}` when it completed, or `error {message}` when it did not.
+ * `error` is terminal; no `done` ever follows it. A client that tears its
+ * stream down on either event therefore behaves the same whether the turn
+ * was streamed inline or replayed out of this buffer.
+ *
  * Cancellation lives under its OWN cache key — never a read-modify-write on
  * the turn record — so a user's "stop" can never race the generating job's
  * appends. The job polls {@see isCancelled} between events and finishes
@@ -59,6 +66,12 @@ class TurnBuffer
      * Append one event, assigning it the next sequence number. A no-op on
      * an unknown or expired turn.
      *
+     * SINGLE WRITER: exactly one producer — the turn's generating job —
+     * appends to a turn. The read-modify-write here is deliberately
+     * lock-free on that assumption; two workers appending to the same turn
+     * would silently lose events, so never fan one turn's generation out
+     * across jobs. (Tailers only read, and cancellation has its own key.)
+     *
      * @param  array<string, mixed>  $data
      */
     public function append(string $turnId, string $event, array $data): void
@@ -76,7 +89,7 @@ class TurnBuffer
     }
 
     /**
-     * Mark the turn complete: append the terminal `done` event carrying
+     * Mark the turn complete: append the ONE terminal `done` event carrying
      * `$done` and fold `$meta` into the record for tailers to decorate
      * with (conversation id, final message, credit outcome, ...).
      *
@@ -90,17 +103,16 @@ class TurnBuffer
     }
 
     /**
-     * Mark the turn failed: append `error {message}` then a terminal `done`
-     * (carrying `$done`), mirroring the inline streaming contract so the
-     * client's handling is identical on both paths.
+     * Mark the turn failed: append the terminal `error {message}` and stop.
+     * No `done` follows — a failed turn has no completion payload to carry,
+     * and emitting both would leave clients guessing which one ended the
+     * turn. The failure is also recorded in the record's meta.
      *
-     * @param  array<string, mixed>  $done
      * @param  array<string, mixed>  $meta
      */
-    public function fail(string $turnId, string $message, array $done = [], array $meta = []): void
+    public function fail(string $turnId, string $message, array $meta = []): void
     {
         $this->append($turnId, 'error', ['message' => $message]);
-        $this->append($turnId, 'done', $done);
         $this->complete($turnId, 'failed', $meta + ['error' => $message]);
     }
 

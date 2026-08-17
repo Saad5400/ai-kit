@@ -53,15 +53,17 @@ it('decorates event payloads with record state at emit time', function () {
     expect($out)->toBe("id: 1\nevent: done\ndata: {\"charged\":1,\"conversation_id\":\"c9\"}\n\n");
 });
 
-it('drains a failed turn to its terminal frames', function () {
+it('drains a failed turn to its terminal error frame and closes', function () {
     $this->buffer->start('t1');
+    $this->buffer->append('t1', 'delta', ['text' => 'partial']);
     $this->buffer->fail('t1', 'broke');
 
     [$out] = captureTail(fn () => $this->buffer->tail('t1'));
 
+    // `error` is the terminal frame — no `done` trails it.
     expect($out)->toBe(
-        "id: 1\nevent: error\ndata: {\"message\":\"broke\"}\n\n".
-        "id: 2\nevent: done\ndata: []\n\n"
+        "id: 1\nevent: delta\ndata: {\"text\":\"partial\"}\n\n".
+        "id: 2\nevent: error\ndata: {\"message\":\"broke\"}\n\n"
     );
 });
 

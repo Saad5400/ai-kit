@@ -1,7 +1,9 @@
 <?php
 
+use Illuminate\Support\Facades\Event;
 use Saad\AiKit\Safety\BudgetGuard;
 use Saad\AiKit\Safety\ConfigSafetySettings;
+use Saad\AiKit\Safety\Events\KillSwitchReleased;
 use Saad\AiKit\Safety\Exceptions\AiKilledException;
 use Saad\AiKit\Safety\Exceptions\BudgetExceededException;
 use Saad\AiKit\Safety\KillSwitch;
@@ -120,4 +122,58 @@ it('lets apps rebind the contract with their own store', function () {
 
     expect(app(KillSwitch::class)->engaged())->toBeTrue()
         ->and(app(BudgetGuard::class)->exceeded())->toBeTrue();
+});
+
+it('release reports false and stays silent while settings still engage the scope', function () {
+    Event::fake([KillSwitchReleased::class]);
+    config()->set('ai-kit.safety.features', ['chat' => false]);
+
+    $this->app->forgetInstance(KillSwitch::class);
+    $switch = $this->app->make(KillSwitch::class);
+
+    $switch->engage('chat', 'incident');
+
+    expect($switch->release('chat'))->toBeFalse()
+        ->and($switch->engaged('chat'))->toBeTrue();
+    Event::assertNotDispatched(KillSwitchReleased::class);
+
+    config()->set('ai-kit.safety.features', []);
+
+    expect($switch->release('chat'))->toBeTrue();
+    Event::assertDispatched(KillSwitchReleased::class, fn ($e) => $e->scope === 'chat');
+});
+
+it('reason falls back to a settings-derived explanation', function () {
+    config()->set('ai-kit.safety.features', ['chat' => false]);
+
+    $this->app->forgetInstance(KillSwitch::class);
+    $switch = $this->app->make(KillSwitch::class);
+
+    expect($switch->reason('chat'))->toBe(__('ai-kit::safety.disabled_by_settings'))
+        ->and($switch->reason('other'))->toBeNull();
+});
+
+it('falls back to the constructed limit when settings answer null', function () {
+    $store = new class implements SafetySettings
+    {
+        public ?float $budget = null;
+
+        public function enabled(?string $feature = null): bool
+        {
+            return true;
+        }
+
+        public function dailyBudgetUsd(): ?float
+        {
+            return $this->budget;
+        }
+    };
+
+    $guard = new BudgetGuard(cache()->store(), app('events'), 2.5, null, $store);
+
+    expect($guard->limit())->toBe(2.5);
+
+    $store->budget = 9.0;
+
+    expect($guard->limit())->toBe(9.0);
 });

@@ -62,18 +62,19 @@ it('finish appends the terminal done and folds meta into the record', function (
         ->and($turn['meta'])->toBe(['conversation_id' => 'c9', 'message' => ['role' => 'assistant']]);
 });
 
-it('fail appends error then done and records the failure', function () {
+it('fail ends the turn on error, with no done after it', function () {
     $this->buffer->start('t1');
-    $this->buffer->fail('t1', 'something broke');
+    $this->buffer->append('t1', 'delta', ['text' => 'partial']);
+    $this->buffer->fail('t1', 'something broke', ['conversation_id' => 'c9']);
 
     $turn = $this->buffer->get('t1');
 
     expect($turn['status'])->toBe('failed')
         ->and($turn['events'])->toBe([
-            ['seq' => 1, 'event' => 'error', 'data' => ['message' => 'something broke']],
-            ['seq' => 2, 'event' => 'done', 'data' => []],
+            ['seq' => 1, 'event' => 'delta', 'data' => ['text' => 'partial']],
+            ['seq' => 2, 'event' => 'error', 'data' => ['message' => 'something broke']],
         ])
-        ->and($turn['meta']['error'])->toBe('something broke');
+        ->and($turn['meta'])->toBe(['conversation_id' => 'c9', 'error' => 'something broke']);
 });
 
 it('keeps cancellation on a separate key so it cannot race the producer appends', function () {

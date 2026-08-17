@@ -11,6 +11,7 @@ use Laravel\Ai\Streaming\Events\ToolCall;
 use Laravel\Ai\Streaming\Events\ToolResult;
 use Saad\AiKit\Streaming\StreamEventMapper;
 use Saad\AiKit\Streaming\TextTransformer;
+use Saad\AiKit\Streaming\TurnBuffer;
 
 function fakeDelta(string $text): TextDelta
 {
@@ -224,3 +225,75 @@ it('stops on a hooked non-recoverable error', function () {
     expect($this->events)->toBe([['error', ['message' => 'fatal']]])
         ->and($result->failed)->toBeTrue();
 });
+
+it('folds a stream into a buffered turn, with the buffer writing the one done', function () {
+    $buffer = $this->app->make(TurnBuffer::class);
+    $buffer->start('t1', ['user_id' => 7]);
+
+    $this->mapper->doneUsing(fn ($result) => ['text' => $result->text]);
+
+    $result = $this->mapper->runIntoBuffer([
+        fakeDelta('Hel'),
+        fakeDelta('lo'),
+        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+    ], $buffer, 't1', ['conversation_id' => 'c9']);
+
+    $turn = $buffer->get('t1');
+
+    expect($turn['status'])->toBe('done')
+        ->and($turn['events'])->toBe([
+            ['seq' => 1, 'event' => 'delta', 'data' => ['text' => 'Hel']],
+            ['seq' => 2, 'event' => 'delta', 'data' => ['text' => 'lo']],
+            ['seq' => 3, 'event' => 'done', 'data' => ['text' => 'Hello']],
+        ])
+        ->and($turn['meta'])->toBe(['user_id' => 7, 'conversation_id' => 'c9'])
+        ->and($result->text)->toBe('Hello');
+});
+
+it('ends a buffered turn on error with no done after it', function () {
+    $buffer = $this->app->make(TurnBuffer::class);
+    $buffer->start('t1');
+
+    $this->mapper->onError(fn (Error $event) => 'حدث خطأ أثناء توليد الرد.');
+
+    $result = $this->mapper->runIntoBuffer([
+        fakeDelta('partial'),
+        new Error('e1', 'provider_error', 'upstream exploded', false, 1),
+        fakeDelta('never'),
+    ], $buffer, 't1', ['conversation_id' => 'c9']);
+
+    $turn = $buffer->get('t1');
+
+    expect($turn['status'])->toBe('failed')
+        ->and($turn['events'])->toBe([
+            ['seq' => 1, 'event' => 'delta', 'data' => ['text' => 'partial']],
+            ['seq' => 2, 'event' => 'error', 'data' => ['message' => 'حدث خطأ أثناء توليد الرد.']],
+        ])
+        ->and($turn['meta'])->toBe(['conversation_id' => 'c9', 'error' => 'حدث خطأ أثناء توليد الرد.'])
+        ->and($result->failed)->toBeTrue();
+});
+
+it('emits identical event sequences inline and buffered', function (array $stream) {
+    $inline = [];
+    $this->mapper->doneUsing(fn ($result) => ['text' => $result->text]);
+    $this->mapper->run($stream, function (string $event, array $data) use (&$inline): void {
+        $inline[] = [$event, $data];
+    });
+
+    $buffer = $this->app->make(TurnBuffer::class);
+    $buffer->start('t1');
+
+    $buffered = $this->app->make(StreamEventMapper::class);
+    $buffered->doneUsing(fn ($result) => ['text' => $result->text]);
+    $buffered->runIntoBuffer($stream, $buffer, 't1');
+
+    $replayed = array_map(
+        fn (array $event): array => [$event['event'], $event['data']],
+        $buffer->get('t1')['events'],
+    );
+
+    expect($replayed)->toBe($inline);
+})->with([
+    'a turn that completes' => [fn () => [fakeDelta('hi'), new StreamEnd('s1', 'stop', new Usage(completionTokens: 2), 1)]],
+    'a turn that fails' => [fn () => [fakeDelta('partial'), new Error('e1', 'provider_error', 'boom', false, 1)]],
+]);

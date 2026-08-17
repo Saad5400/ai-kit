@@ -17,10 +17,18 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  * model text, `error {message}` on failure, and a terminal `done {...}`
  * whose payload the caller assembles from the collected {@see StreamResult}.
  *
+ * TERMINAL-EVENT CONTRACT (identical here and on the buffered path through
+ * {@see TurnBuffer}): a turn ends with EXACTLY ONE terminal event —
+ * `done {...}` when it completed, or `error {message}` when it did not.
+ * `error` is terminal; no `done` ever follows it. A client that tears its
+ * stream down on either event therefore behaves the same whether the turn
+ * was streamed inline or replayed out of a buffer.
+ *
  * Where the events go is the caller's business — the sink is a plain
  * `(string $event, array $data)` callable, so the same mapper drives an
- * inline SSE response (`fn ($e, $d) => $sse->emit($e, $d)`) and a resumable
- * background job (`fn ($e, $d) => $buffer->append($turnId, $e, $d)`).
+ * inline SSE response (`fn ($e, $d) => $sse->emit($e, $d)`). For the
+ * resumable background-job path use {@see runIntoBuffer()}, which keeps the
+ * buffer the sole author of the turn's terminal event.
  *
  * Extension points:
  * - {@see transformText}: a pipeline on the text channel. Transformers may
@@ -195,6 +203,44 @@ class StreamEventMapper
         }
 
         $emit('done', ($this->doneUsing)($result));
+
+        return $result;
+    }
+
+    /**
+     * Fold the stream into a resumable {@see TurnBuffer} turn (the
+     * background-job path). Non-terminal events are appended as they are
+     * produced; the turn's ONE terminal event is written through the buffer
+     * itself — `finish()` with the assembled `done` payload and `$meta`, or
+     * `fail()` with the error message and no `done` — so the buffered and
+     * inline paths emit the same sequence for the same stream.
+     *
+     * The turn must already have been started; `$meta` is folded into the
+     * record either way (conversation id, final message, credit outcome).
+     *
+     * @param  iterable<StreamEvent>  $stream
+     * @param  array<string, mixed>  $meta
+     */
+    public function runIntoBuffer(iterable $stream, TurnBuffer $buffer, string $turnId, array $meta = []): StreamResult
+    {
+        $done = null;
+        $error = null;
+
+        $result = $this->run($stream, function (string $event, array $data) use ($buffer, $turnId, &$done, &$error): void {
+            if ($event === 'done') {
+                $done = $data;
+            } elseif ($event === 'error') {
+                $error = (string) ($data['message'] ?? '');
+            } else {
+                $buffer->append($turnId, $event, $data);
+            }
+        });
+
+        if ($error !== null) {
+            $buffer->fail($turnId, $error, $meta);
+        } else {
+            $buffer->finish($turnId, $done ?? [], $meta);
+        }
 
         return $result;
     }
