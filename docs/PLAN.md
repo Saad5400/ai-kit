@@ -95,11 +95,23 @@ v0.3.1 (same day): the approvals executor's card-facing error strings moved to
   `ProposableAdminAction` adapter (actions still execute as the proposing
   admin); data migration kept ULIDs so stored trailer ids resolve.
 
+**Audit follow-up shipped — PR #128 squash-merged 2026-08-17** (the two gaps
+the post-migration goal audit flagged): `config/ai-kit.php` published + pinned
+(retention_days 7, schedule drops `--days`), and the safety seam is live —
+turn entries (chat send, attachment upload, admin-assistant send) gate through
+`TurnGuard::check(scope)`; probes (chat show, admin index/show/confirm/reject,
+search, tool traits, Telegram silent gates) consult `KillSwitch::engaged(scope)`.
+Arabic messages byte-identical; the kit's cache kill switch now actually stops
+every surface. Background pipeline (copilot/authoring/extractors/ingest)
+deliberately stays on AiSettings. `AuthorPageFromDocumentAction` now
+constructor-injects PageAuthor + BudgetGuard. Suite 1171 passed (+4 tests).
+
 Migration learnings for catodemy/s-grade: keep old-table create migrations,
 import with a fresh-marker (`cost_source: imported`) or preserved ULIDs where
 ids travel through stored content; test-create conversations must set
 `participant_type` to the owner class; kit Proposal has no factory — create
-rows directly in tests.
+rows directly in tests; publish + pin `config/ai-kit.php` in the SAME PR as
+the migration and wire TurnGuard/KillSwitch at the gates from the start.
 
 ### M3 (v0.3.0) — what uqucc needs to finish its migration
 
