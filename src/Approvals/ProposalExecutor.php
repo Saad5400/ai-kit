@@ -8,6 +8,7 @@ use Saad\AiKit\Approvals\Contracts\UndoLedger;
 use Saad\AiKit\Approvals\Exceptions\ActionValidationException;
 use Saad\AiKit\Approvals\Exceptions\ProposalNotPendingException;
 use Saad\AiKit\Approvals\Exceptions\UnknownActionException;
+use Saad\AiKit\Approvals\Undo\UndoRecord;
 use Throwable;
 
 /**
@@ -97,7 +98,13 @@ class ProposalExecutor
 
                 $result = $action->execute($normalized, $actor);
 
-                $this->undo->record($proposal->type, $normalized, $result, $action->undoable());
+                $this->undo->record(new UndoRecord(
+                    actionType: $proposal->type,
+                    undoable: $action->undoable(),
+                    owner: $proposal->proposed_by,
+                    input: $normalized,
+                    result: $result,
+                ));
 
                 $proposal->update([
                     'status' => ProposalStatus::Confirmed,

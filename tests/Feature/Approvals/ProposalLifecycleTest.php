@@ -9,6 +9,7 @@ use Saad\AiKit\Approvals\Exceptions\UnknownActionException;
 use Saad\AiKit\Approvals\Proposal;
 use Saad\AiKit\Approvals\ProposalExecutor;
 use Saad\AiKit\Approvals\ProposalStatus;
+use Saad\AiKit\Approvals\Undo\UndoRecord;
 use Saad\AiKit\Tests\Support\FakeProposableAction;
 
 uses(RefreshDatabase::class);
@@ -86,11 +87,12 @@ it('confirms: re-validates against current state and executes the stored input',
 it('records the undoable flag through the undo ledger on confirm', function () {
     $spy = new class implements UndoLedger
     {
+        /** @var list<UndoRecord> */
         public array $recorded = [];
 
-        public function record(string $actionType, array $input, mixed $result, bool $undoable, ?string $turnId = null, ?int $sequence = null): void
+        public function record(UndoRecord $record): void
         {
-            $this->recorded[] = compact('actionType', 'undoable', 'result');
+            $this->recorded[] = $record;
         }
     };
 
@@ -101,9 +103,10 @@ it('records the undoable flag through the undo ledger on confirm', function () {
     $executor->confirm($proposal, null);
 
     expect($spy->recorded)->toHaveCount(1)
-        ->and($spy->recorded[0]['actionType'])->toBe('update_widget')
-        ->and($spy->recorded[0]['undoable'])->toBeFalse()
-        ->and($spy->recorded[0]['result'])->toBe(['applied' => true]);
+        ->and($spy->recorded[0]->actionType)->toBe('update_widget')
+        ->and($spy->recorded[0]->undoable)->toBeFalse()
+        ->and($spy->recorded[0]->owner)->toBe('u:1')
+        ->and($spy->recorded[0]->result)->toBe(['applied' => true]);
 });
 
 it('marks the proposal failed when re-validation fails at confirm time', function () {

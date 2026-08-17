@@ -224,6 +224,12 @@ return [
         'plan_cache_store' => env('AI_KIT_PLAN_CACHE_STORE'),
         'plan_ttl_seconds' => (int) env('AI_KIT_PLAN_TTL_SECONDS', 3600),
         'auto_approve' => true,
+
+        // Turn undo (opt-in): executed writes ledger their compensations in
+        // `undo_table` and UndoTurn replays a whole turn in reverse. Keep
+        // the undo endpoint OUTSIDE any credit gate — undo spends nothing.
+        'undo' => false,
+        'undo_table' => 'ai_undo_actions',
     ],
 
     /*
