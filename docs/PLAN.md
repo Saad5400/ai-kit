@@ -71,6 +71,22 @@ Hard constraints the kit must never break:
 
 ### ✅ M1 (v0.1.x) — scaffold + gateway + safety primitives
 ### ✅ M2 (v0.2.0) — catalog (config), usage metering, circuit breaker + fallback chains, turn traces, drift guard
+### ✅ M3 shipped 2026-08-17 as v0.3.0 (243 tests; review-hardened pre-release)
+
+**uqucc migration status (branch `feat/ai-kit-v0.3`, draft PR #127):**
+- ✅ Kit pin v0.1.1 → v0.3.0; suite at parity with main (1166 passed; the 2
+  homepage-404 failures pre-exist on main).
+- ✅ Stage A: SpendLedger deleted → usage module + BudgetGuard via
+  `App\Ai\KitSafetySettings` (AiSettings adapter); `ai_usage` history imported
+  into `ai_usage_events` then dropped; PageCopilot unmetered-spend gap closed.
+- ⏳ Stage B: `ConversationOwnership` for the five ownership guards (adds the
+  missing participant_type filter), kit prune command + ConversationsPruning
+  listener for ChatAttachment cascade, drop the app's own prune command.
+- ⏳ Stage C: SseStream + StreamEventMapper to dedupe the two byte-identical
+  controller `emit()`s (and Telegram's fold).
+- ⏳ Stage D: admin proposal flow onto the kit approvals module
+  (`AdminPendingAction` → kit `Proposal`; needs a data migration — the kit
+  table adds `category`, proposed_by becomes a string owner key).
 
 ### M3 (v0.3.0) — what uqucc needs to finish its migration
 
