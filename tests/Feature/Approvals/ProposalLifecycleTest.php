@@ -182,6 +182,51 @@ it('throws a typed 409-style exception when confirming a non-pending proposal', 
     expect($action->executions)->toBe(1);
 });
 
+it('loses the atomic claim rather than double-executing a concurrently confirmed proposal', function () {
+    $action = new FakeProposableAction;
+    $executor = registerAction($action);
+
+    $proposal = $executor->propose('update_widget', ['name' => 'A'], null, 'u:1');
+
+    // The lost race: a parallel request confirmed and executed the proposal
+    // after this one loaded the row, so the in-memory model still reads
+    // pending and sails past the cheap guard.
+    Proposal::query()->whereKey($proposal->id)->update(['status' => ProposalStatus::Confirmed->value]);
+
+    expect($proposal->isPending())->toBeTrue();
+
+    try {
+        $executor->confirm($proposal, null);
+        $this->fail('Expected ProposalNotPendingException.');
+    } catch (ProposalNotPendingException $exception) {
+        expect($exception->proposal->is($proposal))->toBeTrue()
+            ->and($exception->proposal->status)->toBe(ProposalStatus::Confirmed);
+    }
+
+    // The claim refused before anything ran.
+    expect($action->executions)->toBe(0)
+        ->and($action->validations)->toBe(1)
+        ->and(Proposal::query()->find($proposal->id)->status)->toBe(ProposalStatus::Confirmed);
+});
+
+it('loses the atomic claim rather than rejecting a concurrently confirmed proposal', function () {
+    $executor = registerAction(new FakeProposableAction);
+
+    $proposal = $executor->propose('update_widget', [], null, 'u:1');
+
+    Proposal::query()->whereKey($proposal->id)->update(['status' => ProposalStatus::Confirmed->value]);
+
+    try {
+        $executor->reject($proposal);
+        $this->fail('Expected ProposalNotPendingException.');
+    } catch (ProposalNotPendingException $exception) {
+        expect($exception->proposal->status)->toBe(ProposalStatus::Confirmed);
+    }
+
+    // The winner's outcome stands.
+    expect(Proposal::query()->find($proposal->id)->status)->toBe(ProposalStatus::Confirmed);
+});
+
 it('throws the same typed exception when rejecting a non-pending proposal', function () {
     $executor = registerAction(new FakeProposableAction);
 

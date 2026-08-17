@@ -23,6 +23,11 @@ use Throwable;
  * surfaced for the action card. A non-pending proposal throws
  * {@see ProposalNotPendingException} carrying the current row (apps map it
  * to a 409 whose body is the up-to-date card).
+ *
+ * Leaving `pending` is an ATOMIC CLAIM, not a read-then-write: both terminal
+ * paths take the row with a conditional UPDATE inside the transaction, so two
+ * requests confirming the same proposal at the same instant can never both
+ * execute it — the loser sees the winner's row and gets the 409.
  */
 class ProposalExecutor
 {
@@ -77,6 +82,8 @@ class ProposalExecutor
 
         try {
             DB::transaction(function () use ($proposal, $actor): void {
+                $this->claim($proposal, ProposalStatus::Confirmed);
+
                 $action = $this->registry->get($proposal->type);
 
                 if ($action === null) {
@@ -98,6 +105,10 @@ class ProposalExecutor
                     'error' => null,
                 ]);
             });
+        } catch (ProposalNotPendingException $exception) {
+            // Losing the claim is not an execution failure — the row belongs
+            // to whoever won it, and the caller gets the 409 as usual.
+            throw $exception;
         } catch (ActionValidationException $exception) {
             $proposal->update([
                 'status' => ProposalStatus::Failed,
@@ -126,8 +137,31 @@ class ProposalExecutor
             throw new ProposalNotPendingException($proposal);
         }
 
-        $proposal->update(['status' => ProposalStatus::Rejected]);
+        DB::transaction(fn () => $this->claim($proposal, ProposalStatus::Rejected));
 
         return $proposal->refresh();
+    }
+
+    /**
+     * Take the proposal out of `pending` atomically. The conditional UPDATE
+     * is the whole guard: exactly one caller can see an affected row, and
+     * everyone else — including a caller holding a model instance loaded
+     * while the row was still pending — loses and gets the current row back
+     * in the exception.
+     *
+     * @throws ProposalNotPendingException when another caller already claimed it
+     */
+    protected function claim(Proposal $proposal, ProposalStatus $status): void
+    {
+        $claimed = Proposal::query()
+            ->whereKey($proposal->getKey())
+            ->where('status', ProposalStatus::Pending->value)
+            ->update(['status' => $status->value]);
+
+        if ($claimed === 0) {
+            throw new ProposalNotPendingException($proposal->fresh() ?? $proposal);
+        }
+
+        $proposal->status = $status;
     }
 }

@@ -3,6 +3,8 @@
 namespace Saad\AiKit\Approvals;
 
 use Illuminate\Support\Str;
+use Saad\AiKit\Approvals\Contracts\ActionRegistry;
+use Saad\AiKit\Approvals\Exceptions\UnknownActionException;
 
 /**
  * A single write the assistant wants to perform: the action type, a human
@@ -43,6 +45,41 @@ final class ProposedWrite
     public static function freshId(): string
     {
         return (string) Str::ulid();
+    }
+
+    /**
+     * Build a write with its risk flags derived from the REGISTERED action.
+     * The single place that derivation happens — {@see ProposalBag::propose()}
+     * and {@see PlanBuilder::step()} both come through here, so the two entry
+     * points into the plan cannot drift apart on what counts as destructive.
+     *
+     * @param  array<string, mixed>  $input
+     * @param  list<string>  $preview
+     *
+     * @throws UnknownActionException when no action is registered for $type
+     */
+    public static function derive(
+        ActionRegistry $registry,
+        string $type,
+        string $title,
+        array $input,
+        array $preview = [],
+        bool $createsRecord = false,
+        mixed $actor = null,
+    ): self {
+        $action = $registry->get($type) ?? throw new UnknownActionException($type);
+
+        return new self(
+            id: self::freshId(),
+            type: $type,
+            title: $title,
+            input: $input,
+            preview: $preview,
+            destructive: $action->destructive(),
+            undoable: $action->undoable(),
+            typedConfirm: $action->typedConfirmPhrase($input, $actor),
+            createsRecord: $createsRecord,
+        );
     }
 
     /**

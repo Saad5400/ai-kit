@@ -47,25 +47,13 @@ class ProposalBag
         bool $createsRecord = false,
         mixed $actor = null,
     ): ProposedWrite {
-        $action = $this->registry->get($type) ?? throw new UnknownActionException($type);
-
         foreach ($this->writes as $existing) {
             if ($existing->type === $type && $this->signature($existing->input) === $this->signature($input)) {
                 return $existing;
             }
         }
 
-        $write = new ProposedWrite(
-            id: ProposedWrite::freshId(),
-            type: $type,
-            title: $title,
-            input: $input,
-            preview: $preview,
-            destructive: $action->destructive(),
-            undoable: $action->undoable(),
-            typedConfirm: $action->typedConfirmPhrase($input, $actor),
-            createsRecord: $createsRecord,
-        );
+        $write = ProposedWrite::derive($this->registry, $type, $title, $input, $preview, $createsRecord, $actor);
 
         if ($write->createsRecord) {
             $write->draftRef = 'new_'.$type.'_'.(++$this->refCounter);

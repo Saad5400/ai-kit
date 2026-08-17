@@ -13,11 +13,16 @@ use Saad\AiKit\Approvals\Exceptions\WriteRefusedException;
  * The default mode is {@see WriteGateMode::Immediate}; a turn opts into
  * Propose or Execute at runtime only — never via the prompt or a tool
  * schema. In Execute mode, {@see self::guard()} enforces the deviation
- * policy the apps converged on: a destructive write must be one of the
- * approved plan's steps, and every write must stay inside the approved
- * scope. In-scope NON-destructive deviation is allowed on purpose — a real
+ * policy the apps converged on: a destructive write must MATCH one of the
+ * approved plan's destructive steps — same type, same target, and once per
+ * approved step — and every write must stay inside the approved scope.
+ * In-scope NON-destructive deviation is allowed on purpose — a real
  * mid-plan error may legitimately need a small extra write; a new deletion
  * or a jump outside the scope is a new request.
+ *
+ * Matching per STEP rather than per TYPE is what keeps an approval honest:
+ * approving "delete widget 7" authorizes deleting widget 7, exactly once —
+ * not widget 8, and not widget 7 again.
  */
 class WriteGate
 {
@@ -28,8 +33,23 @@ class WriteGate
     /** @var array<string, int|string> The blast radius of the approved plan. */
     protected array $scope = [];
 
-    /** @var list<string> The action types of the approved plan's destructive steps. */
-    protected array $approvedDestructiveTypes = [];
+    /**
+     * The approved plan's destructive steps that no write has claimed yet.
+     * Keys are the original step positions; entries are unset as they are
+     * consumed, so one approved deletion authorizes exactly one delete.
+     *
+     * @var array<int, ProposedWrite>
+     */
+    protected array $approvedDestructiveSteps = [];
+
+    /**
+     * The same-turn draft handles the approved plan minted ("new_widget_1").
+     * A step input holding one of these is a placeholder the app resolves to
+     * a real id at execute time, so that key is skipped when matching.
+     *
+     * @var list<string>
+     */
+    protected array $draftHandles = [];
 
     /** Monotonic per-turn counter stamped onto each executed write's idempotency key. */
     protected int $sequence = 0;
@@ -52,7 +72,7 @@ class WriteGate
      * Enter Execute mode (the confirm turn), carrying the turn id (the
      * idempotency-key prefix) and the approved plan — its scope becomes the
      * blast radius {@see self::guard()} enforces, and its destructive steps
-     * become the only destructive types allowed to run.
+     * become the only destructive writes allowed to run.
      */
     public function enterExecute(string $turnId, Plan $plan): void
     {
@@ -63,8 +83,12 @@ class WriteGate
         $this->scope = $plan->scope;
 
         foreach ($plan->steps as $step) {
+            if ($step->draftRef !== null) {
+                $this->draftHandles[] = $step->draftRef;
+            }
+
             if ($step->destructive) {
-                $this->approvedDestructiveTypes[] = $step->type;
+                $this->approvedDestructiveSteps[] = $step;
             }
         }
     }
@@ -77,7 +101,8 @@ class WriteGate
         $this->mode = WriteGateMode::Immediate;
         $this->turnId = null;
         $this->scope = [];
-        $this->approvedDestructiveTypes = [];
+        $this->approvedDestructiveSteps = [];
+        $this->draftHandles = [];
         $this->sequence = 0;
         $this->bag->flush();
     }
@@ -151,9 +176,10 @@ class WriteGate
     /**
      * The execute-turn deviation guard. Outside Execute mode it is a no-op.
      * In Execute mode it throws — with a tool-error message the app relays
-     * to the model — when the write is destructive but was not one of the
-     * approved plan's steps, or when it targets an id outside the approved
-     * scope.
+     * to the model — when the write is destructive but matches no unconsumed
+     * approved plan step, or when it targets an id outside the approved
+     * scope. A destructive write that passes both checks CONSUMES the step
+     * it matched.
      *
      * @throws WriteRefusedException
      */
@@ -163,14 +189,20 @@ class WriteGate
             return;
         }
 
-        if ($write->destructive && ! in_array($write->type, $this->approvedDestructiveTypes, true)) {
-            throw new WriteRefusedException(
-                $write,
-                WriteRefusedException::REASON_OUT_OF_PLAN,
-                'Refused: "'.$write->title.'" deletes records but was not one of the approved plan steps. '
-                .'Do not perform deletions the user did not approve — if it is genuinely needed, stop and let '
-                .'them approve it as a new request.',
-            );
+        $matched = null;
+
+        if ($write->destructive) {
+            $matched = $this->matchApprovedStep($write);
+
+            if ($matched === null) {
+                throw new WriteRefusedException(
+                    $write,
+                    WriteRefusedException::REASON_OUT_OF_PLAN,
+                    'Refused: "'.$write->title.'" deletes records but was not one of the approved plan steps '
+                    .'(or that step was already carried out). Do not perform deletions the user did not approve — '
+                    .'if it is genuinely needed, stop and let them approve it as a new request.',
+                );
+            }
         }
 
         if ($this->scope !== [] && $this->outOfScope($write)) {
@@ -181,6 +213,59 @@ class WriteGate
                 .'Stay within what the plan was approved for; a change elsewhere is a new request.',
             );
         }
+
+        // Only consume once the write is cleared to run, so a refusal never
+        // burns an approval the user is still owed.
+        if ($matched !== null) {
+            unset($this->approvedDestructiveSteps[$matched]);
+        }
+    }
+
+    /**
+     * The position of the first unconsumed approved destructive step this
+     * write satisfies, or null. A step is satisfied when the types are equal
+     * AND the write's input agrees with the approved input everywhere the
+     * two overlap — the approved keys the write does not mention are not
+     * compared, so an app addressing the same record differently at execute
+     * time is not blocked, while contradicting an approved id is.
+     */
+    protected function matchApprovedStep(ProposedWrite $write): ?int
+    {
+        foreach ($this->approvedDestructiveSteps as $index => $step) {
+            if ($step->type === $write->type && $this->inputMatches($step->input, $write->input)) {
+                return $index;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether an executed input contradicts the approved one. Only scalar
+     * keys present in BOTH are compared (loosely, so 7 and "7" agree), and
+     * an approved value that is one of the plan's draft handles is skipped:
+     * it stood for a record that did not exist yet at approval time.
+     *
+     * @param  array<string, mixed>  $approved
+     * @param  array<string, mixed>  $actual
+     */
+    protected function inputMatches(array $approved, array $actual): bool
+    {
+        foreach ($approved as $key => $value) {
+            if (! is_scalar($value) || ! array_key_exists($key, $actual)) {
+                continue;
+            }
+
+            if (in_array((string) $value, $this->draftHandles, true)) {
+                continue;
+            }
+
+            if (! is_scalar($actual[$key]) || (string) $actual[$key] !== (string) $value) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -204,8 +289,10 @@ class WriteGate
     }
 
     /**
-     * Recursively collect every non-empty scalar stored under $key anywhere
-     * in a (possibly nested) input payload.
+     * Recursively collect every scalar stored under $key anywhere in a
+     * (possibly nested) input payload. Only null and the empty string are
+     * skipped as "no id given" — 0 and "0" are real values, and dropping
+     * them would hand the model a way around the scope guard.
      *
      * @param  array<mixed>  $input
      * @return list<int|string>
@@ -215,7 +302,7 @@ class WriteGate
         $values = [];
 
         foreach ($input as $index => $value) {
-            if ((string) $index === $key && is_scalar($value) && (string) $value !== '' && (string) $value !== '0') {
+            if ((string) $index === $key && is_scalar($value) && (string) $value !== '') {
                 $values[] = is_int($value) ? $value : (string) $value;
             } elseif (is_array($value)) {
                 $values = [...$values, ...$this->collectValues($value, $key)];

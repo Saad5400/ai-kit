@@ -79,19 +79,7 @@ class PlanBuilder
         bool $createsRecord = false,
         mixed $actor = null,
     ): static {
-        $action = $this->registry->get($type) ?? throw new UnknownActionException($type);
-
-        $this->steps[] = new ProposedWrite(
-            id: ProposedWrite::freshId(),
-            type: $type,
-            title: $title,
-            input: $input,
-            preview: $preview,
-            destructive: $action->destructive(),
-            undoable: $action->undoable(),
-            typedConfirm: $action->typedConfirmPhrase($input, $actor),
-            createsRecord: $createsRecord,
-        );
+        $this->steps[] = ProposedWrite::derive($this->registry, $type, $title, $input, $preview, $createsRecord, $actor);
 
         return $this;
     }

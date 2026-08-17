@@ -4,6 +4,7 @@ use Saad\AiKit\Approvals\Contracts\ActionRegistry;
 use Saad\AiKit\Approvals\Exceptions\WriteRefusedException;
 use Saad\AiKit\Approvals\Plan;
 use Saad\AiKit\Approvals\PlanBuilder;
+use Saad\AiKit\Approvals\ProposedWrite;
 use Saad\AiKit\Approvals\WriteGate;
 use Saad\AiKit\Approvals\WriteGateMode;
 use Saad\AiKit\Tests\Support\FakeProposableAction;
@@ -96,6 +97,87 @@ it('refuses a destructive write that was not an approved plan step', function ()
     }
 });
 
+it('refuses a destructive write targeting a record the approved step did not name', function () {
+    gateActions();
+    $gate = app(WriteGate::class);
+
+    $plan = (new PlanBuilder(app(ActionRegistry::class)))
+        ->step('delete_widget', 'Delete widget 7', ['widget_id' => 7])
+        ->build();
+
+    $gate->enterExecute('turn-1', $plan);
+
+    $rogue = $gate->propose('delete_widget', 'Delete widget 8', ['widget_id' => 8]);
+
+    try {
+        $gate->guard($rogue);
+        $this->fail('Expected WriteRefusedException.');
+    } catch (WriteRefusedException $exception) {
+        expect($exception->reason)->toBe(WriteRefusedException::REASON_OUT_OF_PLAN);
+    }
+
+    // The approved record itself still passes.
+    $gate->guard($gate->propose('delete_widget', 'Delete widget 7', ['widget_id' => 7]));
+});
+
+it('consumes an approved destructive step so it authorizes exactly one delete', function () {
+    gateActions();
+    $gate = app(WriteGate::class);
+
+    $plan = (new PlanBuilder(app(ActionRegistry::class)))
+        ->step('delete_widget', 'Delete widget 7', ['widget_id' => 7])
+        ->build();
+
+    $gate->enterExecute('turn-1', $plan);
+
+    $gate->guard(new ProposedWrite('w1', 'delete_widget', 'Delete widget 7', ['widget_id' => 7], destructive: true));
+
+    $repeat = new ProposedWrite('w2', 'delete_widget', 'Delete widget 7 again', ['widget_id' => 7], destructive: true);
+
+    expect(fn () => $gate->guard($repeat))->toThrow(WriteRefusedException::class, 'already carried out');
+});
+
+it('authorizes one delete per approved step when the plan approved several', function () {
+    gateActions();
+    $gate = app(WriteGate::class);
+
+    $plan = (new PlanBuilder(app(ActionRegistry::class)))
+        ->step('delete_widget', 'Delete widget 7', ['widget_id' => 7])
+        ->step('delete_widget', 'Delete widget 9', ['widget_id' => 9])
+        ->build();
+
+    $gate->enterExecute('turn-1', $plan);
+
+    $gate->guard(new ProposedWrite('w1', 'delete_widget', 'Delete 9', ['widget_id' => 9], destructive: true));
+    $gate->guard(new ProposedWrite('w2', 'delete_widget', 'Delete 7', ['widget_id' => 7], destructive: true));
+
+    $third = new ProposedWrite('w3', 'delete_widget', 'Delete 7 once more', ['widget_id' => 7], destructive: true);
+
+    expect(fn () => $gate->guard($third))->toThrow(WriteRefusedException::class);
+});
+
+it('matches an approved step whose target was still a same-turn draft handle', function () {
+    gateActions();
+    $gate = app(WriteGate::class);
+    $gate->enterPropose('turn-0');
+
+    // The plan creates a widget and deletes the child it stood for; the id
+    // only becomes real at execute time.
+    $parent = $gate->propose('update_widget', 'Create widget', ['name' => 'A'], createsRecord: true);
+    $gate->propose('delete_widget', 'Delete the new widget', ['widget_id' => $parent->draftRef]);
+
+    $plan = $gate->bag()->toPlan('Create then delete');
+
+    expect($parent->draftRef)->toBe('new_update_widget_1');
+
+    $gate->enterExecute('turn-1', $plan);
+
+    // The app resolved the handle to the persisted id before executing.
+    $gate->guard(new ProposedWrite('w1', 'delete_widget', 'Delete the new widget', ['widget_id' => 4242], destructive: true));
+
+    expect(true)->toBeTrue();
+});
+
 it('refuses a write targeting an id outside the approved scope', function () {
     gateActions();
     $gate = app(WriteGate::class);
@@ -113,6 +195,18 @@ it('refuses a write targeting an id outside the approved scope', function () {
         expect($exception->reason)->toBe(WriteRefusedException::REASON_OUT_OF_SCOPE)
             ->and($exception->getMessage())->toContain("outside the approved plan's scope");
     }
+});
+
+it('compares a scoped id of zero like any other id', function () {
+    gateActions();
+    $gate = app(WriteGate::class);
+    $gate->enterExecute('turn-1', approvedPlan(['update_widget'], ['widget_id' => 7]));
+
+    // "0" is a value, not an absent id — dropping it would walk straight
+    // through the scope guard.
+    $rogue = $gate->propose('update_widget', 'Rename widget 0', ['widget_id' => 0]);
+
+    expect(fn () => $gate->guard($rogue))->toThrow(WriteRefusedException::class);
 });
 
 it('treats a write naming none of the scoped keys as in-scope', function () {
