@@ -78,6 +78,30 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Streaming
+    |--------------------------------------------------------------------------
+    |
+    | The resumable TurnBuffer keeps each turn's event log in this cache
+    | store for `ttl_seconds` — generous enough that a user can close the
+    | tab mid-reply and still resume after a break. Use a store shared
+    | across web and queue workers in production. The tail loop stops after
+    | `max_stream_seconds` (the client's EventSource reconnects with its
+    | last id), emits a keepalive comment after `keepalive_seconds` of
+    | silence so proxies don't buffer the stream shut, and polls the buffer
+    | every `poll_interval_ms`.
+    |
+    */
+
+    'streaming' => [
+        'cache_store' => env('AI_KIT_STREAMING_CACHE_STORE'),
+        'ttl_seconds' => (int) env('AI_KIT_STREAMING_TTL_SECONDS', 7200),
+        'max_stream_seconds' => (int) env('AI_KIT_STREAMING_MAX_SECONDS', 180),
+        'keepalive_seconds' => (int) env('AI_KIT_STREAMING_KEEPALIVE_SECONDS', 15),
+        'poll_interval_ms' => (int) env('AI_KIT_STREAMING_POLL_INTERVAL_MS', 150),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Usage
     |--------------------------------------------------------------------------
     |
