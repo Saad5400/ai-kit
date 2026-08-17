@@ -1,8 +1,13 @@
 # ai-kit — program plan
 
 > Rebuilt 2026-08-17 from a four-way survey (kit audit + AI-surface maps of uqucc-laravel,
-> catodemy, s-grade). Replaces the lost `AI-KIT-PLAN.md`. This is the working plan the
-> maintainers drive from; the README describes the finished product.
+> catodemy, s-grade). This is the working plan the maintainers drive from; the README
+> describes the finished product.
+>
+> **Owner decisions live in `docs/DECISIONS.md` and outrank this file.** The original
+> record was not visible when this plan was rebuilt, and several owner decisions were
+> unknowingly reversed; the 2026-08-17 audit reconciled them (approvals, encryption,
+> retention, s-grade sequencing — see the deviation ledger there).
 
 ## Program decisions (locked)
 
@@ -10,17 +15,18 @@
   `path` repository override during active migration. CI/prod resolve from GitHub.
 - **UX vs UI**: the kit unifies the *UX contract* (payload shapes, event names, status
   machines). UI stays per-app (uqucc = Inertia/Vue, catodemy + s-grade = Inertia/Svelte).
-- **Order**: finish the kit milestone an app needs *before* migrating that app.
-  Pilot = **uqucc-laravel** (already pins v0.1.1 and uses the kit gateway), then
-  catodemy + s-grade in parallel.
+- **Order** (owner ruling 2026-08-17, DECISIONS.md #15): finish the kit milestone an app
+  needs *before* migrating that app. Pilot = **uqucc-laravel** → **catodemy next** →
+  **s-grade LAST** as one combined jump (0.7.2→0.10 + adoption + wallet migration), in a
+  school-holiday window, only after ≥2 weeks clean catodemy prod. Parallel *branch prep*
+  for s-grade is fine; its merge/deploy waits for the window and the gate.
 - **Delivery**: feature branch + GitHub PR per app; merges allowed once tests pass.
-- **Approvals design**: the kit standardizes the **propose → confirm → execute** pattern
-  the three apps independently built, NOT laravel/ai's `Approvable`. Rationale: zero of
-  the three apps use `Approvable`; the apps' pattern is richer (server-derived
-  `destructive`, typed confirmation, scope guard, idempotent execution ledger, undo seam)
-  and executes *stored* proposals rather than re-driving the model, which makes
-  "what executes == what was previewed" literally true (catodemy learned this the hard way).
-  `Approvable` remains a possible substrate later; it is not the contract.
+- **Approvals design** (owner ruling 2026-08-17, DECISIONS.md #3): the contract is
+  laravel/ai 0.10 native **`Approvable`** with classified pause — the owner reverted this
+  plan's propose→confirm→execute standardization. The shipped v0.3.0 approvals module is
+  **transitional**: it stays in prod until the Approvable rework ships (see M5), and the
+  rework must preserve its real wins (server-derived `destructive`, idempotent execution
+  ledger, preview == execution).
 
 ## State (2026-08-17)
 
@@ -162,12 +168,32 @@ Release: tagged v0.3.0 + v0.3.1. ✅ uqucc migration PR #127 merged (see status 
 - **undo** — `UndoLedger` + `UndoTurn` from s-grade's `ActionRunner`/
   `CompensationPlanner` shape.
 
-Release: tag v0.4.0. **Then: catodemy + s-grade migration PRs in parallel.**
+Release: tag v0.4.0. **Then: catodemy migration PR; s-grade branch may be prepped in
+parallel but merges only per the DECISIONS.md #15 gate** (school-holiday window,
+≥2 weeks clean catodemy prod).
 s-grade extras: 0.7→0.10 jump (gateway Context reads → SpendCollector; conversation
 store interface + participant data migration; the 14-arg reflection test dies).
 catodemy extras: rewrite the five raw-HTTP OpenRouter callers onto kit plumbing.
 
-### M5 (v0.5.0) — opt-in long tail
+### M5 (v0.5.0) — owner-ruled rework + opt-in long tail
+
+Owner-ruled rework (DECISIONS.md, 2026-08-17 rulings):
+
+- **approvals on `Approvable`** — rebuild the approval contract on laravel/ai 0.10's
+  native classified pause (safe+undoable executes immediately; destructive pauses the
+  turn), keeping the transitional module's wins: server-derived `destructive`, editable
+  confirm form (`Decision::edit`), one-click destructive cards, idempotent execution,
+  preview == execution. Then migrate uqucc off `Proposal`/`WriteGate` and retire them.
+- **AskUser** — unified pause/resume on the same paused-turn contract as approvals
+  (DECISIONS.md #6); lands with the Approvable rework since they share the pause seam.
+- **encrypted tool traces** — extend `EncryptedConversationStore` to encrypt
+  attachments/tool_calls/tool_results when `persist_tool_traces` is on, plus a separate
+  7–30d trace-retention window (DECISIONS.md #7); only then enable traces in apps.
+- **resumable turns in uqucc** — adopt the kit `TurnBuffer` path (queue-worker
+  generation, replay-from-last-id + tail) per DECISIONS.md #17; today uqucc still
+  generates inside the HTTP request.
+
+Opt-in long tail:
 
 - **rag** — `Embedder`/`OpenRouterEmbedder`/`FakeEmbedder`, chunker, hybrid retriever
   (pgvector cosine + keyword leg, RRF k=60, `hnsw.iterative_scan`, graceful vector-leg
