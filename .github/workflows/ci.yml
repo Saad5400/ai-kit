@@ -50,6 +50,23 @@ jobs:
       - run: composer update --prefer-dist --no-interaction
       - run: composer lint
 
+  js:
+    # The frontend layer ships as source, so the suite is the only thing
+    # standing between a typo and a consuming app's build.
+    runs-on: ubuntu-latest
+    name: js
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run types
+
   canary:
     # Signal-only: does the NEXT laravel/ai minor break us? Never gates merges.
     runs-on: ubuntu-latest

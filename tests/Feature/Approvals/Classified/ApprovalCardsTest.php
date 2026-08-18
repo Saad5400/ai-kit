@@ -5,7 +5,9 @@ use Laravel\Ai\Approvals\PendingApproval;
 use Laravel\Ai\Concerns\InteractsWithApprovals;
 use Laravel\Ai\Contracts\Approvable;
 use Laravel\Ai\Contracts\Tool;
+use Laravel\Ai\Responses\Data\ToolCall as ToolCallData;
 use Laravel\Ai\Streaming\Events\ToolApprovalRequest;
+use Laravel\Ai\Streaming\Events\ToolCall;
 use Laravel\Ai\Tools\Request;
 use Saad\AiKit\Approvals\Classified\ApprovalCards;
 use Saad\AiKit\Approvals\Classified\AskUser;
@@ -104,4 +106,30 @@ it('emits one wire event per card through the stream mapper, then done', functio
     expect(array_column($emitted, 0))->toBe(['approval', 'question', 'done'])
         ->and($emitted[0][1]['tool'])->toBe('ClassifiedRenameTool')
         ->and($emitted[1][1]['question'])->toBe('Which semester?');
+});
+
+it('shares one id between a paused tool call and its approval card', function () {
+    // The provider yields the ToolCall before the loop decides the call
+    // needs approval, so the client gets a `tool` chip and then a card for
+    // the same call. They carry the same id — vendor PendingApproval is
+    // built from `$toolCall->id` — which is what lets the client fold the
+    // running chip into the card instead of stranding a spinner, and lets
+    // the resumed turn's `tool done` land on the right chip.
+    $call = new ToolCall('evt-0', new ToolCallData('call-1', 'ClassifiedRenameTool', ['name' => 'B']), 1);
+
+    $pause = new ToolApprovalRequest('evt-1', collect([
+        new PendingApproval('call-1', 'ClassifiedRenameTool', ['name' => 'B'], null),
+    ]), timestamp: 123);
+
+    $emitted = [];
+
+    classifiedCards()
+        ->attachTo(new StreamEventMapper)
+        ->run([$call, $pause], function (string $event, array $data) use (&$emitted): void {
+            $emitted[] = [$event, $data];
+        });
+
+    expect(array_column($emitted, 0))->toBe(['tool', 'approval', 'done'])
+        ->and($emitted[0][1])->toBe(['id' => 'call-1', 'name' => 'ClassifiedRenameTool', 'status' => 'running'])
+        ->and($emitted[1][1]['id'])->toBe('call-1');
 });

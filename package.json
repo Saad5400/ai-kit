@@ -1,0 +1,61 @@
+{
+    "name": "@saad5400/ai-kit",
+    "version": "0.5.0",
+    "description": "Frontend half of saad/ai-kit: the SSE wire contract, a reader for it, a sanitized markdown pipeline, and thin Vue + Svelte components.",
+    "license": "UNLICENSED",
+    "private": false,
+    "type": "module",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Saad5400/ai-kit.git"
+    },
+    "files": [
+        "js",
+        "!js/**/*.test.ts",
+        "README.md"
+    ],
+    "exports": {
+        "./events": "./js/core/events.ts",
+        "./sse": "./js/core/sse.ts",
+        "./markdown": "./js/core/markdown.ts",
+        "./vue/*": "./js/vue/*",
+        "./svelte/*": "./js/svelte/*",
+        "./styles/prose.css": "./js/styles/prose.css",
+        "./package.json": "./package.json"
+    },
+    "dependencies": {
+        "dompurify": "^3.2.0",
+        "rehype-stringify": "^10.0.0",
+        "remark-gfm": "^4.0.0",
+        "remark-parse": "^11.0.0",
+        "remark-rehype": "^11.1.0",
+        "unified": "^11.0.0"
+    },
+    "peerDependencies": {
+        "svelte": "^5.0.0",
+        "vue": "^3.4.0"
+    },
+    "peerDependenciesMeta": {
+        "svelte": {
+            "optional": true
+        },
+        "vue": {
+            "optional": true
+        }
+    },
+    "devDependencies": {
+        "@types/hast": "^3.0.0",
+        "@types/mdast": "^4.0.0",
+        "@types/node": "^26.2.0",
+        "jsdom": "^30.0.1",
+        "svelte": "^5.0.0",
+        "typescript": "^5.6.0",
+        "vitest": "^4.1.10",
+        "vue": "^3.5.0"
+    },
+    "scripts": {
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "types": "tsc --noEmit"
+    }
+}

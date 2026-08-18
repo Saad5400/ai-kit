@@ -14,8 +14,10 @@ use Laravel\Ai\Streaming\Events\ToolResult;
 /**
  * Folds a laravel/ai stream (an iterable of streaming events) into the
  * canonical wire events the three apps converged on: `delta {text}` for
- * model text, `error {message}` on failure, and a terminal `done {...}`
- * whose payload the caller assembles from the collected {@see StreamResult}.
+ * model text, `reasoning {text}` for thinking, `tool {id, name, status}`
+ * for tool progress, `error {message}` on failure, and a terminal
+ * `done {...}` whose payload the caller assembles from the collected
+ * {@see StreamResult}.
  *
  * TERMINAL-EVENT CONTRACT (identical here and on the buffered path through
  * {@see TurnBuffer}): a turn ends with EXACTLY ONE terminal event —
@@ -23,6 +25,35 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  * `error` is terminal; no `done` ever follows it. A client that tears its
  * stream down on either event therefore behaves the same whether the turn
  * was streamed inline or replayed out of a buffer.
+ *
+ * REASONING CONTRACT (owner decision #18, ruled 2026-08-18): reasoning is
+ * emitted BY DEFAULT as bare `reasoning {text}` deltas — there are no
+ * start/end wire events. A client opens its thinking block on the first
+ * `reasoning` and closes it on the first following `delta`, `tool` or
+ * terminal event; a turn may reopen it if the model thinks again between
+ * tool calls. Keeping the wire eventless here means a replayed buffer needs
+ * no bracket repair.
+ *
+ * TOOL CONTRACT (same ruling): a tool call emits
+ * `tool {id, name, status: 'running'}` and its result
+ * `tool {id, name, status: 'done', successful}`, correlated by `id`.
+ * Arguments and results deliberately NEVER reach the wire by default —
+ * these apps are public-facing and tool payloads carry retrieved records.
+ * An app that wants richer payloads opts in with an explicit
+ * `on(ToolCall::class, ...)` hook and owns the disclosure decision.
+ *
+ * A call that pauses for approval emits its `running` event and no `done`
+ * — the provider yields the ToolCall before the loop decides the call
+ * needs approving. The `approval` card that follows carries the SAME id
+ * (vendor builds `PendingApproval` from the tool call), so the client
+ * folds the running chip into the card rather than stranding a spinner,
+ * and the resumed turn's `done` lands on the right chip.
+ *
+ * ORDER: reasoning and tool events are emitted at the point they occur in
+ * the stream, never queued behind the text pipeline. A transformer holding
+ * text back (uqucc's link guard) therefore releases that text AFTER a tool
+ * event that arrived while it was held — which is what the UI wants: the
+ * chip appears when the tool runs, not when the prose catches up.
  *
  * Where the events go is the caller's business — the sink is a plain
  * `(string $event, array $data)` callable, so the same mapper drives an
@@ -37,10 +68,13 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  *   the pipeline when the stream ends.
  * - {@see on}: intercept any stream event class and emit whatever the app's
  *   contract needs (proposal, plan, question, step, segment, ...). The hook
- *   replaces the default emission for that event; bookkeeping (tool calls /
- *   results, usage) is still collected first.
- * - {@see onReasoning}: sugar for `on(ReasoningDelta::class, ...)` —
- *   reasoning is dropped unless an app opts in.
+ *   replaces the default emission for that event — including the default
+ *   `reasoning` / `tool` emissions; bookkeeping (tool calls / results,
+ *   usage) is still collected first.
+ * - {@see onReasoning}: sugar for `on(ReasoningDelta::class, ...)` — shapes
+ *   the reasoning channel instead of the default `reasoning {text}`.
+ * - {@see withoutReasoning} / {@see withoutToolEvents}: drop those default
+ *   emissions entirely (an app whose UI has nowhere to put them).
  * - {@see beforeDone}: runs after the stream drains and the text pipeline
  *   flushes, before `done` — where post-stream events like `citations` go.
  */
@@ -58,6 +92,10 @@ class StreamEventMapper
     protected Closure $doneUsing;
 
     protected Closure $errorMessage;
+
+    protected bool $reasoning = true;
+
+    protected bool $toolEvents = true;
 
     public function __construct()
     {
@@ -109,8 +147,9 @@ class StreamEventMapper
     }
 
     /**
-     * Handle reasoning deltas, which are otherwise dropped. The handler
-     * receives `(ReasoningDelta $event, callable $emit)`.
+     * Shape the reasoning channel yourself, replacing the default
+     * `reasoning {text}` emission. The handler receives
+     * `(ReasoningDelta $event, callable $emit)`.
      */
     public function onReasoning(callable $handler): static
     {
@@ -118,6 +157,26 @@ class StreamEventMapper
             ReasoningDelta::class,
             fn (ReasoningDelta $event, callable $emit) => $handler($event, $emit),
         );
+    }
+
+    /**
+     * Stop emitting the default `reasoning {text}` deltas.
+     */
+    public function withoutReasoning(): static
+    {
+        $this->reasoning = false;
+
+        return $this;
+    }
+
+    /**
+     * Stop emitting the default `tool {id, name, status, ...}` events.
+     */
+    public function withoutToolEvents(): static
+    {
+        $this->toolEvents = false;
+
+        return $this;
     }
 
     /**
@@ -186,6 +245,27 @@ class StreamEventMapper
 
             if ($event instanceof TextDelta) {
                 $this->emitText($this->pushText($event->delta), $emit, $result);
+            } elseif ($event instanceof ReasoningDelta) {
+                if ($this->reasoning && $event->delta !== '') {
+                    $emit('reasoning', ['text' => $event->delta]);
+                }
+            } elseif ($event instanceof ToolCall) {
+                if ($this->toolEvents) {
+                    $emit('tool', [
+                        'id' => $event->toolCall->id,
+                        'name' => $event->toolCall->name,
+                        'status' => 'running',
+                    ]);
+                }
+            } elseif ($event instanceof ToolResult) {
+                if ($this->toolEvents) {
+                    $emit('tool', [
+                        'id' => $event->toolResult->id,
+                        'name' => $event->toolResult->name,
+                        'status' => 'done',
+                        'successful' => $event->successful,
+                    ]);
+                }
             } elseif ($event instanceof Error) {
                 $result->failed = true;
                 $result->error = $event;
