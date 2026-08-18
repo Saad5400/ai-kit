@@ -45,9 +45,20 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         'Providers/Concerns/StreamsText.php' => '3f8a298dd9a6a20584ea9e5672d7096215b4103ed327d02c1efe8e67640852c1',
         'Models/Conversation.php' => '0e51a0f5a3a8b8cfba83fd72dfb3dc30040071f124713420c96730706e0107ff',
         // M3 addition — EncryptedConversationStore extends this and rides its
-        // messageAttributes() seam plus the reconstruction in
-        // getLatestConversationMessages(); re-diff on any change.
+        // messageAttributes() seam; the encrypted-trace overrides reproduce
+        // getLatestConversationMessages(), existingToolResultIds() and
+        // storeApprovalResults() with decryption folded in — re-diff those
+        // three verbatim on any change.
         'Storage/DatabaseConversationStore.php' => '915f37bec63d68e68f5d70fd99fcf7d01f2fdbf64c76cd5307e9291f4136df6a',
+        // Classified-approvals seam — ClassifiedTool derives its pause from
+        // InteractsWithApprovals::needsApproval(), keys idempotency on the
+        // toolCallId the loop passes to executeTool(), and ResumeDecisions/
+        // ApprovalCards mirror Decision and PendingApproval shapes.
+        'Gateway/TextGenerationLoop.php' => '99bf4cd7da000d68cbde9d656110eb1ca0fd3169829243aa93f71e0daec0ef72',
+        'Gateway/Concerns/HandlesToolApprovals.php' => '305411bae4a65dca826d71c14c3df0cbc7264ace0439c14381ab9e096c821778',
+        'Concerns/InteractsWithApprovals.php' => '43aae01afae1d0662c7afaae3c8e48517b75bb717349991250c9ef5f4298b880',
+        'Approvals/Decision.php' => '86911eb064ae9466677e4ac5ec270719718d8175b007d8db3d4cfdfcc15d4948',
+        'Approvals/PendingApproval.php' => 'be2fad14cc784e5c765af97915487afe53505365f13b8f6a7eea94474e4fd9ad',
     ];
 
     $sourceRoot = dirname((new ReflectionClass(Ai::class))->getFileName());

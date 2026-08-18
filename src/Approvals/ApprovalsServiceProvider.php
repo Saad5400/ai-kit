@@ -11,13 +11,17 @@ use Saad\AiKit\Approvals\Undo\DatabaseUndoLedger;
 use Saad\AiKit\Approvals\Undo\UndoTurn;
 
 /**
- * TRANSITIONAL (owner ruling 2026-08-17, docs/DECISIONS.md #3): the decided
- * approval contract is laravel/ai's native `Approvable` classified pause —
- * safe+undoable writes execute immediately, destructive ones pause the turn.
- * This propose → confirm → execute machinery shipped while that ruling was
- * not visible; it stays in prod until the M5 Approvable rework lands, and the
- * rework must keep its real wins: server-derived `destructive`, the idempotent
- * execution ledger, and preview == execution.
+ * Two approval seams (owner ruling, docs/DECISIONS.md #3):
+ *
+ * - `Classified\*` is the DECIDED contract — the classified pause on
+ *   laravel/ai's native `Approvable` ({@see Classified\ClassifiedTool}).
+ *   It needs no bindings of its own; it rides the WriteExecutions ledger
+ *   and the UndoLedger registered here.
+ * - The propose → confirm → execute machinery (Proposal / WriteGate /
+ *   Plan…) is TRANSITIONAL: it shipped while the ruling was not visible,
+ *   stays until the apps running it (uqucc) migrate onto the classified
+ *   seam, then it is retired. Its wins — server-derived `destructive`,
+ *   idempotent execution, preview == execution — live on in the seam.
  */
 class ApprovalsServiceProvider extends ServiceProvider
 {

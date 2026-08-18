@@ -94,6 +94,79 @@ it('prunes nothing by default — retention is forever until an app sets a windo
     Event::assertNotDispatched(ConversationsPruning::class);
 });
 
+it('strips tool traces past the trace window while the conversation lives on — even with retention forever', function () {
+    $conversationId = prunableConversation(idleDays: 0);
+
+    $oldTraced = (string) Str::uuid7();
+    DB::table('agent_conversation_messages')->insert([
+        'id' => $oldTraced,
+        'conversation_id' => $conversationId,
+        'participant_type' => null,
+        'participant_id' => 'session-x',
+        'agent' => 'App\\Agent',
+        'role' => 'assistant',
+        'content' => 'kept content',
+        'attachments' => '[]',
+        'tool_calls' => '[{"id":"call_1"}]',
+        'tool_results' => '[{"id":"call_1"}]',
+        'usage' => '{"prompt_tokens":10}',
+        'meta' => '{"provider":"openrouter"}',
+        'approval_state' => '{"pending":{"call_1":null}}',
+        'created_at' => now()->subDays(30),
+        'updated_at' => now()->subDays(30),
+    ]);
+
+    $freshTraced = (string) Str::uuid7();
+    DB::table('agent_conversation_messages')->insert([
+        'id' => $freshTraced,
+        'conversation_id' => $conversationId,
+        'participant_type' => null,
+        'participant_id' => 'session-x',
+        'agent' => 'App\\Agent',
+        'role' => 'assistant',
+        'content' => 'fresh content',
+        'attachments' => '[]',
+        'tool_calls' => '[{"id":"call_2"}]',
+        'tool_results' => '[]',
+        'usage' => '[]',
+        'meta' => '[]',
+        'approval_state' => null,
+        'created_at' => now()->subDays(2),
+        'updated_at' => now()->subDays(2),
+    ]);
+
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->expectsOutputToContain('Stripped tool traces from 1 messages')
+        ->assertSuccessful();
+
+    $old = DB::table('agent_conversation_messages')->where('id', $oldTraced)->sole();
+    $fresh = DB::table('agent_conversation_messages')->where('id', $freshTraced)->sole();
+
+    expect($old->content)->toBe('kept content')
+        ->and($old->tool_calls)->toBe('[]')
+        ->and($old->tool_results)->toBe('[]')
+        ->and($old->meta)->toBe('[]')
+        ->and($old->approval_state)->toBeNull()
+        ->and($old->usage)->toBe('{"prompt_tokens":10}')
+        ->and($fresh->tool_calls)->toBe('[{"id":"call_2"}]')
+        ->and(DB::table('agent_conversations')->count())->toBe(1);
+});
+
+it('defaults the trace window to ai-kit.conversations.trace_retention_days', function () {
+    config()->set('ai-kit.conversations.trace_retention_days', 3);
+
+    $conversationId = prunableConversation(idleDays: 0);
+
+    DB::table('agent_conversation_messages')
+        ->where('conversation_id', $conversationId)
+        ->update(['tool_calls' => '[{"id":"call_9"}]', 'created_at' => now()->subDays(5)]);
+
+    $this->artisan('ai-kit:prune-conversations')->assertSuccessful();
+
+    expect(DB::table('agent_conversation_messages')->where('conversation_id', $conversationId)->sole()->tool_calls)
+        ->toBe('[]');
+});
+
 it('spares a conversation revived between the announcement and the delete, messages included', function () {
     $doomed = prunableConversation(idleDays: 10);
     $revived = prunableConversation(idleDays: 10, messages: 3);

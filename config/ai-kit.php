@@ -117,14 +117,20 @@ return [
     | (`ai.conversations.tables.*`, `ai.conversations.connection`).
     |
     | `persist_tool_traces` keeps attachments / tool_calls / tool_results /
-    | usage / meta on message rows. Off by default — traces can carry user
-    | data at rest. laravel/ai's built-in tool-approval pause/resume
-    | reconstructs turns from those traces, so enable this if you use it.
+    | meta / the approval pause marker on message rows — ENCRYPTED by the
+    | store above (usage stays plaintext: aggregate numbers, no user
+    | content). ON by default per owner decision DECISIONS.md #7 (traces
+    | persist encrypted with short retention); laravel/ai's Approvable
+    | pause/resume — the kit's classified approval seam — reconstructs
+    | paused turns from these traces, so turning this off also disables
+    | resumable approvals. `trace_retention_days` is the SEPARATE short
+    | window (#7: 7–30d) beyond which `ai-kit:prune-conversations` strips
+    | traces from old rows while the conversation itself lives on.
     |
     | `retention_days` is the idle window `ai-kit:prune-conversations`
     | deletes beyond (the --days option overrides per run). Retention is
     | FOREVER by default (owner decision, DECISIONS.md #9): null makes the
-    | prune command a warning no-op, so only apps that set a window (e.g.
+    | delete pass a warning no-op, so only apps that set a window (e.g.
     | uqucc's ~90 days for anonymous threads) ever delete anything. The
     | command fires a ConversationsPruning event with the doomed ids first,
     | so apps can cascade their own per-conversation resources.
@@ -133,7 +139,8 @@ return [
 
     'conversations' => [
         'encrypt' => true,
-        'persist_tool_traces' => false,
+        'persist_tool_traces' => true,
+        'trace_retention_days' => 14,
         'retention_days' => null,
     ],
 
@@ -212,10 +219,18 @@ return [
     | Approvals
     |--------------------------------------------------------------------------
     |
-    | TRANSITIONAL MODULE (owner ruling, DECISIONS.md #3): the approval
-    | contract is laravel/ai's native `Approvable` classified pause; this
-    | propose → confirm → execute machinery predates that ruling, stays in
-    | prod until the M5 Approvable rework ships, then apps migrate off it.
+    | Two seams live here. The DECIDED contract (DECISIONS.md #3) is the
+    | classified pause on laravel/ai's native `Approvable`: tools extend
+    | `Classified\ClassifiedTool`, declare a server-derived Capability
+    | (read / write+undoable / destructive), reads run free, undoable
+    | writes execute immediately into the undo ledger, destructive calls
+    | pause the turn and resume via `Classified\ResumeDecisions`;
+    | `Classified\ApprovalCards` renders the cards and `Classified\AskUser`
+    | rides the same pause for mid-turn questions.
+    |
+    | TRANSITIONAL: the propose → confirm → execute machinery below
+    | predates that ruling; it stays until the apps running it (uqucc)
+    | migrate onto the classified seam, then it is retired.
     |
     | The propose → confirm → execute pattern: proposals persist in
     | `proposals_table`, executed plan steps claim exactly-once rows in

@@ -11,10 +11,12 @@ use Saad\AiKit\Conversations\Events\ConversationsPruning;
 
 /**
  * Deletes conversations (and their messages) idle longer than the retention
- * window. Retention is forever by default — without a configured window or
- * an explicit --days the command warns and touches nothing. Apps whose
- * anonymous participants have no other way to reach old threads opt into a
- * window and schedule this daily.
+ * window, and strips tool traces older than the SEPARATE trace-retention
+ * window (owner decision #7: traces are short-lived even when conversations
+ * are kept forever). Conversation retention is forever by default — without
+ * a configured window or an explicit --days the delete pass warns and
+ * touches nothing; the trace pass runs whenever `trace_retention_days` (or
+ * --trace-days) is set. Apps schedule this daily.
  *
  * Work happens in id-ordered chunks — a mature table never lands in memory
  * at once — and the retention cutoff is RE-APPLIED to every delete. A
@@ -31,16 +33,26 @@ class PruneConversationsCommand extends Command
 {
     protected $signature = 'ai-kit:prune-conversations
         {--days= : Prune conversations idle for more than this many days (default: ai-kit.conversations.retention_days; retention is forever when neither is set)}
+        {--trace-days= : Strip tool traces from messages older than this many days (default: ai-kit.conversations.trace_retention_days)}
         {--chunk=500 : How many conversations to read, announce and delete per batch}';
 
-    protected $description = 'Delete AI conversations and their messages idle longer than the retention window';
+    protected $description = 'Delete AI conversations and their messages idle longer than the retention window, and strip tool traces past the trace window';
 
     public function handle(): int
+    {
+        $status = $this->pruneConversations();
+
+        $this->pruneToolTraces();
+
+        return $status;
+    }
+
+    protected function pruneConversations(): int
     {
         $days = $this->option('days') ?? config('ai-kit.conversations.retention_days');
 
         if ($days === null) {
-            $this->warn('Retention is forever (ai-kit.conversations.retention_days is null and no --days given) — nothing pruned.');
+            $this->warn('Retention is forever (ai-kit.conversations.retention_days is null and no --days given) — no conversations pruned.');
 
             return self::SUCCESS;
         }
@@ -99,6 +111,66 @@ class PruneConversationsCommand extends Command
         ));
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Strip tool traces (attachments, tool calls/results, meta, the pause
+     * marker) from message rows older than the trace window. Usage stays —
+     * aggregate numbers, no user content. Runs in id-chunks like the delete
+     * pass; a row already stripped matches nothing and is never rewritten.
+     */
+    protected function pruneToolTraces(): void
+    {
+        $traceDays = $this->option('trace-days') ?? config('ai-kit.conversations.trace_retention_days');
+
+        if ($traceDays === null) {
+            return;
+        }
+
+        $cutoff = now()->subDays(max(1, (int) $traceDays));
+        $chunkSize = max(1, (int) $this->option('chunk'));
+
+        $connection = DB::connection(config('ai.conversations.connection'));
+        $messagesTable = config('ai.conversations.tables.messages', 'agent_conversation_messages');
+
+        $stripped = 0;
+
+        while (true) {
+            $ids = $connection->table($messagesTable)
+                ->where('created_at', '<', $cutoff)
+                ->where(fn ($query) => $query
+                    ->where('attachments', '!=', '[]')
+                    ->orWhere('tool_calls', '!=', '[]')
+                    ->orWhere('tool_results', '!=', '[]')
+                    ->orWhere('meta', '!=', '[]')
+                    ->orWhereNotNull('approval_state'))
+                ->orderBy('id')
+                ->limit($chunkSize)
+                ->pluck('id')
+                ->all();
+
+            if ($ids === []) {
+                break;
+            }
+
+            $stripped += $connection->table($messagesTable)
+                ->whereIn('id', $ids)
+                ->update([
+                    'attachments' => '[]',
+                    'tool_calls' => '[]',
+                    'tool_results' => '[]',
+                    'meta' => '[]',
+                    'approval_state' => null,
+                ]);
+        }
+
+        if ($stripped > 0) {
+            $this->info(sprintf(
+                'Stripped tool traces from %d messages older than %d days.',
+                $stripped,
+                max(1, (int) $traceDays),
+            ));
+        }
     }
 
     /**

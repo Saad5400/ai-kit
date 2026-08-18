@@ -44,8 +44,17 @@ the rulings — `conversations.encrypt => true` (#8, per-app opt-out) and
 `retention_days => null` = forever (#9; the prune command warn-no-ops without a
 window). uqucc already ships its own overrides (encrypt on, 90d).
 
+2026-08-18 (owner ruling, same day): the **Approvable rework was pulled forward**
+ahead of v0.4.0 — `Approvals\Classified` (Effect + Capability, ClassifiedTool on
+native `Approvable`, ApprovalCards, ResumeDecisions, AskUser) plus its prerequisite,
+**encrypted tool traces** (store encrypts attachments/tool_calls/tool_results/meta/
+approval_state; `trace_retention_days` window in the prune command; traces default
+ON). The proposal machinery is now transitional for uqucc only; catodemy migrates
+straight onto the classified seam.
+
 Tags: v0.1.0, v0.1.1, v0.2.0, v0.3.0, v0.3.1, v0.3.2 (reveal seam — what uqucc's
-^0.3.1 resolves). M4 is code complete on main, not yet tagged v0.4.0.
+^0.3.1 resolves). M4 + the pulled-forward rework are code complete on main, not yet
+tagged v0.4.0.
 
 ## What the surveys established (the shared core)
 
@@ -177,27 +186,29 @@ Release: tagged v0.3.0 + v0.3.1. ✅ uqucc migration PR #127 merged (see status 
 - **undo** — `UndoLedger` + `UndoTurn` from s-grade's `ActionRunner`/
   `CompensationPlanner` shape.
 
-Release: tag v0.4.0. **Then: catodemy migration PR; s-grade branch may be prepped in
+Release: tag v0.4.0 — which now also carries the pulled-forward classified
+approvals seam and encrypted tool traces (owner ruling 2026-08-18). **Then:
+catodemy migration PR — its plan flow lands on `Approvals\Classified`, NOT the
+transitional proposal machinery; s-grade branch may be prepped in
 parallel but merges only per the DECISIONS.md #15 gate** (school-holiday window,
 ≥2 weeks clean catodemy prod).
 s-grade extras: 0.7→0.10 jump (gateway Context reads → SpendCollector; conversation
 store interface + participant data migration; the 14-arg reflection test dies).
 catodemy extras: rewrite the five raw-HTTP OpenRouter callers onto kit plumbing.
 
-### M5 (v0.5.0) — owner-ruled rework + opt-in long tail
+### M5 (v0.5.0) — uqucc rework adoption + opt-in long tail
 
-Owner-ruled rework (DECISIONS.md, 2026-08-17 rulings):
+The owner-ruled rework itself was **pulled forward and shipped 2026-08-18**
+(Saad's ruling; see the State section): ✅ approvals on `Approvable`
+(`Approvals\Classified` — classified pause, editable `Decision::edit` forms,
+one-click destructive cards, idempotent execution, preview == execution),
+✅ AskUser on the same pause seam (DECISIONS.md #6), ✅ encrypted tool traces +
+separate trace-retention window (DECISIONS.md #7). Remaining:
 
-- **approvals on `Approvable`** — rebuild the approval contract on laravel/ai 0.10's
-  native classified pause (safe+undoable executes immediately; destructive pauses the
-  turn), keeping the transitional module's wins: server-derived `destructive`, editable
-  confirm form (`Decision::edit`), one-click destructive cards, idempotent execution,
-  preview == execution. Then migrate uqucc off `Proposal`/`WriteGate` and retire them.
-- **AskUser** — unified pause/resume on the same paused-turn contract as approvals
-  (DECISIONS.md #6); lands with the Approvable rework since they share the pause seam.
-- **encrypted tool traces** — extend `EncryptedConversationStore` to encrypt
-  attachments/tool_calls/tool_results when `persist_tool_traces` is on, plus a separate
-  7–30d trace-retention window (DECISIONS.md #7); only then enable traces in apps.
+- **migrate uqucc off `Proposal`/`WriteGate`** onto the classified seam, then
+  retire the transitional module.
+- **enable encrypted traces in apps** as each takes the kit bump
+  (`persist_tool_traces` now defaults on kit-side).
 - **resumable turns in uqucc** — adopt the kit `TurnBuffer` path (queue-worker
   generation, replay-from-last-id + tail) per DECISIONS.md #17; today uqucc still
   generates inside the HTTP request.

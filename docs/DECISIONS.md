@@ -26,9 +26,13 @@ recommendation at decision time.
    destructive/irreversible pause the turn. The v0.3.0 approvals module
    (Plan/WriteGate/Proposal/executor, stored-proposal execution) shipped while this
    decision was not visible and is **transitional**: it stays in prod (uqucc runs it)
-   until the Approvable-based rework ships, then apps migrate off it. The rework must
+   until apps migrate off it. The rework must
    preserve what the transitional module got right: server-derived `destructive`,
    idempotent execution, "what executes == what was previewed".
+   **Ruled 2026-08-18 (Saad): the Approvable rework is pulled FORWARD — built before
+   tagging v0.4.0, so catodemy never adopts the transitional machinery.** Shipped
+   same day as `Approvals\Classified` (Capability/Effect, ClassifiedTool,
+   ApprovalCards, ResumeDecisions, AskUser), preserving all three wins.
 4. **Confirm UI**: editable form for payload writes (prefilled from tool schema,
    same validated path as human UI, audit flags `edited_by_user`); one-click cards for
    destructive. ⚠ Typed-name confirm tier dropped — undo ledger is the net.
@@ -38,10 +42,14 @@ recommendation at decision time.
    approvals; answers resume mid-turn. (Missing from the rebuilt plan — restored as a
    planned milestone item.)
 7. ⚠ **Tool traces — RE-AFFIRMED 2026-08-17**: persisted **encrypted**, short retention
-   (7–30 days, separate from conversation retention). Currently OFF everywhere because
-   the store only encrypts `content` — enabling `persist_tool_traces` today would store
-   traces in plaintext. Kit work item: encrypt traces + a separate trace-retention
-   window; only then flip it on in apps.
+   (7–30 days, separate from conversation retention). Was OFF everywhere because
+   the store only encrypted `content`. **Kit work item shipped 2026-08-18** (with the
+   pulled-forward Approvable rework, which needs stored traces to resume):
+   EncryptedConversationStore now encrypts attachments / tool calls / tool results /
+   meta / the pause marker (usage stays plaintext), and
+   `ai-kit:prune-conversations` strips traces past `trace_retention_days`
+   (kit default 14). Kit defaults now: `persist_tool_traces => true`. Apps may
+   enable on their next kit bump.
 8. **Conversation encryption — RE-AFFIRMED 2026-08-17**: **ON by default** everywhere,
    per-app opt-out. uqucc flips `conversations.encrypt => true` (plaintext-tolerant
    reads make this safe; one-way for rows written while on).
@@ -77,10 +85,10 @@ recommendation at decision time.
 
 | Shipped (v0.3.x / PR #127–#128) | Owner ruling 2026-08-17 | Resolution |
 |---|---|---|
-| Approvals on kit Plan/WriteGate, `Approvable` rejected | **Revert** | Module is transitional; rework on `Approvable` scheduled (PLAN.md), then migrate uqucc off proposals |
+| Approvals on kit Plan/WriteGate, `Approvable` rejected | **Revert** | ✅ Rework SHIPPED 2026-08-18 (pulled forward by Saad's 2026-08-18 ruling, ahead of v0.4.0); transitional module stays only until uqucc migrates off proposals |
 | Conversation encryption opt-in, uqucc plaintext | **Turn ON in uqucc** | `conversations.encrypt => true` in uqucc config (shipped with this record) |
 | uqucc retention 7 days | **Restore ~90d** | `retention_days => 90` in uqucc config (shipped with this record) |
-| Tool traces never persisted | **Restore encrypted 7–30d** | Blocked on kit trace-encryption + separate window; work item added, then enable |
+| Tool traces never persisted | **Restore encrypted 7–30d** | ✅ Kit side shipped 2026-08-18: traces encrypted + `trace_retention_days` window; apps enable on next kit bump |
 | catodemy + s-grade migrations in parallel | **Restore s-grade rules** | s-grade last, combined jump, holiday window, ≥2 weeks clean catodemy prod |
 | M2 dual-write reconciliation week skipped | Accepted (history imported as `cost_source: imported`) | One-time reconciliation of `ai_usage_events` vs the OpenRouter dashboard instead |
 | M1 clean-week soak gate ignored | Superseded by rollout rule #15 | Gates live at app-migration boundaries (clean-prod window before the next app) |
