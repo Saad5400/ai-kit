@@ -91,8 +91,14 @@ the kit's transitional proposal module has no consumers left and can be retired 
   uqucc's hand-rolled markdown parser is retired by this.
   This narrows the "UI stays per-app" decision above rather than reversing it: the
   *plumbing* is shared, the look and feel is not — components carry only structural CSS
-  behind `--ai-kit-*` variable hooks.
-- Suite: 336 PHP tests green, 45 vitest tests green (jsdom, not happy-dom — happy-dom's
+  behind `--ai-kit-*` variable hooks, and `js/styles/prose.css` is opt-in.
+- The markdown port was reconciled against s-grade's actual `lib/carta.ts` +
+  `Markdown.svelte` after the fact (kit ships plain unified rather than Carta, and no
+  math/highlighting — but the sanitizer hook now guards on `href`, the live renderer
+  paints the first push immediately before throttling at 250ms/20k chars, the components
+  take s-grade's `onLinkClick` delegated-anchor prop for in-app routing, and
+  `prose.css` carries over the logical-property RTL prose rules from `.sg-prose`).
+- Suite: 336 PHP tests green, 47 vitest tests green (jsdom, not happy-dom — happy-dom's
   `NodeIterator` makes DOMPurify strip the root element of every fragment).
 
 Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1**.

@@ -25,6 +25,12 @@ const props = withDefaults(
         throttleMs?: number
         /** Extra unified plugins; pass a stable object, not a fresh literal. */
         plugins?: MarkdownPlugins
+        /**
+         * Intercept anchor clicks — an assistant reply linking to an in-app
+         * route should navigate through the router, not reload the page.
+         * Without it links follow their hardened `target`/`rel`.
+         */
+        onLinkClick?: (href: string) => void
     }>(),
     {
         live: false,
@@ -74,9 +80,23 @@ watch(
 )
 
 onBeforeUnmount(dispose)
+
+// Delegated, so it keeps working as the live render replaces the markup.
+const onClick = (event: MouseEvent): void => {
+    if (!props.onLinkClick) {
+        return
+    }
+
+    const anchor = (event.target as HTMLElement | null)?.closest('a[href]')
+
+    if (anchor) {
+        event.preventDefault()
+        props.onLinkClick(anchor.getAttribute('href') ?? '')
+    }
+}
 </script>
 
 <template>
     <!-- eslint-disable-next-line vue/no-v-html -- the renderer sanitizes. -->
-    <div class="ai-kit-markdown" :dir="dir" v-html="html" />
+    <div class="ai-kit-markdown" :dir="dir" v-html="html" @click="onClick" />
 </template>

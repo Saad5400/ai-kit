@@ -102,12 +102,17 @@ export type LiveRenderer = {
 /**
  * Throttled rendering for a streaming turn.
  *
- * Re-rendering markdown on every delta is what makes a long answer crawl,
- * so re-renders coalesce onto a trailing edge: the first render lands
- * `throttleMs` after the first push, and at most one lands per window
- * after that. A very long answer stops being re-parsed entirely while live
- * and shows as pre-wrap — `finish()` always does one real render, so the
- * settled message is correct whatever the live path did.
+ * The whole pipeline re-runs over the WHOLE accumulated text on every
+ * change, so rendering per delta is quadratic main-thread work that locks
+ * the tab on a long reply. Renders are spaced at least `throttleMs` apart
+ * and coalesce onto the trailing edge — but the FIRST push after an idle
+ * window paints immediately, so a reply never looks stalled at the start
+ * or after a pause for a tool call.
+ *
+ * Past `liveCharLimit` a still-streaming answer stops being parsed at all
+ * and shows as pre-wrap: even throttled, re-parsing hundreds of KB per
+ * tick locks the tab. `finish()` always does one real render, so a
+ * legitimately long reply still settles fully formatted.
  */
 export function createLiveRenderer(options: LiveRendererOptions): LiveRenderer {
     const { onHtml, throttleMs = 250, liveCharLimit = 20000, plugins } = options
@@ -115,6 +120,7 @@ export function createLiveRenderer(options: LiveRendererOptions): LiveRenderer {
     let latest = ''
     let emitted: string | null = null
     let timer: ReturnType<typeof setTimeout> | null = null
+    let renderedAt = 0
     let disposed = false
 
     const emit = (text: string, live: boolean): void => {
@@ -123,6 +129,7 @@ export function createLiveRenderer(options: LiveRendererOptions): LiveRenderer {
         }
 
         emitted = text
+        renderedAt = Date.now()
 
         onHtml(live && text.length > liveCharLimit ? preWrap(text) : renderMarkdown(text, { plugins }))
     }
@@ -135,11 +142,18 @@ export function createLiveRenderer(options: LiveRendererOptions): LiveRenderer {
 
             latest = text
 
-            timer ??= setTimeout(() => {
-                timer = null
+            if (timer !== null) {
+                return
+            }
 
-                emit(latest, true)
-            }, throttleMs)
+            timer = setTimeout(
+                () => {
+                    timer = null
+
+                    emit(latest, true)
+                },
+                Math.max(0, renderedAt + throttleMs - Date.now()),
+            )
         },
 
         finish(): void {
@@ -267,7 +281,9 @@ function makePurifier(): Purifier | null {
     instance.setConfig({ USE_PROFILES: { html: true } })
 
     instance.addHook('afterSanitizeAttributes', (node: any) => {
-        if (node.tagName === 'A') {
+        // Only real links: a heading-anchor plugin emits `<a>` elements with
+        // no href, and those are not navigation.
+        if (node.tagName === 'A' && node.getAttribute?.('href')) {
             node.setAttribute('target', '_blank')
             node.setAttribute('rel', 'noopener noreferrer nofollow')
         }

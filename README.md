@@ -58,9 +58,13 @@ import type { AiKitSseEvent } from '@saad5400/ai-kit/events'
 
 import Markdown from '@saad5400/ai-kit/vue/Markdown.vue'          // uqucc
 import Markdown from '@saad5400/ai-kit/svelte/Markdown.svelte'    // catodemy, s-grade
+
+import '@saad5400/ai-kit/styles/prose.css'                        // optional
 ```
 
 Contents: `events` (the table above, as TypeScript), `sse` (a dependency-free reader for POST-response streams — `EventSource` cannot send a body), `markdown` (unified + GFM, sanitized through DOMPurify, raw HTML escaped to literal text, every link `target="_blank" rel="noopener noreferrer nofollow"`, plus a throttled `createLiveRenderer` for streaming), and thin `vue/` + `svelte/` components (`Markdown`, `ThinkingDisclosure`, `ToolChip`) styled only through CSS-variable hooks — look and feel stays per app.
+
+`styles/prose.css` is optional and opt-in: a small flat prose sheet for `.ai-kit-markdown`, worth taking mainly because it uses logical properties throughout (`padding-inline-start`, `border-inline-start`, `text-align: start`), so Arabic replies lay out correctly with no mirrored RTL stylesheet. Map `--ai-kit-link`, `--ai-kit-border`, `--ai-kit-muted-bg` and `--ai-kit-muted` to your design tokens. An app with its own prose system should skip it.
 
 It ships **source TypeScript with no build step**, so the consuming app's bundler compiles it. That means Vite (or an equivalent), and the package needs to reach the app's plugin pipeline rather than the dependency pre-bundler:
 

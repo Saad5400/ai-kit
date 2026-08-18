@@ -16,12 +16,19 @@
         dir = 'auto',
         throttleMs = 250,
         plugins = undefined,
+        onLinkClick = undefined,
     }: {
         source: string
         live?: boolean
         dir?: string
         throttleMs?: number
         plugins?: MarkdownPlugins
+        /**
+         * Intercept anchor clicks — an assistant reply linking to an in-app
+         * route should navigate through the router, not reload the page.
+         * Without it links follow their hardened `target`/`rel`.
+         */
+        onLinkClick?: (href: string) => void
     } = $props()
 
     let html = $state('')
@@ -62,7 +69,22 @@
         renderer?.dispose()
         renderer = null
     })
+
+    // Delegated, so it keeps working as the live render replaces the markup.
+    function handleClick(event: MouseEvent): void {
+        if (onLinkClick === undefined) {
+            return
+        }
+
+        const anchor = (event.target as HTMLElement | null)?.closest('a[href]')
+
+        if (anchor) {
+            event.preventDefault()
+            onLinkClick(anchor.getAttribute('href') ?? '')
+        }
+    }
 </script>
 
-<!-- The renderer sanitizes; see js/core/markdown.ts. -->
-<div class="ai-kit-markdown" {dir}>{@html html}</div>
+<!-- eslint-disable-next-line svelte/no-at-html-tags — the renderer sanitizes. -->
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events — delegated anchor handling only -->
+<div class="ai-kit-markdown" {dir} onclick={handleClick}>{@html html}</div>

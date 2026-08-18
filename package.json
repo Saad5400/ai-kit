@@ -20,6 +20,7 @@
         "./markdown": "./js/core/markdown.ts",
         "./vue/*": "./js/vue/*",
         "./svelte/*": "./js/svelte/*",
+        "./styles/prose.css": "./js/styles/prose.css",
         "./package.json": "./package.json"
     },
     "dependencies": {

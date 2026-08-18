@@ -144,6 +144,54 @@ describe('createLiveRenderer', () => {
         vi.useRealTimers()
     })
 
+    it('paints the first push without waiting out a window', () => {
+        vi.useFakeTimers()
+
+        const onHtml = vi.fn()
+        const live = createLiveRenderer({ onHtml, throttleMs: 250 })
+
+        live.push('first')
+
+        // Scheduled with a zero delay, not a full window — a reply must not
+        // look stalled for a quarter second before its first token shows.
+        vi.advanceTimersByTime(0)
+
+        expect(onHtml).toHaveBeenCalledTimes(1)
+        expect(onHtml.mock.calls[0][0]).toContain('first')
+
+        // The next one waits, so a fast stream cannot re-parse per delta.
+        live.push('first second')
+        vi.advanceTimersByTime(0)
+
+        expect(onHtml).toHaveBeenCalledTimes(1)
+
+        vi.advanceTimersByTime(250)
+
+        expect(onHtml).toHaveBeenCalledTimes(2)
+
+        vi.useRealTimers()
+    })
+
+    it('paints immediately again after an idle gap, such as a tool call', () => {
+        vi.useFakeTimers()
+
+        const onHtml = vi.fn()
+        const live = createLiveRenderer({ onHtml, throttleMs: 250 })
+
+        live.push('before')
+        vi.advanceTimersByTime(0)
+        expect(onHtml).toHaveBeenCalledTimes(1)
+
+        // The model pauses to run a tool, then resumes.
+        vi.advanceTimersByTime(5000)
+        live.push('before after')
+        vi.advanceTimersByTime(0)
+
+        expect(onHtml).toHaveBeenCalledTimes(2)
+
+        vi.useRealTimers()
+    })
+
     it('renders once per window while the text keeps growing', () => {
         vi.useFakeTimers()
 
