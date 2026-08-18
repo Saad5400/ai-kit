@@ -132,19 +132,120 @@ it('suppresses empty transformed deltas', function () {
     expect($this->events)->toBe([['done', []]]);
 });
 
-it('drops reasoning deltas unless a handler opts in', function () {
-    $this->mapper->run([new ReasoningDelta('r1', 'rid', 'hmm', 1)], $this->emit);
+it('emits reasoning deltas by default', function () {
+    $this->mapper->run([
+        new ReasoningDelta('r1', 'rid', 'let me ', 1),
+        new ReasoningDelta('r2', 'rid', 'think', 2),
+    ], $this->emit);
 
-    expect($this->events)->toBe([['done', []]]);
+    expect($this->events)->toBe([
+        ['reasoning', ['text' => 'let me ']],
+        ['reasoning', ['text' => 'think']],
+        ['done', []],
+    ]);
 });
 
-it('routes reasoning deltas to the registered handler', function () {
-    $this->mapper->onReasoning(fn (ReasoningDelta $event, callable $emit) => $emit('reasoning', ['text' => $event->delta]));
+it('drops reasoning deltas when the app opts out', function () {
+    $this->mapper->withoutReasoning();
+
+    $this->mapper->run([new ReasoningDelta('r1', 'rid', 'hmm', 1), fakeDelta('answer')], $this->emit);
+
+    expect($this->events)->toBe([
+        ['delta', ['text' => 'answer']],
+        ['done', []],
+    ]);
+});
+
+it('routes reasoning deltas to the registered handler instead of the default', function () {
+    $this->mapper->onReasoning(fn (ReasoningDelta $event, callable $emit) => $emit('thinking', ['chunk' => $event->delta]));
 
     $this->mapper->run([new ReasoningDelta('r1', 'rid', 'hmm', 1)], $this->emit);
 
     expect($this->events)->toBe([
+        ['thinking', ['chunk' => 'hmm']],
+        ['done', []],
+    ]);
+});
+
+it('emits running and done tool events without arguments or results', function () {
+    $result = $this->mapper->run([
+        new ToolCall('tc1', new ToolCallData('id1', 'search', ['q' => 'secret query']), 1),
+        new ToolResult('tr1', new ToolResultData('id1', 'search', ['q' => 'secret query'], 'sensitive rows'), true, null, 2),
+    ], $this->emit);
+
+    expect($this->events)->toBe([
+        ['tool', ['id' => 'id1', 'name' => 'search', 'status' => 'running']],
+        ['tool', ['id' => 'id1', 'name' => 'search', 'status' => 'done', 'successful' => true]],
+        ['done', []],
+    ])->and($result->toolCalls)->toHaveCount(1)
+        ->and($result->toolResults)->toHaveCount(1);
+
+    // The payloads stay server-side; only the correlation id, the name and
+    // the status ever reach a public-facing client.
+    expect(json_encode($this->events))->not->toContain('secret query')
+        ->and(json_encode($this->events))->not->toContain('sensitive rows');
+});
+
+it('reports a failed tool on the wire', function () {
+    $this->mapper->run([
+        new ToolResult('tr1', new ToolResultData('id1', 'rename', [], null), false, 'exploded', 1),
+    ], $this->emit);
+
+    expect($this->events)->toBe([
+        ['tool', ['id' => 'id1', 'name' => 'rename', 'status' => 'done', 'successful' => false]],
+        ['done', []],
+    ]);
+});
+
+it('drops tool events when the app opts out', function () {
+    $this->mapper->withoutToolEvents();
+
+    $result = $this->mapper->run([
+        new ToolCall('tc1', new ToolCallData('id1', 'search', []), 1),
+        new ToolResult('tr1', new ToolResultData('id1', 'search', [], 'found'), true, null, 2),
+    ], $this->emit);
+
+    expect($this->events)->toBe([['done', []]])
+        // Opting out of the wire events does not opt out of bookkeeping.
+        ->and($result->toolCalls)->toHaveCount(1)
+        ->and($result->toolResults)->toHaveCount(1);
+});
+
+it('emits reasoning and tool events where they occur, ahead of text a transformer is holding', function () {
+    $holdAll = new class implements TextTransformer
+    {
+        private string $held = '';
+
+        public function push(string $delta): string
+        {
+            $this->held .= $delta;
+
+            return '';
+        }
+
+        public function flush(): string
+        {
+            return $this->held;
+        }
+    };
+
+    $this->mapper->transformText($holdAll);
+
+    $this->mapper->run([
+        new ReasoningDelta('r1', 'rid', 'hmm', 1),
+        fakeDelta('held '),
+        new ToolCall('tc1', new ToolCallData('id1', 'search', []), 2),
+        fakeDelta('too'),
+        new ToolResult('tr1', new ToolResultData('id1', 'search', [], 'found'), true, null, 3),
+    ], $this->emit);
+
+    // The chip appears when the tool runs; the guarded prose lands when the
+    // guard releases it, which is after.
+    expect($this->events)->toBe([
         ['reasoning', ['text' => 'hmm']],
+        ['tool', ['id' => 'id1', 'name' => 'search', 'status' => 'running']],
+        ['tool', ['id' => 'id1', 'name' => 'search', 'status' => 'done', 'successful' => true]],
+        ['delta', ['text' => 'held too']],
         ['done', []],
     ]);
 });
@@ -187,6 +288,7 @@ it('runs beforeDone callbacks between the stream draining and done', function ()
     ], $this->emit);
 
     expect($this->events)->toBe([
+        ['tool', ['id' => 'id1', 'name' => 'search', 'status' => 'done', 'successful' => true]],
         ['delta', ['text' => 'answer']],
         ['citations', ['items' => [['title' => 'page']]]],
         ['done', []],
@@ -271,6 +373,26 @@ it('ends a buffered turn on error with no done after it', function () {
         ])
         ->and($turn['meta'])->toBe(['conversation_id' => 'c9', 'error' => 'حدث خطأ أثناء توليد الرد.'])
         ->and($result->failed)->toBeTrue();
+});
+
+it('appends reasoning and tool events to a buffered turn without extra wiring', function () {
+    $buffer = $this->app->make(TurnBuffer::class);
+    $buffer->start('t1');
+
+    $this->mapper->runIntoBuffer([
+        new ReasoningDelta('r1', 'rid', 'hmm', 1),
+        new ToolCall('tc1', new ToolCallData('id1', 'search', []), 2),
+        new ToolResult('tr1', new ToolResultData('id1', 'search', [], 'found'), true, null, 3),
+        fakeDelta('answer'),
+    ], $buffer, 't1');
+
+    expect($buffer->get('t1')['events'])->toBe([
+        ['seq' => 1, 'event' => 'reasoning', 'data' => ['text' => 'hmm']],
+        ['seq' => 2, 'event' => 'tool', 'data' => ['id' => 'id1', 'name' => 'search', 'status' => 'running']],
+        ['seq' => 3, 'event' => 'tool', 'data' => ['id' => 'id1', 'name' => 'search', 'status' => 'done', 'successful' => true]],
+        ['seq' => 4, 'event' => 'delta', 'data' => ['text' => 'answer']],
+        ['seq' => 5, 'event' => 'done', 'data' => []],
+    ]);
 });
 
 it('emits identical event sequences inline and buffered', function (array $stream) {
