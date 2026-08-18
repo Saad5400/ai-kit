@@ -64,7 +64,7 @@ AskUser is live, and encrypted traces turn on with the bump. uqucc suite 1168 gr
 the kit's transitional proposal module has no consumers left and can be retired in M5.
 
 **v0.5.0 — streaming defaults + frontend layer** (owner rulings DECISIONS.md #18/#19,
-2026-08-18), on `feat/streaming-and-ui`:
+2026-08-18) — **merged (`a487967`) and tagged v0.5.0** the same day:
 
 - **Streaming UX parity is now a kit default.** `StreamEventMapper` collected
   `ToolCall`/`ToolResult` into the result and dropped `ReasoningDelta` unless an app
@@ -101,7 +101,25 @@ the kit's transitional proposal module has no consumers left and can be retired 
 - Suite: 336 PHP tests green, 47 vitest tests green (jsdom, not happy-dom — happy-dom's
   `NodeIterator` makes DOMPurify strip the root element of every fragment).
 
-Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1**.
+2026-08-18 (still later): **uqucc adopted v0.5.0: PR #130 squash-merged** (uqucc
+`91c23b9`, pins `^0.5.0` + npm `github:Saad5400/ai-kit#semver:^0.5.0`) — the four
+pilot complaints closed: (1) the hand-rolled markdown parser retired for the kit
+renderer across FOUR call sites (both assistants + reviews/Show + corpus/
+ProposalReview), four duplicate CSS blocks collapsed into `prose.css`; (2) reasoning
++ tool chips stream on both assistant surfaces (thinking closes on first
+`delta`/`tool`/terminal, chips upsert by call id, a paused call's chip folds into
+the same-id approval card); (3) a no-narration rule in قاعدة التأكيد + all 56 tool
+definitions converted to English descriptions (Arabic results kept — arXiv
+2601.05101: Arabic tool descriptions degrade tool calling); (4) chat model pinned
+to `deepseek/deepseek-v4-flash-0731` with `reasoning_effort low` (3× throughput at
+price parity vs the stale 0423 build the old slug resolves to), authoring to
+`deepseek-v4-pro-0813`, plus a settings migration rewriting the seeded
+`AiSettings->chat_model` row (config alone is only the fallback). uqucc suite 1172
+green (2 pre-existing homepage failures). **#129 + #130 both await one Coolify
+deploy** — it must run `php artisan migrate` (adds `ai_write_executions`, runs the
+chat-model settings migration).
+
+Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1, v0.5.0**.
 
 ## What the surveys established (the shared core)
 
