@@ -80,6 +80,21 @@ recommendation at decision time.
     (queue-worker default), durable buffer with monotonic ids, replay-from-last-id +
     tail. The kit's `TurnBuffer` implements the buffer; uqucc currently still generates
     in-request — adopting the resumable path there is planned work, not abandoned.
+18. **Streaming UX parity is a kit default — RULED 2026-08-18** (after the uqucc
+    pilot showed reasoning + tool-call streaming missing while s-grade had both):
+    `StreamEventMapper` emits `reasoning` deltas and `tool` running/done status
+    events **by default** (safe payloads — no arguments/results on the wire;
+    opt-outs per app). An app must get s-grade-grade streaming by adopting the
+    kit, not by re-implementing it.
+19. **The kit ships a frontend layer — RULED 2026-08-18**: same repo, same tag,
+    npm-installable (`github:Saad5400/ai-kit`), shipping the wire-contract types,
+    the SSE reader, a correct sanitized markdown pipeline (uqucc's hand-rolled
+    parser is retired), and thin Vue + Svelte components (markdown, thinking
+    disclosure, tool chips). UI look & feel stays per-app; the plumbing does not.
+20. **Chat model is under review — RULED 2026-08-18**: `deepseek/deepseek-v4-flash`
+    is too slow (no "low" reasoning effort, high effort crawls). A faster
+    same-price-class replacement with reliable tool calling is being selected;
+    model ids stay per-app config, never hard-coded in the kit.
 
 ## Deviation ledger
 
