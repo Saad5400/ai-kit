@@ -63,6 +63,38 @@ AskUser is live, and encrypted traces turn on with the bump. uqucc suite 1168 gr
 `php artisan migrate` on deploy adds `ai_write_executions`. Once deployed and stable,
 the kit's transitional proposal module has no consumers left and can be retired in M5.
 
+**v0.5.0 — streaming defaults + frontend layer** (owner rulings DECISIONS.md #18/#19,
+2026-08-18), on `feat/streaming-and-ui`:
+
+- **Streaming UX parity is now a kit default.** `StreamEventMapper` collected
+  `ToolCall`/`ToolResult` into the result and dropped `ReasoningDelta` unless an app
+  hooked it, so each app re-built the thinking block and the tool chips s-grade already
+  had. It now emits `reasoning {text}` and `tool {id, name, status, successful?}` by
+  default. Reasoning is bracket-free on the wire (no start/end events — the client
+  closes its block on the first following `delta`/`tool`/terminal), so a replayed
+  buffer needs no bracket repair. Tool arguments and results deliberately stay
+  server-side: these apps are public-facing and tool payloads carry retrieved records.
+  Both channels emit at the point they occur, ahead of text a transformer is holding.
+  `on()` hooks still replace the default for their event class;
+  `withoutReasoning()` / `withoutToolEvents()` opt out. The buffered path needed no
+  change — the new events flow through `append()`.
+- **The kit ships a frontend layer**, same repo, same tag: root `package.json`
+  (`@saad5400/ai-kit`), installed as `npm install github:Saad5400/ai-kit#semver:^0.5.0`.
+  Source TypeScript under `js/`, no build step — the consuming app's Vite compiles it.
+  `js/core/events.ts` (the wire contract as types), `js/core/sse.ts` (a dependency-free
+  reader for POST-response streams; `EventSource` cannot send a body, which is why all
+  three apps hand-rolled one), `js/core/markdown.ts` (unified + GFM → DOMPurify, ported
+  from s-grade's pipeline: raw HTML escaped to literal text rather than dropped, every
+  link `target="_blank" rel="noopener noreferrer nofollow"`, render failure degrading to
+  escaped pre-wrap, and a throttled `createLiveRenderer` for streaming), and thin
+  `js/vue/` + `js/svelte/` mirrors of `Markdown` / `ThinkingDisclosure` / `ToolChip`.
+  uqucc's hand-rolled markdown parser is retired by this.
+  This narrows the "UI stays per-app" decision above rather than reversing it: the
+  *plumbing* is shared, the look and feel is not — components carry only structural CSS
+  behind `--ai-kit-*` variable hooks.
+- Suite: 335 PHP tests green, 45 vitest tests green (jsdom, not happy-dom — happy-dom's
+  `NodeIterator` makes DOMPurify strip the root element of every fragment).
+
 Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1**.
 
 ## What the surveys established (the shared core)
