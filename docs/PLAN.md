@@ -92,7 +92,7 @@ the kit's transitional proposal module has no consumers left and can be retired 
   This narrows the "UI stays per-app" decision above rather than reversing it: the
   *plumbing* is shared, the look and feel is not — components carry only structural CSS
   behind `--ai-kit-*` variable hooks.
-- Suite: 335 PHP tests green, 45 vitest tests green (jsdom, not happy-dom — happy-dom's
+- Suite: 336 PHP tests green, 45 vitest tests green (jsdom, not happy-dom — happy-dom's
   `NodeIterator` makes DOMPurify strip the root element of every fragment).
 
 Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1**.

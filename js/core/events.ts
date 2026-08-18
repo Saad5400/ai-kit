@@ -53,6 +53,11 @@ export type ToolPayload = {
  *
  * `destructive` cards are one-click (`editable: false`); the rest render as
  * a form prefilled from `arguments` and resubmitted as an edit decision.
+ *
+ * `id` is the tool call's id: a paused call emits `tool {status:
+ * 'running'}` first and its card second, so fold the chip into the card
+ * rather than leaving it spinning. The `done` for that id arrives on the
+ * resumed turn's stream.
  */
 export type ApprovalPayload = {
     kind: 'approval'
@@ -135,10 +140,11 @@ const NAMES: readonly AiKitEventName[] = [
 ]
 
 /**
- * Narrow a raw `(event, data)` dispatch to the contract, so a reader can
- * pass app extension events through untouched.
+ * Whether a dispatched event name belongs to the contract — narrowing it
+ * so a `switch` over the rest is exhaustive, and letting a reader pass an
+ * app's own extension events through untouched.
  */
-export function isAiKitEvent(event: string, data: unknown): data is AiKitSseEvent['data'] {
+export function isAiKitEvent(event: string): event is AiKitEventName {
     return (NAMES as readonly string[]).includes(event)
 }
 

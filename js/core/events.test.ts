@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { closesReasoning, isAiKitEvent, isTerminal } from './events'
 
 describe('the wire contract helpers', () => {
-    it('knows the contract events from an app extension event', () => {
-        expect(isAiKitEvent('delta', { text: 'x' })).toBe(true)
-        expect(isAiKitEvent('tool', { id: 'i', name: 'n', status: 'running' })).toBe(true)
-        expect(isAiKitEvent('step', {})).toBe(false)
+    it('tells a contract event from an app extension event', () => {
+        expect(isAiKitEvent('delta')).toBe(true)
+        expect(isAiKitEvent('tool')).toBe(true)
+        expect(isAiKitEvent('approval')).toBe(true)
+        expect(isAiKitEvent('step')).toBe(false)
+        expect(isAiKitEvent('message')).toBe(false)
     })
 
     it('treats done and error as the only terminal events', () => {

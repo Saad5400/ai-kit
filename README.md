@@ -33,7 +33,7 @@ One turn is one SSE stream of `event: NAME\ndata: {json}\n\n` frames, written by
 | `delta` | `{text}` | Model text. Deltas concatenate. |
 | `reasoning` | `{text}` | Thinking. **On by default.** No start/end events — the client opens its block on the first `reasoning` and closes it on the first following `delta`, `tool` or terminal event. |
 | `tool` | `{id, name, status: running\|done, successful?}` | **On by default.** Arguments and results never reach the wire; hook `ToolCall` server-side if an app wants more. |
-| `approval` | `{kind, id, tool, title, destructive, undoable, editable, arguments, preview, reason}` | A paused turn's card, every trust-bearing field server-derived. |
+| `approval` | `{kind, id, tool, title, destructive, undoable, editable, arguments, preview, reason}` | A paused turn's card, every trust-bearing field server-derived. `id` is the tool call's id, so a paused call's `running` chip folds into its card. |
 | `question` | `{kind, id, question}` | An `AskUser` pause — answered, not approved. |
 | `citations` | `{items}` | Post-stream, from a `beforeDone` hook. |
 | `done` | app-assembled | **Terminal.** |

@@ -42,6 +42,13 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  * An app that wants richer payloads opts in with an explicit
  * `on(ToolCall::class, ...)` hook and owns the disclosure decision.
  *
+ * A call that pauses for approval emits its `running` event and no `done`
+ * — the provider yields the ToolCall before the loop decides the call
+ * needs approving. The `approval` card that follows carries the SAME id
+ * (vendor builds `PendingApproval` from the tool call), so the client
+ * folds the running chip into the card rather than stranding a spinner,
+ * and the resumed turn's `done` lands on the right chip.
+ *
  * ORDER: reasoning and tool events are emitted at the point they occur in
  * the stream, never queued behind the text pipeline. A transformer holding
  * text back (uqucc's link guard) therefore releases that text AFTER a tool
