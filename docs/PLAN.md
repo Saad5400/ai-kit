@@ -52,9 +52,18 @@ approval_state; `trace_retention_days` window in the prune command; traces defau
 ON). The proposal machinery is now transitional for uqucc only; catodemy migrates
 straight onto the classified seam.
 
-Tags: v0.1.0, v0.1.1, v0.2.0, v0.3.0, v0.3.1, v0.3.2 (reveal seam — what uqucc's
-^0.3.1 resolves). M4 + the pulled-forward rework are code complete on main, not yet
-tagged v0.4.0.
+2026-08-18 (later the same day): **v0.4.0 tagged and pushed** (M4 + the pulled-forward
+rework), then **v0.4.1** (`Classified\StoredApprovals` — the read seam a client needs
+to repaint pending cards after a reload). **uqucc migrated onto the classified seam:
+PR #129 squash-merged** (uqucc `522ab91`, pins `^0.4.1`) — writes pause natively,
+decisions resume the turn via `POST …/chat/{conversation}/decide`, the proposal
+endpoints/adapters are deleted (prod `ai_proposals` verified empty, no bridge needed),
+AskUser is live, and encrypted traces turn on with the bump. uqucc suite 1168 green
+(the 2 homepage failures pre-exist). **Not yet deployed** — Coolify deploy is manual;
+`php artisan migrate` on deploy adds `ai_write_executions`. Once deployed and stable,
+the kit's transitional proposal module has no consumers left and can be retired in M5.
+
+Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1**.
 
 ## What the surveys established (the shared core)
 
@@ -203,12 +212,12 @@ The owner-ruled rework itself was **pulled forward and shipped 2026-08-18**
 (`Approvals\Classified` — classified pause, editable `Decision::edit` forms,
 one-click destructive cards, idempotent execution, preview == execution),
 ✅ AskUser on the same pause seam (DECISIONS.md #6), ✅ encrypted tool traces +
-separate trace-retention window (DECISIONS.md #7). Remaining:
+separate trace-retention window (DECISIONS.md #7). ✅ **uqucc migrated off
+`Proposal`/`WriteGate`** onto the classified seam (PR #129, 2026-08-18 — traces
+enabled with the bump; deploy pending). Remaining:
 
-- **migrate uqucc off `Proposal`/`WriteGate`** onto the classified seam, then
-  retire the transitional module.
-- **enable encrypted traces in apps** as each takes the kit bump
-  (`persist_tool_traces` now defaults on kit-side).
+- **retire the transitional proposal module** from the kit once uqucc's #129 deploy
+  is out and stable — it has no consumers after that.
 - **resumable turns in uqucc** — adopt the kit `TurnBuffer` path (queue-worker
   generation, replay-from-last-id + tail) per DECISIONS.md #17; today uqucc still
   generates inside the HTTP request.
