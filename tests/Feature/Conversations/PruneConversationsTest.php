@@ -80,6 +80,20 @@ it('defaults the window to ai-kit.conversations.retention_days', function () {
     Event::assertDispatched(ConversationsPruning::class);
 });
 
+it('prunes nothing by default — retention is forever until an app sets a window', function () {
+    Event::fake([ConversationsPruning::class]);
+
+    prunableConversation(idleDays: 400);
+
+    $this->artisan('ai-kit:prune-conversations')
+        ->expectsOutputToContain('Retention is forever')
+        ->assertSuccessful();
+
+    expect(DB::table('agent_conversations')->count())->toBe(1);
+
+    Event::assertNotDispatched(ConversationsPruning::class);
+});
+
 it('spares a conversation revived between the announcement and the delete, messages included', function () {
     $doomed = prunableConversation(idleDays: 10);
     $revived = prunableConversation(idleDays: 10, messages: 3);

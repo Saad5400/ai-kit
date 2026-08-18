@@ -11,8 +11,10 @@ use Saad\AiKit\Conversations\Events\ConversationsPruning;
 
 /**
  * Deletes conversations (and their messages) idle longer than the retention
- * window. Anonymous-participant apps have no other way to reach old threads,
- * so this keeps the tables from growing forever; schedule it daily.
+ * window. Retention is forever by default — without a configured window or
+ * an explicit --days the command warns and touches nothing. Apps whose
+ * anonymous participants have no other way to reach old threads opt into a
+ * window and schedule this daily.
  *
  * Work happens in id-ordered chunks — a mature table never lands in memory
  * at once — and the retention cutoff is RE-APPLIED to every delete. A
@@ -28,17 +30,22 @@ use Saad\AiKit\Conversations\Events\ConversationsPruning;
 class PruneConversationsCommand extends Command
 {
     protected $signature = 'ai-kit:prune-conversations
-        {--days= : Prune conversations idle for more than this many days (default: ai-kit.conversations.retention_days)}
+        {--days= : Prune conversations idle for more than this many days (default: ai-kit.conversations.retention_days; retention is forever when neither is set)}
         {--chunk=500 : How many conversations to read, announce and delete per batch}';
 
     protected $description = 'Delete AI conversations and their messages idle longer than the retention window';
 
     public function handle(): int
     {
-        $days = max(1, $this->option('days') !== null
-            ? (int) $this->option('days')
-            : (int) config('ai-kit.conversations.retention_days', 30));
+        $days = $this->option('days') ?? config('ai-kit.conversations.retention_days');
 
+        if ($days === null) {
+            $this->warn('Retention is forever (ai-kit.conversations.retention_days is null and no --days given) — nothing pruned.');
+
+            return self::SUCCESS;
+        }
+
+        $days = max(1, (int) $days);
         $chunkSize = max(1, (int) $this->option('chunk'));
         $cutoff = now()->subDays($days);
 

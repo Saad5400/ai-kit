@@ -19,8 +19,8 @@ use Saad\AiKit\Conversations\EncryptedConversationStore;
 uses(RefreshDatabase::class);
 
 /**
- * Encryption is opt-in, so these tests drive the store directly rather than
- * the bound contract — ConversationStoreEncryptOptInTest owns the binding.
+ * These tests drive the store directly rather than the bound contract —
+ * StoreBindingTest and ConversationStoreEncryptOptOutTest own the binding.
  */
 function encryptedStore(): EncryptedConversationStore
 {

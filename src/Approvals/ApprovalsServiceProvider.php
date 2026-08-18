@@ -10,6 +10,15 @@ use Saad\AiKit\Approvals\Undo\CompensationApplier;
 use Saad\AiKit\Approvals\Undo\DatabaseUndoLedger;
 use Saad\AiKit\Approvals\Undo\UndoTurn;
 
+/**
+ * TRANSITIONAL (owner ruling 2026-08-17, docs/DECISIONS.md #3): the decided
+ * approval contract is laravel/ai's native `Approvable` classified pause —
+ * safe+undoable writes execute immediately, destructive ones pause the turn.
+ * This propose → confirm → execute machinery shipped while that ruling was
+ * not visible; it stays in prod until the M5 Approvable rework lands, and the
+ * rework must keep its real wins: server-derived `destructive`, the idempotent
+ * execution ledger, and preview == execution.
+ */
 class ApprovalsServiceProvider extends ServiceProvider
 {
     public function register(): void

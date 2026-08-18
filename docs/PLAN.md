@@ -28,17 +28,24 @@
   rework must preserve its real wins (server-derived `destructive`, idempotent execution
   ledger, preview == execution).
 
-## State (2026-08-17)
+## State (2026-08-18)
 
-Real modules: **gateway** (canonical `ReasoningOpenRouterGateway`, retries, circuit
-breaker, drift-guard), **catalog** (config source + fallback chains; DB source and
-`ai:sync-models` missing), **usage** (events, TurnSpend, TTFT traces — best covered),
-**safety** (KillSwitch/BudgetGuard/TurnConcurrencyLimiter written and tested but
-**wired to nothing**). Stubs: agents, conversations, streaming, approvals, attachments,
-rag, credits. `Saad\AiKit\Testing` does not exist. `laravel/mcp ~0.9.0` is currently a
-dead dependency (kept for the agents module). Suite: 90 tests green.
+Real modules: **gateway**, **catalog** (config + DB sources, `ai-kit:sync-models`,
+task routing), **usage**, **safety** (wired live in uqucc via TurnGuard/KillSwitch),
+**conversations** (encrypted store, ownership guard, pruning, `reveal()` read seam),
+**streaming**, **approvals** (transitional per DECISIONS.md #3, flagged as such in
+config + provider) + **undo** (ledger, CompensationApplier, UndoTurn),
+**attachments**, **agents** (MCP adapters — `laravel/mcp` is a live dependency),
+**credits**. Stub: rag. `Saad\AiKit\Testing` ships fakes + the Proposal factory.
+Suite: 300 tests green.
 
-Tags: v0.1.0, v0.1.1 (uqucc's current pin), v0.2.0 (M2, current main).
+2026-08-18 alignment pass (after the DECISIONS.md reconcile): kit defaults now match
+the rulings — `conversations.encrypt => true` (#8, per-app opt-out) and
+`retention_days => null` = forever (#9; the prune command warn-no-ops without a
+window). uqucc already ships its own overrides (encrypt on, 90d).
+
+Tags: v0.1.0, v0.1.1, v0.2.0, v0.3.0, v0.3.1, v0.3.2 (reveal seam — what uqucc's
+^0.3.1 resolves). M4 is code complete on main, not yet tagged v0.4.0.
 
 ## What the surveys established (the shared core)
 
@@ -151,6 +158,8 @@ the migration and wire TurnGuard/KillSwitch at the gates from the start.
 Release: tagged v0.3.0 + v0.3.1. ✅ uqucc migration PR #127 merged (see status above).
 
 ### M4 (v0.4.0) — what catodemy + s-grade additionally need
+
+**Code complete on main 2026-08-17 (all six items below); awaiting the v0.4.0 tag.**
 
 - **credits** — `CreditCalculator`, meter base with `debit:turn:{id}` idempotency,
   free-turn waiver policy, 402 gate contract (wallet *policy* stays per-app).

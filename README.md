@@ -1,9 +1,8 @@
 # saad/ai-kit
 
-Shared AI infrastructure for **catodemy**, **s-grade** and **uqucc-laravel**. Private package; the sole requirer of `laravel/ai` and `laravel/mcp` — apps depend on this instead.
+Shared AI infrastructure for **catodemy**, **s-grade** and **uqucc-laravel**. Public repo, consumed as a composer VCS package; the sole requirer of `laravel/ai` and `laravel/mcp` — apps depend on this instead.
 
-Design record: `~/.claude/projects/-home-saad-code/memory/shared-ai-package-decision.md`
-Milestone plan: `/home/saad/code/AI-KIT-PLAN.md`
+This README describes the finished product. Owner decision record (the authority): [`docs/DECISIONS.md`](docs/DECISIONS.md) · working milestone plan: [`docs/PLAN.md`](docs/PLAN.md)
 
 ## Modules
 
@@ -18,7 +17,7 @@ Toggled per app via `config/ai-kit.php` → `modules.*`:
 | `approvals` | on | `Capability` + `Effect`, classified pause on laravel/ai `Approvable`, undo ledger + `UndoTurn`, `AskUser` |
 | `attachments` | on | 3-stage extraction pipeline, extract-on-upload, sha-256 cache |
 | `usage` | on | `TurnSpend`, canonical usage events, turn traces + TTFT metrics |
-| `catalog` | on | `CatalogSource` (config and/or DB), `ai:sync-models` |
+| `catalog` | on | `CatalogSource` (config and/or DB), `ai-kit:sync-models` |
 | `safety` | on | Central kill switch, `BudgetGuard`, concurrency caps, degraded mode |
 | `rag` | off | Hybrid retriever (pgvector + RRF), embedder/chunker |
 | `credits` | off | Generalized wallets, `CreditCalculator`, idempotent meter base |

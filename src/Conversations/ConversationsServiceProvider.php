@@ -14,13 +14,14 @@ class ConversationsServiceProvider extends ServiceProvider
             $app['config']->get('ai.conversations.connection'),
         ));
 
-        // Opt-in, because binding this store rewrites how every message row
-        // is written from that deploy on and there is no going back for the
+        // On by default (owner decision: encryption everywhere, per-app
+        // opt-out). Binding this store rewrites how every message row is
+        // written from that deploy on and there is no going back for the
         // rows already encrypted. Rebindable on purpose: this registers
         // after laravel/ai's provider (kit depends on it) so the encrypted
-        // store wins over the vendor default when it IS enabled, and an app
-        // binding registered later wins over the kit.
-        if ($this->app['config']->get('ai-kit.conversations.encrypt', false) === true) {
+        // store wins over the vendor default, and an app binding registered
+        // later wins over the kit.
+        if ($this->app['config']->get('ai-kit.conversations.encrypt', true) === true) {
             $this->app->singleton(ConversationStore::class, fn ($app) => new EncryptedConversationStore(
                 $app['config']->get('ai.conversations.connection'),
             ));

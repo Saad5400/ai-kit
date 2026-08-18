@@ -108,13 +108,13 @@ return [
     | `encrypt` binds the kit's EncryptedConversationStore over laravel/ai's
     | ConversationStore contract: message content is encrypted with the app
     | key before it touches the database, and pre-encryption plaintext rows
-    | still read back. It is OPT-IN, and turning it on is a one-way door for
-    | every row written while it is on: those rows are readable only through
-    | this store and only with the app key that wrote them. Decide before you
-    | have traffic, keep the key, and do not flip it back and forth. With it
-    | off the vendor store stays bound (or bind your own). Table names and
-    | the connection follow the vendor keys (`ai.conversations.tables.*`,
-    | `ai.conversations.connection`).
+    | still read back. It is ON BY DEFAULT (owner decision, DECISIONS.md #8)
+    | with per-app opt-out, and every row written while it is on passes a
+    | one-way door: those rows are readable only through this store and only
+    | with the app key that wrote them. Keep the key, and do not flip the
+    | toggle back and forth. Opting out leaves the vendor store bound (or
+    | bind your own). Table names and the connection follow the vendor keys
+    | (`ai.conversations.tables.*`, `ai.conversations.connection`).
     |
     | `persist_tool_traces` keeps attachments / tool_calls / tool_results /
     | usage / meta on message rows. Off by default — traces can carry user
@@ -122,16 +122,19 @@ return [
     | reconstructs turns from those traces, so enable this if you use it.
     |
     | `retention_days` is the idle window `ai-kit:prune-conversations`
-    | deletes beyond (the --days option overrides per run). The command
-    | fires a ConversationsPruning event with the doomed ids first, so apps
-    | can cascade their own per-conversation resources.
+    | deletes beyond (the --days option overrides per run). Retention is
+    | FOREVER by default (owner decision, DECISIONS.md #9): null makes the
+    | prune command a warning no-op, so only apps that set a window (e.g.
+    | uqucc's ~90 days for anonymous threads) ever delete anything. The
+    | command fires a ConversationsPruning event with the doomed ids first,
+    | so apps can cascade their own per-conversation resources.
     |
     */
 
     'conversations' => [
-        'encrypt' => false,
+        'encrypt' => true,
         'persist_tool_traces' => false,
-        'retention_days' => 30,
+        'retention_days' => null,
     ],
 
     /*
@@ -208,6 +211,11 @@ return [
     |--------------------------------------------------------------------------
     | Approvals
     |--------------------------------------------------------------------------
+    |
+    | TRANSITIONAL MODULE (owner ruling, DECISIONS.md #3): the approval
+    | contract is laravel/ai's native `Approvable` classified pause; this
+    | propose → confirm → execute machinery predates that ruling, stays in
+    | prod until the M5 Approvable rework ships, then apps migrate off it.
     |
     | The propose → confirm → execute pattern: proposals persist in
     | `proposals_table`, executed plan steps claim exactly-once rows in
