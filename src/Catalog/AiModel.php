@@ -10,6 +10,9 @@ use Illuminate\Database\Eloquent\Model;
  * catalog by `ai-kit:sync-models`. `key` is the public identifier apps route
  * by (and the {@see ModelDefinition} id); `provider`/`provider_model_id` are
  * the swap seam for rows whose provider-facing slug differs from the key.
+ * `canonical_slug` records OpenRouter's dated pin for the build `key`
+ * resolved to — nullable, because rows synced before the column existed have
+ * none and a sync that does not declare one leaves them as they are.
  * Disabled rows are retained for ops history but are invisible to the
  * {@see DatabaseCatalogSource}. `meta` is the app's bag (display names,
  * tiers, badge figures) — the kit never reads it.
@@ -18,6 +21,7 @@ use Illuminate\Database\Eloquent\Model;
  * @property string $key
  * @property string|null $provider
  * @property string|null $provider_model_id
+ * @property string|null $canonical_slug
  * @property string|null $label
  * @property float|null $input_usd_per_million
  * @property float|null $output_usd_per_million
@@ -69,6 +73,7 @@ class AiModel extends Model
     {
         return new ModelDefinition(
             id: $this->key,
+            canonicalSlug: $this->canonical_slug,
             label: $this->label,
             inputUsdPerMillion: $this->input_usd_per_million,
             outputUsdPerMillion: $this->output_usd_per_million,

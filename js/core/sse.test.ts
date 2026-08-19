@@ -1,3 +1,9 @@
+/**
+ * The framing itself belongs to `eventsource-parser` now, so these are
+ * integration tests over the shell: that the transform chain is wired in the
+ * right order, that our final-frame terminator and JSON fallback still hold,
+ * and that the abort/onDone lifecycle survives being moved behind a pipe.
+ */
 import { describe, expect, it, vi } from 'vitest'
 import { readSseStream } from './sse'
 
@@ -160,5 +166,25 @@ describe('readSseStream', () => {
 
     it('rejects a response with no body', async () => {
         await expect(readSseStream(new Response(null), () => {})).rejects.toThrow(/no body/)
+    })
+
+    it('tolerates a bare-CR terminator and a leading BOM', async () => {
+        const events = await collect('﻿event: delta\rdata: {"text":"cr"}\r\r')
+
+        expect(events).toEqual([['delta', { text: 'cr' }, undefined]])
+    })
+
+    it('rejects rather than buffering an unterminated body past the cap', async () => {
+        const flood = 'data: ' + 'x'.repeat(4096)
+
+        await expect(readSseStream(streamOf(flood), () => {}, { maxBufferSize: 1024 })).rejects.toThrow(
+            /max buffer size/i,
+        )
+    })
+
+    it('keeps reading after the cap when frames stay under it', async () => {
+        const events = await collect(frame('delta', { text: 'small' }), frame('done', {}))
+
+        expect(events.map((e) => e[0])).toEqual(['delta', 'done'])
     })
 })

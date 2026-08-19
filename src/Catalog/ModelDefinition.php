@@ -6,12 +6,22 @@ use Laravel\Ai\Responses\Data\Usage;
 
 /**
  * One model the app may route turns to. `id` is the provider-facing model
- * string (e.g. "google/gemini-3.5-flash" on OpenRouter). Prices are USD per
- * one million tokens and may be null when unknown — metering then relies on
- * the provider-reported cost instead of estimating. `fallbacks` lists model
- * ids to fail over to, in declared order, when this model is rate limited,
- * overloaded, or its circuit is open. Chains are explicit, never transitive:
- * a fallback's own fallbacks are not followed.
+ * string (e.g. "google/gemini-3.5-flash" on OpenRouter) and the ONLY field
+ * routing keys on. Prices are USD per one million tokens and may be null when
+ * unknown — metering then relies on the provider-reported cost instead of
+ * estimating. `fallbacks` lists model ids to fail over to, in declared order,
+ * when this model is rate limited, overloaded, moderated, or over its context
+ * window; they ride into the request as OpenRouter's `models` array, so the
+ * failover happens upstream. Chains are explicit, never transitive: a
+ * fallback's own fallbacks are not followed.
+ *
+ * `canonicalSlug` is OpenRouter's DATED PIN for the build the id resolved to
+ * (`deepseek/deepseek-v4-flash-0731` under the alias
+ * `deepseek/deepseek-v4-flash`). The payload carries both and they are not
+ * interchangeable: the alias silently re-points to a newer build, which is the
+ * whole reason to route on it and record the slug beside it. Pinning the dated
+ * slug as the routing id instead freezes an app on a build that will one day
+ * be retired. It is documentation and a lookup fallback, never a route target.
  *
  * `capabilities` describe what the model can do (tools, vision, reasoning);
  * `tasks` are the app's routing labels (chat, mcq, summary) — a task menu the
@@ -33,6 +43,7 @@ final class ModelDefinition
      */
     public function __construct(
         public readonly string $id,
+        public readonly ?string $canonicalSlug = null,
         public readonly ?string $label = null,
         public readonly ?float $inputUsdPerMillion = null,
         public readonly ?float $outputUsdPerMillion = null,
@@ -52,6 +63,7 @@ final class ModelDefinition
     {
         return new self(
             id: $id,
+            canonicalSlug: $data['canonical_slug'] ?? null,
             label: $data['label'] ?? null,
             inputUsdPerMillion: isset($data['input_usd_per_million']) ? (float) $data['input_usd_per_million'] : null,
             outputUsdPerMillion: isset($data['output_usd_per_million']) ? (float) $data['output_usd_per_million'] : null,

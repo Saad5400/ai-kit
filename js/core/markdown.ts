@@ -15,8 +15,15 @@
  *    HTML-escaped pre-wrap paragraph of the source. A malformed table mid-
  *    stream must not blank the assistant's message.
  * 3. EVERY LINK LEAVES SAFELY. `target="_blank" rel="noopener noreferrer
- *    nofollow"` is applied in a DOMPurify hook, after sanitization, so it
- *    cannot be talked out of by the markdown.
+ *    nofollow"` is applied by a rehype plugin that runs AFTER the sanitizer,
+ *    so it cannot be talked out of by the markdown.
+ *
+ * Sanitization is `rehype-sanitize` on the hast tree, not DOMPurify on the
+ * output string. Same guarantee, three consequences: the pipeline no longer
+ * needs a DOM, so it renders under SSR and in a worker instead of degrading
+ * to pre-wrap there; nothing is serialized-then-reparsed, which is where a
+ * mutation-XSS lives; and the allow list is a value in this file that the
+ * tests can read, rather than a profile name plus a hook.
  *
  * No syntax highlighting and no math in v1 — both would multiply the
  * dependency footprint every consuming app inherits. Extend through
@@ -27,8 +34,9 @@ import { unified } from 'unified'
 import remarkParse from 'remark-parse'
 import remarkGfm from 'remark-gfm'
 import remarkRehype from 'remark-rehype'
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import rehypeStringify from 'rehype-stringify'
-import DOMPurify from 'dompurify'
+import remend from 'remend'
 
 /**
  * Extra unified plugins. The phase matters — a remark plugin walks mdast
@@ -55,9 +63,7 @@ export function renderMarkdown(src: string, options: MarkdownOptions = {}): stri
     }
 
     try {
-        const html = String(processor(options.plugins).processSync(src))
-
-        return sanitize(html)
+        return String(processor(options.plugins).processSync(src))
     } catch {
         return preWrap(src)
     }
@@ -131,7 +137,13 @@ export function createLiveRenderer(options: LiveRendererOptions): LiveRenderer {
         emitted = text
         renderedAt = Date.now()
 
-        onHtml(live && text.length > liveCharLimit ? preWrap(text) : renderMarkdown(text, { plugins }))
+        if (live && text.length > liveCharLimit) {
+            onHtml(preWrap(text))
+
+            return
+        }
+
+        onHtml(renderMarkdown(live ? mend(text) : text, { plugins }))
     }
 
     return {
@@ -184,6 +196,26 @@ export function createLiveRenderer(options: LiveRendererOptions): LiveRenderer {
     }
 }
 
+/**
+ * Close the markdown the model has not finished writing yet.
+ *
+ * A partial buffer ends mid-syntax constantly: `**bold` renders its two
+ * asterisks as literal characters for one frame, then they vanish when the
+ * closing pair arrives, and the same flicker hits `` ` ``, `~~`, `[text](`
+ * and `$$`. `remend` completes the open construct for the render only — the
+ * buffer we were handed is never modified, and `finish()` renders the real
+ * text, so nothing invented here survives into the settled message.
+ *
+ * `text-only` for links because a completed `[text](…` would otherwise carry
+ * remend's `streamdown:` placeholder href, which our sanitizer strips a
+ * moment later and leaves a dead anchor behind. Math stays off: the pipeline
+ * ships no KaTeX, so closing `$$` would only add characters that render as
+ * themselves.
+ */
+function mend(text: string): string {
+    return remend(text, { linkMode: 'text-only', katex: false, inlineKatex: false })
+}
+
 type Md = Processor<any, any, any, any, string>
 
 let defaultProcessor: Md | null = null
@@ -218,9 +250,46 @@ function build(plugins: MarkdownPlugins = {}): Md {
             },
         })
         .use(plugins.rehype ?? [])
+        // Before the sanitizer: it drops `raw` nodes outright, and property 1
+        // says the characters survive as text.
         .use(rehypeRawToText)
-        .use(rehypeStringify) as unknown as Md
+        .use(rehypeSanitize, sanitizeSchema)
+        // After the sanitizer, deliberately: an unsafe `href` is already gone
+        // by now, so the guard below cannot be fooled into decorating one,
+        // and the values we write are fixed literals no markdown can reach.
+        .use(rehypeSafeLinks)
+        // Named references so an escaped `<` serializes as `&lt;` rather than
+        // `&#x3C;`. Identical to a browser either way; it keeps the output
+        // byte-comparable with what the previous DOMPurify pass produced, and
+        // legible in a failing assertion.
+        .use(rehypeStringify, { characterReferences: { useNamedReferences: true } }) as unknown as Md
 }
+
+/**
+ * The allow list, derived from `hast-util-sanitize`'s GitHub-shaped default.
+ *
+ * The default is the right base — it already excludes `javascript:`,
+ * `data:` and `vbscript:` from every URL field, prefixes id-like attributes
+ * to stop DOM clobbering, and permits only the element set a markdown
+ * document can produce. Two departures:
+ */
+const sanitizeSchema = {
+    ...defaultSchema,
+    attributes: {
+        ...defaultSchema.attributes,
+        // The default denies every class on `code`, which takes the fence's
+        // `language-js` with it — the hook highlighters and `prose.css` both
+        // key on. Allow that one shape and nothing else.
+        code: [['className', /^language-[\w+#.-]+$/]],
+    },
+    protocols: {
+        ...defaultSchema.protocols,
+        // The default carries `irc`, `ircs` and `xmpp` from the SSE-era spec
+        // list. Nothing these apps answer with links to them, and a scheme
+        // we do not need is a scheme we do not have to reason about.
+        href: ['http', 'https', 'mailto', 'tel'],
+    },
+} satisfies typeof defaultSchema
 
 /**
  * Demote any `raw` hast nodes to text. The built-in path never produces
@@ -245,49 +314,27 @@ function rehypeRawToText() {
     return (tree: unknown) => walk(tree)
 }
 
-type Purifier = { sanitize: (html: string) => string }
-
-let purifier: Purifier | null | undefined
-
 /**
- * Sanitize with an instance of our own, so the link hook never leaks into
- * an app's other DOMPurify usage. Without a DOM (SSR, a worker) there is
- * nothing to sanitize with and the caller falls back to pre-wrap — we
- * never hand back unsanitized HTML.
+ * Send every real link to a new tab with the referrer and ranking dropped.
+ *
+ * Only real links: a heading-anchor plugin emits `<a>` elements with no
+ * href, and those are not navigation. Neither is an `<a>` whose href the
+ * sanitizer just removed for being `javascript:` — which is why this runs
+ * after it rather than before.
  */
-function sanitize(html: string): string {
-    purifier ??= makePurifier()
-
-    if (!purifier) {
-        throw new Error('renderMarkdown: no DOM available to sanitize with.')
-    }
-
-    return purifier.sanitize(html)
-}
-
-function makePurifier(): Purifier | null {
-    const view = typeof window === 'undefined' ? null : window
-
-    if (!view) {
-        return null
-    }
-
-    const instance = (DOMPurify as unknown as (w: unknown) => any)(view)
-
-    if (!instance?.sanitize) {
-        return null
-    }
-
-    instance.setConfig({ USE_PROFILES: { html: true } })
-
-    instance.addHook('afterSanitizeAttributes', (node: any) => {
-        // Only real links: a heading-anchor plugin emits `<a>` elements with
-        // no href, and those are not navigation.
-        if (node.tagName === 'A' && node.getAttribute?.('href')) {
-            node.setAttribute('target', '_blank')
-            node.setAttribute('rel', 'noopener noreferrer nofollow')
+function rehypeSafeLinks() {
+    const walk = (node: any): void => {
+        if (node?.type === 'element' && node.tagName === 'a' && node.properties?.href) {
+            node.properties.target = '_blank'
+            node.properties.rel = ['noopener', 'noreferrer', 'nofollow']
         }
-    })
 
-    return instance as Purifier
+        if (Array.isArray(node?.children)) {
+            for (const child of node.children) {
+                walk(child)
+            }
+        }
+    }
+
+    return (tree: unknown) => walk(tree)
 }

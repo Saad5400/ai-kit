@@ -21,6 +21,7 @@ it('binds the database source and syncs the config catalog into the table', func
     expect(AiModel::query()->count())->toBe(2)
         ->and($flash->label)->toBe('Flash')
         ->and($flash->tasks)->toBe(['chat', 'mcq'])
+        ->and($flash->canonicalSlug)->toBe('test/flash-0731')
         ->and($flash->providerMaxPrice)->toBe(['prompt' => 0.5, 'completion' => 3.25])
         ->and($flash->extra['meta'])->toBe(['tier' => 'standard'])
         ->and(app(CatalogSource::class)->models()->pluck('id')->all())->toBe(['test/flash', 'test/lite']);
@@ -68,6 +69,38 @@ it('ignores disabled entries when asserting the invariant', function () {
     config()->set('ai-kit.catalog.models.test/lite.enabled', false);
 
     $this->artisan('ai-kit:sync-models')->assertSuccessful();
+});
+
+it('keeps a stored canonical slug the config no longer declares', function () {
+    $this->artisan('ai-kit:sync-models')->assertSuccessful();
+
+    // A row synced before the column existed is the same case: the pin is in
+    // the table and nowhere else, and a routine sync must not blank it.
+    config()->set('ai-kit.catalog.models.test/flash.canonical_slug', null);
+
+    $this->artisan('ai-kit:sync-models')
+        ->expectsOutputToContain('0 inserted, 0 updated, 0 disabled')
+        ->assertSuccessful();
+
+    expect(AiModel::query()->where('key', 'test/flash')->value('canonical_slug'))->toBe('test/flash-0731');
+});
+
+it('re-pins a canonical slug the config declares differently', function () {
+    $this->artisan('ai-kit:sync-models')->assertSuccessful();
+
+    config()->set('ai-kit.catalog.models.test/flash.canonical_slug', 'test/flash-0902');
+
+    $this->artisan('ai-kit:sync-models')
+        ->expectsOutputToContain('0 inserted, 1 updated, 0 disabled')
+        ->assertSuccessful();
+
+    expect(AiModel::query()->where('key', 'test/flash')->value('canonical_slug'))->toBe('test/flash-0902');
+});
+
+it('finds a row by its canonical slug and hands back the routing id', function () {
+    $this->artisan('ai-kit:sync-models')->assertSuccessful();
+
+    expect(app(CatalogSource::class)->find('test/flash-0731')?->id)->toBe('test/flash');
 });
 
 it('routes tasks through the Catalog helper', function () {

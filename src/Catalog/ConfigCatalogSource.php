@@ -25,13 +25,25 @@ class ConfigCatalogSource implements CatalogSource
             ->values();
     }
 
+    /**
+     * Resolve by routing id, then by canonical slug — see
+     * {@see DatabaseCatalogSource::find()} for why the second leg exists.
+     */
     public function find(string $modelId): ?ModelDefinition
     {
         $definitions = $this->definitions();
 
-        return isset($definitions[$modelId])
-            ? ModelDefinition::fromArray($modelId, $definitions[$modelId])
-            : null;
+        if (isset($definitions[$modelId])) {
+            return ModelDefinition::fromArray($modelId, $definitions[$modelId]);
+        }
+
+        foreach ($definitions as $id => $data) {
+            if (($data['canonical_slug'] ?? null) === $modelId) {
+                return ModelDefinition::fromArray((string) $id, $data);
+            }
+        }
+
+        return null;
     }
 
     /**

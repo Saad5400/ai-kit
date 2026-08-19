@@ -2,10 +2,11 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
     test: {
-        // The markdown pipeline sanitizes through a real DOM. jsdom, not
-        // happy-dom: happy-dom's NodeIterator makes DOMPurify strip the
-        // root element of every fragment, so the sanitizer under test
-        // would not be the sanitizer that ships.
+        // The components mount into a real DOM, and the markdown tests parse
+        // the sanitized output back to check what a browser would make of it.
+        // The pipeline itself no longer needs a DOM — `rehype-sanitize` works
+        // on the hast tree — so this is the components' requirement now, not
+        // the sanitizer's.
         environment: 'jsdom',
         include: ['js/**/*.test.ts'],
     },

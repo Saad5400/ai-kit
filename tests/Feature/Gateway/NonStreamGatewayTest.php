@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Http;
 use Laravel\Ai\Exceptions\AiException;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Messages\UserMessage;
+use Saad\AiKit\Catalog\ModelRouting;
 use Saad\AiKit\Tests\Support\GatewayFactory;
 use Saad\AiKit\Tests\Support\OpenRouterSse;
 
@@ -37,12 +38,29 @@ it('captures generation id and cost into the non-streamed bucket', function () {
         ->and(Context::get('ai.openrouter_costs'))->toBeNull();
 });
 
-it('forces usage accounting on the request body', function () {
+it('puts the declared chain on the wire for OpenRouter to fail over', function () {
+    config()->set('ai-kit.catalog.models', [
+        'test/model' => ['fallbacks' => ['backup/one'], 'provider_max_price' => ['prompt' => 0.5]],
+    ]);
+
+    Http::fake(['*' => Http::response(OpenRouterSse::completion())]);
+
+    GatewayFactory::gateway(routing: app(ModelRouting::class))->generateTextStep(
+        GatewayFactory::provider(), 'test/model', null, [new UserMessage('hi')], [], null, null, null, new StepContext,
+    );
+
+    Http::assertSent(fn ($request) => $request->data()['models'] === ['test/model', 'backup/one']
+        && $request->data()['provider'] === ['max_price' => ['prompt' => 0.5]]);
+});
+
+// OpenRouter returns full usage unasked now; the flag that forced
+// `usage: {include: true}` is gone and the body carries no usage block.
+it('no longer asks for usage accounting on the request body', function () {
     Http::fake(['*' => Http::response(OpenRouterSse::completion())]);
 
     runTextStep();
 
-    Http::assertSent(fn ($request) => ($request->data()['usage']['include'] ?? null) === true);
+    Http::assertSent(fn ($request) => ! isset($request->data()['usage']));
 });
 
 it('turns an empty 200 body into a clean AiException, not a TypeError', function () {

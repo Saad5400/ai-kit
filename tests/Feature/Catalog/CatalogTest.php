@@ -4,8 +4,8 @@ use Laravel\Ai\Responses\Data\Usage;
 use Saad\AiKit\Catalog\CatalogServiceProvider;
 use Saad\AiKit\Catalog\CatalogSource;
 use Saad\AiKit\Catalog\ConfigCatalogSource;
-use Saad\AiKit\Catalog\FallbackChains;
 use Saad\AiKit\Catalog\ModelDefinition;
+use Saad\AiKit\Catalog\ModelRouting;
 
 function catalogConfig(array $models, array $extras = []): void
 {
@@ -63,50 +63,60 @@ it('estimates cost from declared prices and returns null when prices are missing
         ->and($unpriced->estimatedCostUsd($usage))->toBeNull();
 });
 
-it('builds a native-failover provider list from a declared chain', function () {
+it('turns a declared chain into the OpenRouter models array, itself first', function () {
     catalogConfig([
         'primary/model' => ['fallbacks' => ['backup/one', 'backup/two']],
     ]);
 
-    expect(app(FallbackChains::class)->providersFor('primary/model'))->toBe([
-        'openrouter' => 'primary/model',
-        'openrouter--fallback-1' => 'backup/one',
-        'openrouter--fallback-2' => 'backup/two',
+    expect(app(ModelRouting::class)->requestFields('primary/model'))
+        ->toBe(['models' => ['primary/model', 'backup/one', 'backup/two']]);
+});
+
+it('declares nothing for a model with no chain, and for one it has never heard of', function () {
+    catalogConfig(['lonely/model' => ['label' => 'Lonely']]);
+
+    expect(app(ModelRouting::class)->requestFields('lonely/model'))->toBe([])
+        ->and(app(ModelRouting::class)->requestFields('stranger/model'))->toBe([]);
+});
+
+it('declares a price cap as provider routing rather than filtering locally', function () {
+    catalogConfig([
+        'primary/model' => [
+            'fallbacks' => ['backup/one'],
+            'provider_max_price' => ['prompt' => 0.5, 'completion' => 3.25],
+        ],
+    ]);
+
+    expect(app(ModelRouting::class)->requestFields('primary/model'))->toBe([
+        'models' => ['primary/model', 'backup/one'],
+        'provider' => ['max_price' => ['prompt' => 0.5, 'completion' => 3.25]],
     ]);
 });
 
-it('returns only the base provider for models without a chain', function () {
-    catalogConfig([]);
-
-    expect(app(FallbackChains::class)->providersFor('lonely/model'))
-        ->toBe(['openrouter' => 'lonely/model']);
-});
-
-it('registers alias provider entries cloning the base provider config', function () {
+it('no longer clones provider entries for chain positions', function () {
     catalogConfig([
         'primary/model' => ['fallbacks' => ['backup/one', 'backup/two']],
-        'other/model' => ['fallbacks' => ['backup/one']],
     ]);
 
     rebootCatalog();
 
-    $base = config('ai.providers.openrouter');
-
-    expect(config('ai.providers.openrouter--fallback-1'))->toBe($base)
-        ->and(config('ai.providers.openrouter--fallback-2'))->toBe($base)
-        ->and(config('ai.providers.openrouter--fallback-3'))->toBeNull();
+    // The chain is the provider's problem now; a cloned `ai.providers.*`
+    // entry per position was only ever scaffolding for the client-side loop.
+    expect(config('ai.providers.openrouter--fallback-1'))->toBeNull()
+        ->and(config('ai.providers.openrouter--fallback-2'))->toBeNull();
 });
 
-it('never overwrites an app-defined provider entry with an alias', function () {
+it('resolves a model by its canonical slug as well as its routing id', function () {
     catalogConfig([
-        'primary/model' => ['fallbacks' => ['backup/one']],
+        'deepseek/deepseek-v4-flash' => ['canonical_slug' => 'deepseek/deepseek-v4-flash-0731'],
     ]);
 
-    config()->set('ai.providers.openrouter--fallback-1', ['driver' => 'openrouter', 'key' => 'app-key']);
+    $catalog = app(CatalogSource::class);
 
-    rebootCatalog();
-
-    expect(config('ai.providers.openrouter--fallback-1.key'))->toBe('app-key');
+    // An id written down while the dated pin was the routing id still
+    // resolves — and comes back routing on the alias.
+    expect($catalog->find('deepseek/deepseek-v4-flash-0731')?->id)->toBe('deepseek/deepseek-v4-flash')
+        ->and($catalog->find('deepseek/deepseek-v4-flash')?->canonicalSlug)->toBe('deepseek/deepseek-v4-flash-0731');
 });
 
 it('feeds cheapest and smartest declarations into the provider config', function () {

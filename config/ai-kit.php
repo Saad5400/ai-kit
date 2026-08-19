@@ -43,7 +43,6 @@ return [
     'gateway' => [
         'register_openrouter_driver' => true,
         'spend_context_prefix' => 'ai',
-        'force_usage_accounting' => true,
         'retry' => [
             'attempts' => 3,
             'backoff_ms' => 500,
@@ -56,8 +55,10 @@ return [
         ],
 
         // Statuses that convert to ProviderOverloadedException after retries
-        // are exhausted — the trigger for failing over to the next model in
-        // a declared chain. Stock laravel/ai only maps 503.
+        // are exhausted — the trigger for laravel/ai's own provider failover.
+        // Model-level fallbacks no longer run here: a catalog entry's
+        // `fallbacks` ride into the request as OpenRouter's `models` array
+        // and fail over upstream. Stock laravel/ai only maps 503.
         'failover' => [
             'overloaded_statuses' => [500, 502, 503, 504, 529],
         ],
@@ -177,12 +178,17 @@ return [
     | Catalog
     |--------------------------------------------------------------------------
     |
-    | The models the app routes turns to, keyed by provider-facing model id.
-    | Prices are USD per million tokens (optional — metering prefers the
-    | provider-reported cost). `fallbacks` declares the failover chain for a
-    | model; alias provider entries are registered automatically so chains
-    | ride laravel/ai's native failover. `cheapest`/`smartest` feed the SDK's
-    | UseCheapestModel / UseSmartestModel attributes.
+    | The models the app routes turns to, keyed by provider-facing model id —
+    | OpenRouter's `id` (the stable alias), never its `canonical_slug` (the
+    | dated pin), which entries record separately so ops can see which build
+    | the alias resolved to. Prices are USD per million tokens (optional —
+    | metering prefers the provider-reported cost). `fallbacks` declares the
+    | failover chain for a model: the gateway sends it as OpenRouter's
+    | `models` request array, so the failover happens upstream — on downtime,
+    | rate limits, moderation AND context-length overflow — and the turn is
+    | priced by whichever model actually answered.
+    | `cheapest`/`smartest` feed the SDK's UseCheapestModel /
+    | UseSmartestModel attributes.
     |
     | `source` picks where models() reads from: 'config' serves this file
     | live; 'database' serves the `table` rows that `ai-kit:sync-models`
@@ -191,8 +197,10 @@ return [
     | Entries may also declare `tasks` (routing labels like chat/mcq),
     | `tags` (of which `recommended` is enforced: exactly one recommended
     | model per declared task), `provider_max_price` ({prompt, completion}
-    | routing caps), `provider`/`provider_model_id`, `enabled`, `sort_order`
-    | and a `meta` bag the kit never reads.
+    | caps, sent as OpenRouter's `provider.max_price` so the ceiling binds
+    | the model that answers rather than the one we asked for),
+    | `canonical_slug`, `provider`/`provider_model_id`, `enabled`,
+    | `sort_order` and a `meta` bag the kit never reads.
     |
     */
 
@@ -204,6 +212,7 @@ return [
         'smartest' => null,
         'models' => [
             // 'google/gemini-3.5-flash' => [
+            //     'canonical_slug' => 'google/gemini-3.5-flash-0714',
             //     'label' => 'Gemini 3.5 Flash',
             //     'input_usd_per_million' => 0.30,
             //     'output_usd_per_million' => 2.50,
