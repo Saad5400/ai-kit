@@ -2,21 +2,26 @@
 /**
  * An `AskUser` pause, in the Claude-style shape: the question, the model's
  * suggested answers as one-tap chips, and a free-text input as the last
- * option — because a suggestion list that cannot be escaped is a worse
- * question than an open one.
+ * option — because a suggestion list that cannot be escaped is a worse question
+ * than an open one.
  *
- * `answer` carries the chosen or typed text; resume the turn with it as an
- * edit decision, which is how the answer reaches the tool:
+ * DECIDED STATE. Pass `answer` once the user has answered (or `skipped`) and the
+ * card settles into a record of what was said, instead of a bare "answered"
+ * label that loses the answer. Keep passing it after a reload: a persisted
+ * thread can render its own history this way.
+ *
+ * `answer` (the event) carries the chosen or typed text; resume the turn with it
+ * as an edit decision, which is how the answer reaches the tool:
  *
  *     ResumeDecisions::fromClient(
  *         [$id => ['action' => 'edit', 'arguments' => ['answer' => $text]]],
  *         $cards->editGuard($pending),
  *     )
  *
- * `skip` is a reject: the model reads a denial result and continues without
- * the information, saying what it assumed.
+ * `skip` is a reject: the model reads a denial result and continues without the
+ * information, saying what it assumed.
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { QuestionPayload } from '../core/events'
 
 const props = withDefaults(
@@ -24,15 +29,25 @@ const props = withDefaults(
         card: QuestionPayload
         /** Set while a decision is in flight. */
         disabled?: boolean
+        /** The answer already given — renders the settled card. */
+        answer?: string | null
+        /** Whether the question was dismissed instead of answered. */
+        skipped?: boolean
         placeholder?: string
         sendLabel?: string
         skipLabel?: string
+        answeredLabel?: string
+        skippedLabel?: string
     }>(),
     {
         disabled: false,
+        answer: null,
+        skipped: false,
         placeholder: 'اكتب إجابتك…',
         sendLabel: 'إرسال',
         skipLabel: 'تخطٍّ',
+        answeredLabel: 'إجابتك',
+        skippedLabel: 'تم التخطي',
     },
 )
 
@@ -41,9 +56,11 @@ const emit = defineEmits<{
     skip: []
 }>()
 
+const decided = computed(() => props.skipped || (props.answer ?? '') !== '')
+
 const typed = ref('')
 
-const answer = (value: string): void => {
+const send = (value: string): void => {
     const text = value.trim()
 
     if (text !== '' && !props.disabled) {
@@ -53,49 +70,48 @@ const answer = (value: string): void => {
 </script>
 
 <template>
-    <div class="ai-kit-question">
+    <div class="ai-kit-question" :class="{ 'is-decided': decided }">
         <p class="ai-kit-question__text" dir="auto">{{ card.question }}</p>
 
-        <div v-if="card.options?.length" class="ai-kit-question__options">
-            <button
-                v-for="option in card.options"
-                :key="option"
-                type="button"
-                class="ai-kit-question__option"
-                dir="auto"
-                :disabled="disabled"
-                @click="answer(option)"
-            >
-                {{ option }}
-            </button>
+        <!-- Settled: what was answered, not merely that something was. -->
+        <div v-if="decided" class="ai-kit-question__answer">
+            <span class="ai-kit-question__answer-label">{{ skipped ? skippedLabel : answeredLabel }}</span>
+            <p v-if="!skipped" class="ai-kit-question__answer-text" dir="auto">{{ answer }}</p>
         </div>
 
-        <form class="ai-kit-question__form" @submit.prevent="answer(typed)">
-            <input
-                v-model="typed"
-                type="text"
-                class="ai-kit-question__input"
-                dir="auto"
-                :placeholder="placeholder"
-                :disabled="disabled"
-            />
-            <button
-                type="submit"
-                class="ai-kit-question__send"
-                :disabled="disabled || typed.trim() === ''"
-            >
-                {{ sendLabel }}
-            </button>
-        </form>
+        <template v-else>
+            <div v-if="card.options?.length" class="ai-kit-question__options">
+                <button
+                    v-for="option in card.options"
+                    :key="option"
+                    type="button"
+                    class="ai-kit-question__option"
+                    dir="auto"
+                    :disabled="disabled"
+                    @click="send(option)"
+                >
+                    {{ option }}
+                </button>
+            </div>
 
-        <button
-            type="button"
-            class="ai-kit-question__skip"
-            :disabled="disabled"
-            @click="emit('skip')"
-        >
-            {{ skipLabel }}
-        </button>
+            <form class="ai-kit-question__form" @submit.prevent="send(typed)">
+                <input
+                    v-model="typed"
+                    type="text"
+                    class="ai-kit-question__input"
+                    dir="auto"
+                    :placeholder="placeholder"
+                    :disabled="disabled"
+                />
+                <button type="submit" class="ai-kit-question__send" :disabled="disabled || typed.trim() === ''">
+                    {{ sendLabel }}
+                </button>
+            </form>
+
+            <button type="button" class="ai-kit-question__skip" :disabled="disabled" @click="emit('skip')">
+                {{ skipLabel }}
+            </button>
+        </template>
     </div>
 </template>
 
@@ -105,11 +121,36 @@ const answer = (value: string): void => {
     flex-direction: column;
     gap: 0.5rem;
     padding: 0.75rem;
-    border: 1px solid var(--ai-kit-border, rgba(107, 114, 128, 0.4));
-    border-radius: var(--ai-kit-radius, 0.375rem);
+    border: 1px solid var(--ai-kit-border, color-mix(in oklab, currentColor 22%, transparent));
+    border-radius: var(--ai-kit-radius, 0.5rem);
+    background: var(--ai-kit-surface, color-mix(in oklab, currentColor 4%, transparent));
+}
+
+.ai-kit-question.is-decided {
+    opacity: 0.85;
 }
 
 .ai-kit-question__text {
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-weight: 500;
+}
+
+.ai-kit-question__answer {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    padding-inline-start: 0.625rem;
+    border-inline-start: 2px solid var(--ai-kit-accent, #3b82f6);
+}
+
+.ai-kit-question__answer-label {
+    font-size: var(--ai-kit-label-size, 0.75rem);
+    color: var(--ai-kit-muted, color-mix(in oklab, currentColor 65%, transparent));
+}
+
+.ai-kit-question__answer-text {
     margin: 0;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -123,12 +164,16 @@ const answer = (value: string): void => {
 
 .ai-kit-question__option {
     padding: 0.25rem 0.625rem;
-    border: 1px solid var(--ai-kit-border, rgba(107, 114, 128, 0.4));
+    border: 1px solid var(--ai-kit-border, color-mix(in oklab, currentColor 22%, transparent));
     border-radius: 999px;
-    background: var(--ai-kit-chip-bg, rgba(107, 114, 128, 0.12));
+    background: transparent;
     color: inherit;
     font: inherit;
     cursor: pointer;
+}
+
+.ai-kit-question__option:hover:not(:disabled) {
+    background: var(--ai-kit-surface, color-mix(in oklab, currentColor 10%, transparent));
 }
 
 .ai-kit-question__option:disabled,
@@ -146,19 +191,19 @@ const answer = (value: string): void => {
 .ai-kit-question__input {
     flex: 1;
     min-width: 0;
-    padding: 0.25rem 0.5rem;
-    border: 1px solid var(--ai-kit-border, rgba(107, 114, 128, 0.4));
-    border-radius: var(--ai-kit-radius, 0.375rem);
-    background: var(--ai-kit-input-bg, transparent);
+    padding: 0.3125rem 0.5rem;
+    border: 1px solid var(--ai-kit-border, color-mix(in oklab, currentColor 22%, transparent));
+    border-radius: var(--ai-kit-radius, 0.5rem);
+    background: var(--ai-kit-input-bg, color-mix(in oklab, currentColor 4%, transparent));
     color: inherit;
     font: inherit;
 }
 
 .ai-kit-question__send {
-    padding: 0.25rem 0.75rem;
+    padding: 0.3125rem 0.75rem;
     border: 1px solid transparent;
-    border-radius: var(--ai-kit-radius, 0.375rem);
-    background: var(--ai-kit-accent, #2563eb);
+    border-radius: var(--ai-kit-radius, 0.5rem);
+    background: var(--ai-kit-accent, #3b82f6);
     color: var(--ai-kit-accent-fg, #fff);
     font: inherit;
     cursor: pointer;
@@ -169,7 +214,7 @@ const answer = (value: string): void => {
     padding: 0;
     border: 0;
     background: none;
-    color: var(--ai-kit-muted, #6b7280);
+    color: var(--ai-kit-muted, color-mix(in oklab, currentColor 65%, transparent));
     font: inherit;
     font-size: var(--ai-kit-label-size, 0.75rem);
     text-decoration: underline;

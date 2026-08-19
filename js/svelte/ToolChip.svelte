@@ -41,14 +41,17 @@
         border-radius: 999px;
         font-size: var(--ai-kit-chip-size, 0.75rem);
         line-height: 1.5;
-        color: var(--ai-kit-chip-color, #4b5563);
-        background: var(--ai-kit-chip-bg, rgba(107, 114, 128, 0.12));
+        /* Derived from the host's own text color, so the chip reads on a dark
+           panel as well as a light one without any app CSS. */
+        color: var(--ai-kit-chip-color, inherit);
+        background: var(--ai-kit-chip-bg, color-mix(in oklab, currentColor 12%, transparent));
         border: 1px solid var(--ai-kit-chip-border, transparent);
+        unicode-bidi: isolate;
     }
 
     .ai-kit-tool-chip.is-failed {
-        color: var(--ai-kit-chip-failed-color, #b91c1c);
-        background: var(--ai-kit-chip-failed-bg, rgba(185, 28, 28, 0.12));
+        color: var(--ai-kit-chip-failed-color, var(--ai-kit-destructive, #ef4444));
+        background: var(--ai-kit-chip-failed-bg, color-mix(in oklab, var(--ai-kit-destructive, #ef4444) 15%, transparent));
     }
 
     .ai-kit-tool-chip__name {

@@ -17,8 +17,9 @@
  * These surfaces are chat bubbles and cards, not articles, so margins are
  * tight and first/last margins collapse to avoid double gaps.
  *
- * Colors come from `--ai-kit-*` variables that fall back to sensible
- * neutrals. Map them to your design tokens to theme the output:
+ * Colors come from `--ai-kit-*` variables whose fallbacks are mixed out of
+ * `currentColor`, so the defaults read on a dark surface as well as a light one
+ * with no app CSS at all. Map them to your design tokens to theme the output:
  *
  *   .ai-kit-markdown {
  *       --ai-kit-link: var(--primary);
@@ -98,13 +99,13 @@
 }
 
 .ai-kit-markdown blockquote {
-    border-inline-start: 3px solid var(--ai-kit-border, rgba(107, 114, 128, 0.4));
+    border-inline-start: 3px solid var(--ai-kit-border, color-mix(in oklab, currentColor 22%, transparent));
     padding-inline-start: 0.75em;
-    color: var(--ai-kit-muted, #6b7280);
+    color: var(--ai-kit-muted, color-mix(in oklab, currentColor 65%, transparent));
 }
 
 .ai-kit-markdown code {
-    background: var(--ai-kit-muted-bg, rgba(107, 114, 128, 0.12));
+    background: var(--ai-kit-muted-bg, color-mix(in oklab, currentColor 10%, transparent));
     border-radius: 0.25rem;
     padding: 0.1em 0.3em;
     font-family: var(--ai-kit-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
@@ -112,7 +113,7 @@
 }
 
 .ai-kit-markdown pre {
-    background: var(--ai-kit-muted-bg, rgba(107, 114, 128, 0.12));
+    background: var(--ai-kit-muted-bg, color-mix(in oklab, currentColor 10%, transparent));
     border-radius: 0.5rem;
     padding: 0.6em 0.75em;
     overflow-x: auto;
@@ -126,7 +127,7 @@
 .ai-kit-markdown hr {
     margin-block: 0.75em;
     border: 0;
-    border-top: 1px solid var(--ai-kit-border, rgba(107, 114, 128, 0.4));
+    border-top: 1px solid var(--ai-kit-border, color-mix(in oklab, currentColor 22%, transparent));
 }
 
 .ai-kit-markdown table {
@@ -138,13 +139,13 @@
 
 .ai-kit-markdown th,
 .ai-kit-markdown td {
-    border: 1px solid var(--ai-kit-border, rgba(107, 114, 128, 0.4));
+    border: 1px solid var(--ai-kit-border, color-mix(in oklab, currentColor 22%, transparent));
     padding: 0.25em 0.6em;
     text-align: start;
 }
 
 .ai-kit-markdown th {
-    background: var(--ai-kit-muted-bg, rgba(107, 114, 128, 0.12));
+    background: var(--ai-kit-muted-bg, color-mix(in oklab, currentColor 10%, transparent));
     font-weight: 600;
 }
 

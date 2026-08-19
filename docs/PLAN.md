@@ -166,8 +166,39 @@ place where the kit shipped a channel but left the *model* of it to the app:
   and a skip that rejects. `AskUser::fields()` makes `answer` the one editable field,
   so a guarded question resume restores the model's own `question` / `options` instead
   of trusting the client's echo.
-- Suite: 356 PHP tests green (was 336), 70 vitest green (was 47), `tsc --noEmit`
-  clean, pint clean. npm package at 0.6.0 with a `./timeline` export.
+2026-08-19 (same day, owner reviewed prod screenshots): a **UI pass on the same
+branch** — the components had to be visually right by default, not merely
+mechanically right, because "themeable" had been shipping as "unstyled until the app
+does the work":
+
+- **Bidi.** An RTL card rendered `action: create` as a scrambled "create action:".
+  Field rows now isolate (`unicode-bidi: isolate` + `<bdi>`): a raw argument name is a
+  machine token — mono, `dir="ltr"`, isolated — while a tool-supplied `label` renders
+  as `dir="auto"` prose. Readonly values get the same treatment when they look like
+  ids or enum members (`js/core/fields.ts` owns that judgement so the Vue and Svelte
+  mirrors cannot drift). Readonly fields render as definition rows, never disabled
+  inputs. Tool chips and card titles isolate too.
+- **Long text.** The prod card put a 1,733-character markdown body in one `<input>`.
+  Long-text widgets are an auto-growing editor (`field-sizing: content`) capped at
+  ~40vh with internal scroll, mono for markdown/code, plus a character count — which
+  is what makes the >120-chars-or-newline inference rule matter.
+- **ProcessGroup is a real disclosure**: chevron (rotating up/down, so RTL needs no
+  mirror), tool-count badge, opens while `live` and collapses on its own once
+  settled — until the user toggles it, after which their choice wins.
+- **New `ApprovalCard`** (Vue + Svelte): the full chrome — icon slot, title, status
+  chip, reason, preview lines, the form, and a confirm/reject row with confirm first
+  in reading order. Destructive cards take the destructive accent on border, tint and
+  confirm button, derived from the server flag rather than app guessing. Its `decide`
+  event emits exactly what `ResumeDecisions::fromClient()` accepts.
+- **QuestionCard answered state**: an optional `answer` / `skipped` renders what was
+  actually said instead of a bare "تمت الإجابة".
+- **Tokens that work on dark by default.** Neutral fallbacks are now mixed out of
+  `currentColor` (`color-mix(in oklab, currentColor N%, transparent)`) instead of
+  hardcoded greys, across the components and `prose.css`, so the defaults read on the
+  dark admin panel of the screenshots with no app CSS. The `--ai-kit-*` token list is
+  documented in the README.
+- Suite: 356 PHP tests green (was 336), 79 vitest green (was 47), `tsc --noEmit`
+  clean, pint clean. npm package at 0.6.0 with `./timeline` and `./fields` exports.
 
 Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1, v0.5.0**.
 

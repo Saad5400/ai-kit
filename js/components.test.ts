@@ -13,6 +13,7 @@ const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.m
 
 describe('vue components', () => {
     it.each([
+        'ApprovalCard.vue',
         'ApprovalFields.vue',
         'Markdown.vue',
         'ProcessGroup.vue',
@@ -41,6 +42,7 @@ describe('vue components', () => {
 
 describe('svelte components', () => {
     it.each([
+        'ApprovalCard.svelte',
         'ApprovalFields.svelte',
         'Markdown.svelte',
         'ProcessGroup.svelte',

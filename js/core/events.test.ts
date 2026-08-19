@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { closesReasoning, editableArguments, isAiKitEvent, isTerminal } from './events'
-import type { ApprovalCardField } from './events'
-
-const field = (
-    name: string,
-    widget: ApprovalCardField['widget'],
-    editable: boolean,
-    value: unknown,
-): ApprovalCardField => ({ name, widget, editable, label: null, options: null, placeholder: null, value })
+import { closesReasoning, isAiKitEvent, isTerminal } from './events'
 
 describe('the wire contract helpers', () => {
     it('tells a contract event from an app extension event', () => {
@@ -32,32 +24,5 @@ describe('the wire contract helpers', () => {
         expect(closesReasoning('error')).toBe(true)
         // Reasoning does not close itself — a block stays open across deltas.
         expect(closesReasoning('reasoning')).toBe(false)
-    })
-})
-
-describe('the approval form schema', () => {
-    const fields: ApprovalCardField[] = [
-        field('article_id', 'readonly', false, 5),
-        field('internal_note', 'hidden', false, 'server-only'),
-        field('body', 'markdown', true, 'original'),
-        field('summary', 'textarea', true, null),
-    ]
-
-    it('sends only editable fields as the edit arguments', () => {
-        expect(editableArguments(fields, { body: 'edited' })).toEqual({
-            body: 'edited',
-            summary: null,
-        })
-    })
-
-    it('falls back to the value the card arrived with for untouched fields', () => {
-        expect(editableArguments(fields)).toEqual({ body: 'original', summary: null })
-    })
-
-    it('drops a readonly or hidden edit rather than echoing it back', () => {
-        expect(editableArguments(fields, { article_id: 999, internal_note: 'x' })).toEqual({
-            body: 'original',
-            summary: null,
-        })
     })
 })

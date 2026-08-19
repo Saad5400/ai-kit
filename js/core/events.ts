@@ -192,6 +192,23 @@ export type AiKitEventName = AiKitSseEvent['event']
 /** A pause card, whichever kind arrived. */
 export type AiKitCard = ApprovalPayload | QuestionPayload
 
+/**
+ * The decision a client sends back to resume a paused turn, keyed by tool-call
+ * id — the shape `Saad\AiKit\Approvals\Classified\ResumeDecisions::fromClient()`
+ * accepts:
+ *
+ *     POST …/decide  { decisions: { [id]: ClientDecision } }
+ *
+ * An `edit` is how a form's values travel, and how an `AskUser` answer travels
+ * (`{answer: '…'}`). The server reconciles an edit's arguments against the
+ * pending call before anything executes, so readonly and hidden fields cannot
+ * be changed from here whatever the client sends.
+ */
+export type ClientDecision =
+    | { action: 'approve' }
+    | { action: 'edit'; arguments: Record<string, unknown> }
+    | { action: 'reject'; reason?: string }
+
 const NAMES: readonly AiKitEventName[] = [
     'delta',
     'reasoning',
@@ -223,28 +240,4 @@ export function isTerminal(event: string): boolean {
  */
 export function closesReasoning(event: string): boolean {
     return event === 'delta' || event === 'tool' || isTerminal(event)
-}
-
-/**
- * The `arguments` of an `{action: 'edit'}` decision, built from a card's field
- * schema and the user's in-progress edits: every EDITABLE field's current
- * value, and nothing else.
- *
- * Readonly and hidden fields are left out rather than echoed back — the server
- * restores them from the pending call either way
- * (`ApprovalCards::guardEdits()`), so sending them only invites a client to
- * think it owns them.
- *
- * @param edits values keyed by field name; a field the user has not touched
- * falls back to the value the card arrived with.
- */
-export function editableArguments(
-    fields: readonly ApprovalCardField[],
-    edits: Record<string, unknown> = {},
-): Record<string, unknown> {
-    return Object.fromEntries(
-        fields
-            .filter((field) => field.editable)
-            .map((field) => [field.name, edits[field.name] ?? field.value ?? null]),
-    )
 }

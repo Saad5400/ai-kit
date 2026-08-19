@@ -97,7 +97,21 @@ import Markdown from '@saad5400/ai-kit/svelte/Markdown.svelte'    // catodemy, s
 import '@saad5400/ai-kit/styles/prose.css'                        // optional
 ```
 
-Contents: `events` (the table above, as TypeScript), `sse` (a dependency-free reader for POST-response streams — `EventSource` cannot send a body), `timeline` (the ordered segment reducer, below), `markdown` (unified + GFM, sanitized through DOMPurify, raw HTML escaped to literal text, every link `target="_blank" rel="noopener noreferrer nofollow"`, plus a throttled `createLiveRenderer` for streaming), and thin `vue/` + `svelte/` components (`Markdown`, `ProcessGroup`, `ApprovalFields`, `QuestionCard`, `ToolChip`) styled only through CSS-variable hooks — look and feel stays per app.
+Contents: `events` (the table above, as TypeScript), `sse` (a dependency-free reader for POST-response streams — `EventSource` cannot send a body), `timeline` (the ordered segment reducer, below), `fields` (the form-schema presentation helpers the two component sets share), `markdown` (unified + GFM, sanitized through DOMPurify, raw HTML escaped to literal text, every link `target="_blank" rel="noopener noreferrer nofollow"`, plus a throttled `createLiveRenderer` for streaming), and `vue/` + `svelte/` components (`Markdown`, `ProcessGroup`, `ApprovalCard`, `ApprovalFields`, `QuestionCard`, `ToolChip`).
+
+Theming is CSS variables only — set them once on a container and every component follows:
+
+| Token | Default | Used for |
+|---|---|---|
+| `--ai-kit-accent` / `--ai-kit-accent-fg` | `#3b82f6` / `#fff` | confirm button, focus ring, answered marker |
+| `--ai-kit-destructive` / `--ai-kit-destructive-fg` | `#ef4444` / `#fff` | destructive card border/tint/confirm, failed chip |
+| `--ai-kit-muted` | `color-mix(currentColor 65%, transparent)` | labels, reasons, thinking text |
+| `--ai-kit-border` | `color-mix(currentColor 22%, transparent)` | every border and rule |
+| `--ai-kit-surface` | `color-mix(currentColor 4–12%, transparent)` | card and disclosure backgrounds |
+| `--ai-kit-radius` | `0.5rem` | corners |
+| `--ai-kit-code-font` / `--ai-kit-code-size` | mono stack / `0.8125rem` | machine names, ids, code and markdown editors |
+
+The neutral defaults are mixed out of `currentColor` rather than hardcoded greys, so the components read correctly on a **dark** admin panel with no app CSS at all — mapping the tokens to your design system is refinement, not a prerequisite.
 
 ### The segment timeline
 
@@ -124,9 +138,9 @@ Your message component then renders groups, not raw segments. `groupSegments()` 
         <Markdown value={group.text} />
     {:else if group.type === 'card'}
         {#if group.card.kind === 'question'}
-            <QuestionCard card={group.card} onanswer={answer} onskip={skip} />
+            <QuestionCard card={group.card} answer={answers[group.card.id]} onanswer={answer} onskip={skip} />
         {:else}
-            <ApprovalFields fields={group.card.fields} onupdate={stage} />
+            <ApprovalCard card={group.card} ondecide={(d) => decide(group.card.id, d)} />
         {/if}
     {:else}
         <ProcessGroup items={group.items} live={streaming && i === groups.length - 1} />
@@ -134,7 +148,13 @@ Your message component then renders groups, not raw segments. `groupSegments()` 
 {/each}
 ```
 
-`ProcessGroup` supersedes `ThinkingDisclosure`, which stays exported for one version and is deprecated. `ApprovalFields` renders the server's field schema — hidden fields skipped, readonly as label + value, the rest as their matching control, `markdown`/`code` as a monospace auto-growing textarea you can replace through the `field` slot (Vue) or snippet (Svelte) — and emits only the editable arguments, which is what an `{action: 'edit'}` decision sends.
+`ProcessGroup` supersedes `ThinkingDisclosure` (deprecated, still exported for one version): a real `<details>` with a chevron and a tool-count badge, open while `live` and collapsing on its own once the group settles — until the user toggles it, after which their choice sticks.
+
+`ApprovalCard` is the whole card: header with an `icon` slot, title, a status chip (`لا يمكن التراجع` / `قابل للتراجع`), the reason, preview lines, the form, and the confirm/reject row with confirm first in reading order so RTL puts it on the right. A destructive card takes the destructive accent on its border and confirm button, derived from the same server flag as the behaviour. Its `decide` event hands you exactly what `ResumeDecisions::fromClient()` accepts — `{action: 'approve'}`, `{action: 'edit', arguments}` or `{action: 'reject'}` — so the handler is one request.
+
+`ApprovalFields` renders the field schema on its own if you want your own chrome: hidden skipped, readonly as a definition row (never a disabled input), the rest as their matching control, long text as an auto-growing editor that scrolls internally past ~40vh with a character count, and `markdown`/`code` in mono — each replaceable per widget through the `field` slot (Vue) or snippet (Svelte). Raw argument names render mono, `dir="ltr"` and bidi-**isolated**, which is what stops `action: create` from rendering as a scrambled "create action:" inside an Arabic card; a tool that supplies its own `label` gets `dir="auto"` prose instead.
+
+`QuestionCard` takes an optional `answer` (or `skipped`) and settles into a record of what was actually answered rather than a bare "answered" label — pass it from your persisted thread and a reloaded page renders its history the same way.
 
 `styles/prose.css` is optional and opt-in: a small flat prose sheet for `.ai-kit-markdown`, worth taking mainly because it uses logical properties throughout (`padding-inline-start`, `border-inline-start`, `text-align: start`), so Arabic replies lay out correctly with no mirrored RTL stylesheet. Map `--ai-kit-link`, `--ai-kit-border`, `--ai-kit-muted-bg` and `--ai-kit-muted` to your design tokens. An app with its own prose system should skip it.
 
