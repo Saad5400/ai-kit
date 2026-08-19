@@ -10,7 +10,7 @@ Toggled per app via `config/ai-kit.php` → `modules.*`:
 
 | Module | Default | Contents |
 |---|---|---|
-| `gateway` | on | Canonical `ReasoningOpenRouterGateway`, resilience policy (timeouts, retries, server-side model routing, circuit breaker), drift-guard |
+| `gateway` | on | Canonical `ReasoningOpenRouterGateway`, resilience policy (timeouts, retries, server-side model routing, circuit breaker), audio attachments as `input_audio`, drift-guard |
 | `agents` | on | Agent ↔ MCP tool adapters, Capability bridge |
 | `conversations` | on | `EncryptedConversationStore`, retention policies, tool traces |
 | `streaming` | on | `TurnRunner` + sinks, resumable SSE buffer (queue-worker generation) |

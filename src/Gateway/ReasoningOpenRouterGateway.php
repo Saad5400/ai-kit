@@ -7,9 +7,13 @@ use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Collection;
 use Laravel\Ai\Contracts\Providers\TextProvider;
 use Laravel\Ai\Exceptions\AiException;
 use Laravel\Ai\Exceptions\FailoverableException;
+use Laravel\Ai\Files\Audio;
+use Laravel\Ai\Files\Base64Audio;
 use Laravel\Ai\Gateway\OpenRouter\OpenRouterGateway;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Gateway\StepResponse;
@@ -46,6 +50,8 @@ use Throwable;
  *    chain, `provider.max_price` cap); withholds tools on the final step and
  *    injects an answer-now nudge (a tool call emitted on the final step would
  *    be silently discarded by TextGenerationLoop)
+ *  - mapAttachments(): maps audio to `input_audio` content parts (stock only
+ *    knows images and documents, and throws on every Audio subclass)
  *  - parseTextResponse(): captures generation id + exact cost (non-streamed)
  *  - processTextStream(): copy of the stock method with reasoning re-emission
  *    (stock drops delta.reasoning), generation-id + cost capture, and a
@@ -285,6 +291,124 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         }
 
         return $body;
+    }
+
+    /**
+     * Map attachments to Chat Completions content parts, adding the audio
+     * case stock does not have.
+     *
+     * OpenRouter carries audio on the chat endpoint as an `input_audio` part,
+     * but stock MapsAttachments knows only images and documents and throws on
+     * every `Files\Audio` subclass — which is why apps that wanted audio (and
+     * the segments and cost that come with a chat completion) dropped to raw
+     * HTTP instead of going through an agent. Non-audio attachments are handed
+     * to the stock mapper one at a time, so its mapping and its throw on a
+     * genuinely unsupported type are unchanged, and order is preserved.
+     */
+    protected function mapAttachments(Collection $attachments): array
+    {
+        return $attachments->map(function (mixed $attachment): array {
+            $audio = $this->mapAudioAttachment($attachment);
+
+            if ($audio !== null) {
+                return $audio;
+            }
+
+            return array_values(parent::mapAttachments(collect([$attachment])))[0];
+        })->values()->all();
+    }
+
+    /**
+     * Build the `input_audio` part for an audio attachment, or null when the
+     * attachment is not audio and belongs to the stock mapper.
+     *
+     * Every source ends up inline base64: OpenRouter has no URL form for
+     * audio, so a remote or stored file is fetched here rather than passed
+     * through the way a remote document is.
+     *
+     * @return array{type: string, input_audio: array{data: string, format: string}}|null
+     */
+    protected function mapAudioAttachment(mixed $attachment): ?array
+    {
+        if ($attachment instanceof Audio) {
+            $mime = $attachment->mimeType();
+
+            return $this->audioPart(
+                $attachment instanceof Base64Audio ? $attachment->base64 : base64_encode($attachment->content()),
+                is_string($mime) ? $mime : null,
+                $attachment->name(),
+            );
+        }
+
+        if ($attachment instanceof UploadedFile && str_starts_with($attachment->getClientMimeType(), 'audio/')) {
+            return $this->audioPart(
+                base64_encode($attachment->get()),
+                $attachment->getClientMimeType(),
+                $attachment->getClientOriginalName(),
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{type: string, input_audio: array{data: string, format: string}}
+     */
+    protected function audioPart(string $base64, ?string $mime, ?string $name): array
+    {
+        return [
+            'type' => 'input_audio',
+            'input_audio' => [
+                'data' => $base64,
+                'format' => $this->inputAudioFormat($mime, $name),
+            ],
+        ];
+    }
+
+    /**
+     * Derive OpenRouter's `format` — a bare container token ("mp3", "wav"),
+     * never a mime type — from the attachment's mime, falling back to its
+     * filename extension. `mp3` is the last resort: it is one of the two
+     * formats OpenRouter documents everywhere, and the one a browser recorder
+     * or a phone upload most often produces.
+     *
+     * Stock's `audioFormat()` covers the same mimes but belongs to the
+     * transcription endpoint and throws on anything outside its list; a chat
+     * attachment can legitimately arrive with no mime at all (a stored blob,
+     * a base64 string), so the fallbacks live here and an unrecognized
+     * container passes through as its own token for the provider to reject.
+     */
+    protected function inputAudioFormat(?string $mime, ?string $name): string
+    {
+        $aliases = [
+            'mpeg' => 'mp3',
+            'mpga' => 'mp3',
+            'mp4' => 'm4a',
+            'x-m4a' => 'm4a',
+            'wave' => 'wav',
+            'vnd.wave' => 'wav',
+            'x-wav' => 'wav',
+            'x-pn-wav' => 'wav',
+            'x-flac' => 'flac',
+            'x-aac' => 'aac',
+            'oga' => 'ogg',
+        ];
+
+        $mime = strtolower(trim(explode(';', (string) $mime)[0]));
+
+        // Only an audio/* mime says anything about the container; a generic
+        // application/octet-stream must not become format "octet-stream".
+        $subtype = str_starts_with($mime, 'audio/') ? substr($mime, 6) : '';
+
+        $extension = strtolower(pathinfo((string) $name, PATHINFO_EXTENSION));
+
+        foreach ([$subtype, $extension] as $candidate) {
+            if ($candidate !== '') {
+                return $aliases[$candidate] ?? $candidate;
+            }
+        }
+
+        return 'mp3';
     }
 
     /**

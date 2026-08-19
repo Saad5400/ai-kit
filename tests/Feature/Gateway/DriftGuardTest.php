@@ -35,6 +35,11 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         'Gateway/OpenRouter/Concerns/ParsesTextResponses.php' => '42dc89bb18f4bbd592dd4ba1153991427af54046c1809680dc2ae021e928dc2b',
         'Gateway/OpenRouter/Concerns/BuildsTextRequests.php' => '3519c0fb0069e3b96d75c8f81974fd5044cdb22771f6ffe343e03cbc4ccb16c5',
         'Gateway/OpenRouter/Concerns/CreatesOpenRouterClient.php' => '0eb8db8712cf6fe41c50431047a3da6fdbc5b331268d63e60d9591a0b12af375',
+        // The gateway's mapAttachments() override delegates every non-audio
+        // attachment back to this trait one at a time, and leans on its throw
+        // for unsupported types — if upstream adds the audio case itself, drop
+        // the override.
+        'Gateway/OpenRouter/Concerns/MapsAttachments.php' => '0ec021dd0e38902cfadd4740c4a4e132bba0bbcb33084357c448bcfce2ea0052',
         'Gateway/OpenAiCompatible/Concerns/PerformsChatCompletionSteps.php' => 'b0a6c3786124f9cca8898f424d8efb0fdddaccf280e3bec17aaeb96bc9735167',
         'Gateway/Concerns/ParsesServerSentEvents.php' => '6429c2393b9f9d3d1d6e6cee92d356bda84067151c3bca050635a6c06de7b649',
         // M2 additions — failover semantics the fallback chains and circuit
