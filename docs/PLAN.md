@@ -200,8 +200,12 @@ does the work":
 - Suite: 356 PHP tests green (was 336), 79 vitest green (was 47), `tsc --noEmit`
   clean, pint clean. npm package at 0.6.0 with `./timeline` and `./fields` exports.
 
-**v0.6.0 bundle — follow-ups** (2026-08-19; branch `feat/v0.6-bundle`, PR open,
-NOT merged or tagged). Four packages, each from a completed research audit; the
+**v0.6.0 bundle — follow-ups** (2026-08-19; PR #3 **merged `851081c`; v0.6.0
+tagged** on top of PR #2 `975d926`, after the owner ruled "ship it all" on the
+two build-vs-buy audits — verdict: keep the differentiated modules, adopt three
+small libs, delete what OpenRouter/Laravel now do server-side/natively. The
+owner declined the OpenRouter privacy-routing change; per his ruling it is not
+documented as an open item.) Four packages, each from a completed research audit; the
 common theme is code we wrote because nothing better existed at the time, and
 one class of corruption nothing was looking for.
 
