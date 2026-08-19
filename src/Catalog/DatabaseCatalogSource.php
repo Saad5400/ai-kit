@@ -33,17 +33,25 @@ class DatabaseCatalogSource implements CatalogSource
             ->values();
     }
 
+    /**
+     * Resolve by routing id, then by canonical slug.
+     *
+     * The slug leg is for ids that outlived the catalog: a usage row, a
+     * stored conversation or an app setting written while the dated pin was
+     * the routing id still has to find its model. Never the reverse — what
+     * comes back routes on `key`, so resolving through the slug quietly
+     * migrates the caller onto the alias.
+     */
     public function find(string $modelId): ?ModelDefinition
     {
         if (! $this->tableExists()) {
             return null;
         }
 
-        return AiModel::query()
-            ->enabled()
-            ->where('key', $modelId)
-            ->first()
-            ?->toDefinition();
+        $row = AiModel::query()->enabled()->where('key', $modelId)->first()
+            ?? AiModel::query()->enabled()->where('canonical_slug', $modelId)->first();
+
+        return $row?->toDefinition();
     }
 
     protected function tableExists(): bool

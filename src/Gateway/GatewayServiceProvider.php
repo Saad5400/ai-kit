@@ -7,6 +7,7 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Ai\Ai;
 use Laravel\Ai\Providers\OpenRouterProvider;
+use Saad\AiKit\Catalog\ModelRouting;
 
 class GatewayServiceProvider extends ServiceProvider
 {
@@ -37,6 +38,9 @@ class GatewayServiceProvider extends ServiceProvider
             $app['config']->get('ai-kit.gateway.circuit_breaker.enabled', true)
                 ? $app->make(ModelCircuitBreaker::class)
                 : null,
+            // The catalog module is optional; without it there are no chains
+            // or price caps to declare and the body stays bare.
+            $app->bound(ModelRouting::class) ? $app->make(ModelRouting::class) : null,
         ));
 
         if ($this->app['config']->get('ai-kit.gateway.register_openrouter_driver', true)) {

@@ -9,8 +9,11 @@ use Laravel\Ai\Exceptions\ProviderOverloadedException;
  * Per provider+model circuit breaker. Enough step failures inside the
  * rolling window open the circuit for the cooldown; while open, the gateway
  * throws ProviderOverloadedException before any HTTP happens, which is a
- * FailoverableException — so a declared fallback chain skips straight to
- * the next model. After the cooldown, one probe request is let through
+ * FailoverableException — so an app's declared laravel/ai provider failover
+ * skips straight to the next provider. (A catalog entry's model `fallbacks`
+ * are a different mechanism: they ride into the request as OpenRouter's
+ * `models` array and never reach this breaker, because the whole point is
+ * that the request does go out.) After the cooldown, one probe is let through
  * (half-open): success closes the circuit, failure re-opens it. A quiet
  * half-open window with no traffic closes on its own by expiry.
  */

@@ -10,14 +10,14 @@ Toggled per app via `config/ai-kit.php` → `modules.*`:
 
 | Module | Default | Contents |
 |---|---|---|
-| `gateway` | on | Canonical `ReasoningOpenRouterGateway`, resilience policy (timeouts, retries, fallback chains, circuit breaker), drift-guard |
+| `gateway` | on | Canonical `ReasoningOpenRouterGateway`, resilience policy (timeouts, retries, server-side model routing, circuit breaker), drift-guard |
 | `agents` | on | Agent ↔ MCP tool adapters, Capability bridge |
 | `conversations` | on | `EncryptedConversationStore`, retention policies, tool traces |
 | `streaming` | on | `TurnRunner` + sinks, resumable SSE buffer (queue-worker generation) |
 | `approvals` | on | `Capability` + `Effect`, classified pause on laravel/ai `Approvable`, server-built card form schema (`Field`/`FieldWidget`) + `guardEdits`, undo ledger + `UndoTurn`, `AskUser` |
-| `attachments` | on | 3-stage extraction pipeline, extract-on-upload, sha-256 cache |
+| `attachments` | on | 3-stage extraction pipeline (born-digital text layer, junk + Arabic-reversal probes, vision fallback), extract-on-upload, sha-256 cache |
 | `usage` | on | `TurnSpend`, canonical usage events, turn traces + TTFT metrics |
-| `catalog` | on | `CatalogSource` (config and/or DB), `ai-kit:sync-models` |
+| `catalog` | on | `CatalogSource` (config and/or DB), `ai-kit:sync-models`, `ModelRouting` |
 | `safety` | on | Central kill switch, `BudgetGuard`, concurrency caps, degraded mode |
 | `rag` | off | Hybrid retriever (pgvector + RRF), embedder/chunker |
 | `credits` | off | Generalized wallets, `CreditCalculator`, idempotent meter base |
@@ -97,7 +97,7 @@ import Markdown from '@saad5400/ai-kit/svelte/Markdown.svelte'    // catodemy, s
 import '@saad5400/ai-kit/styles/prose.css'                        // optional
 ```
 
-Contents: `events` (the table above, as TypeScript), `sse` (a dependency-free reader for POST-response streams — `EventSource` cannot send a body), `timeline` (the ordered segment reducer, below), `fields` (the form-schema presentation helpers the two component sets share), `markdown` (unified + GFM, sanitized through DOMPurify, raw HTML escaped to literal text, every link `target="_blank" rel="noopener noreferrer nofollow"`, plus a throttled `createLiveRenderer` for streaming), and `vue/` + `svelte/` components (`Markdown`, `ProcessGroup`, `ApprovalCard`, `ApprovalFields`, `QuestionCard`, `ToolChip`).
+Contents: `events` (the table above, as TypeScript), `sse` (a reader for POST-response streams — `EventSource` cannot send a body — wrapping `eventsource-parser` for the framing and keeping the fetch/abort shell, a JSON-with-raw-fallback parse, a `maxBufferSize` cap, and one deliberate spec departure: a final frame the server never closed with a blank line is still dispatched), `timeline` (the ordered segment reducer, below), `fields` (the form-schema presentation helpers the two component sets share), `markdown` (unified + GFM, sanitized on the hast tree by `rehype-sanitize` so no DOM is needed, raw HTML escaped to literal text, every link `target="_blank" rel="noopener noreferrer nofollow"`, plus a throttled `createLiveRenderer` that runs `remend` over the partial buffer so a half-written `**bold` never flashes its asterisks), and `vue/` + `svelte/` components (`Markdown`, `ProcessGroup`, `ApprovalCard`, `ApprovalFields`, `QuestionCard`, `ToolChip`).
 
 Theming is CSS variables only — set them once on a container and every component follows:
 
@@ -177,4 +177,4 @@ npm install
 npm test        # vitest — js/core + a compile check on the components
 ```
 
-Tests run on Orchestra Testbench; no live AI calls in CI (recorded fixtures only). The JS suite runs under jsdom, not happy-dom: happy-dom's `NodeIterator` makes DOMPurify strip the root element of every fragment, so the sanitizer under test would not be the sanitizer that ships.
+Tests run on Orchestra Testbench; no live AI calls in CI (recorded fixtures only). The JS suite runs under jsdom for the components and for the markdown tests that parse the sanitized output back to check what a browser makes of it; the renderer itself no longer needs a DOM.

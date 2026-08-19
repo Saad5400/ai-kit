@@ -44,16 +44,27 @@ describe('renderMarkdown', () => {
 
         expect(html).not.toContain('<script>')
         // The characters the model wrote survive as literal text — the
-        // tag is neither executed nor silently dropped.
-        expect(html).toBe('<p>before &lt;script&gt;alert(1)&lt;/script&gt; after</p>')
+        // tag is neither executed nor silently dropped. Only `<` needs
+        // escaping in text content; a literal `>` cannot open anything.
+        expect(html).toBe('<p>before &lt;script>alert(1)&lt;/script> after</p>')
     })
 
     it('escapes raw block-level html too', () => {
         const html = renderMarkdown('<div onclick="steal()">hi</div>\n\nparagraph')
 
         expect(html).not.toContain('<div')
-        expect(html).toContain('&lt;div onclick="steal()"&gt;hi&lt;/div&gt;')
+        expect(html).toContain('&lt;div onclick="steal()">hi&lt;/div>')
         expect(html).toContain('<p>paragraph</p>')
+    })
+
+    it('parses the escaped html back to exactly the characters the model wrote', () => {
+        const source = '<img src=x onerror=alert(1)> & <b>bold</b>'
+        const host = document.createElement('div')
+
+        host.innerHTML = renderMarkdown(source)
+
+        expect(host.querySelector('img')).toBeNull()
+        expect(host.textContent).toBe(source)
     })
 
     it('sends every link to a new tab, with the referrer and ranking dropped', () => {
@@ -69,6 +80,45 @@ describe('renderMarkdown', () => {
 
         expect(html).not.toContain('javascript:')
         expect(html).toContain('click')
+    })
+
+    // Every scheme outside the allow list, not just the famous one — and the
+    // link decorator must skip the stripped anchor rather than dressing an
+    // hrefless element up as navigation.
+    it.each([
+        ['data:', '[click](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)'],
+        ['vbscript:', '[click](vbscript:msgbox(1))'],
+        ['file:', '[click](file:///etc/passwd)'],
+    ])('strips a %s link but keeps its text', (scheme, source) => {
+        const html = renderMarkdown(source)
+
+        expect(html).not.toContain(scheme)
+        expect(html).not.toContain('href')
+        expect(html).not.toContain('target="_blank"')
+        expect(html).toContain('click')
+    })
+
+    it('keeps a mailto link, which is a scheme an answer legitimately uses', () => {
+        const html = renderMarkdown('[mail](mailto:a@example.com)')
+
+        expect(html).toContain('href="mailto:a@example.com"')
+        expect(html).toContain('rel="noopener noreferrer nofollow"')
+    })
+
+    it('drops an unknown attribute a rehype plugin put on an element', () => {
+        const inject = () => (tree: any) => {
+            tree.children.push({
+                type: 'element',
+                tagName: 'p',
+                properties: { onClick: 'steal()', style: 'position:fixed', className: ['ok'] },
+                children: [],
+            })
+        }
+
+        const html = renderMarkdown('x', { plugins: { rehype: [inject] } })
+
+        expect(html).not.toContain('onclick')
+        expect(html).not.toContain('position:fixed')
     })
 
     it('returns an empty string for empty source', () => {
@@ -270,6 +320,71 @@ describe('createLiveRenderer', () => {
         vi.advanceTimersByTime(5000)
 
         expect(onHtml).toHaveBeenCalledTimes(1)
+
+        vi.useRealTimers()
+    })
+
+    it('closes markdown the model has not finished writing yet', () => {
+        vi.useFakeTimers()
+
+        const onHtml = vi.fn()
+        const live = createLiveRenderer({ onHtml, throttleMs: 10 })
+
+        live.push('this is **bold')
+        vi.advanceTimersByTime(10)
+
+        // Without the mid-stream repair the two asterisks render as literal
+        // characters for one frame and then vanish when the pair arrives.
+        expect(onHtml.mock.calls[0][0]).toContain('<strong>bold</strong>')
+        expect(onHtml.mock.calls[0][0]).not.toContain('**')
+
+        vi.useRealTimers()
+    })
+
+    it('closes an unterminated inline code span and strikethrough mid-stream', () => {
+        vi.useFakeTimers()
+
+        const onHtml = vi.fn()
+        const live = createLiveRenderer({ onHtml, throttleMs: 10 })
+
+        live.push('run `npm i')
+        vi.advanceTimersByTime(10)
+        expect(onHtml.mock.calls[0][0]).toContain('<code>npm i</code>')
+
+        live.push('run `npm i` then ~~old')
+        vi.advanceTimersByTime(10)
+        expect(onHtml.mock.calls[1][0]).toContain('<del>old</del>')
+
+        vi.useRealTimers()
+    })
+
+    it('renders the finished text as written, with nothing the repair invented', () => {
+        vi.useFakeTimers()
+
+        const onHtml = vi.fn()
+        const live = createLiveRenderer({ onHtml, throttleMs: 10 })
+
+        // A turn that really did end on a stray asterisk keeps it: `finish()`
+        // renders the source, not the mended buffer.
+        live.push('rate is 5 * ')
+        live.finish()
+
+        expect(onHtml.mock.lastCall?.[0]).toContain('5 *')
+        expect(onHtml.mock.lastCall?.[0]).not.toContain('<em>')
+
+        vi.useRealTimers()
+    })
+
+    it('leaves a finished code fence alone rather than repairing inside it', () => {
+        vi.useFakeTimers()
+
+        const onHtml = vi.fn()
+        const live = createLiveRenderer({ onHtml, throttleMs: 10 })
+
+        live.push('```js\nconst a = b ** 2\n')
+        vi.advanceTimersByTime(10)
+
+        expect(onHtml.mock.calls[0][0]).toContain('const a = b ** 2')
 
         vi.useRealTimers()
     })

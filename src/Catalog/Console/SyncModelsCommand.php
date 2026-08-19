@@ -55,7 +55,7 @@ class SyncModelsCommand extends Command
                 continue;
             }
 
-            $existing->fill($attributes);
+            $existing->fill($this->backfillOnly($attributes, $existing));
 
             if ($existing->isDirty()) {
                 $existing->save();
@@ -88,6 +88,9 @@ class SyncModelsCommand extends Command
             'key' => $key,
             'provider' => $definition['provider'] ?? null,
             'provider_model_id' => $definition['provider_model_id'] ?? null,
+            // OpenRouter's dated pin for the build `key` resolves to. Stored
+            // beside the routing id, never in place of it.
+            'canonical_slug' => $definition['canonical_slug'] ?? null,
             'label' => $definition['label'] ?? null,
             'input_usd_per_million' => $definition['input_usd_per_million'] ?? null,
             'output_usd_per_million' => $definition['output_usd_per_million'] ?? null,
@@ -101,6 +104,26 @@ class SyncModelsCommand extends Command
             'sort_order' => (int) ($definition['sort_order'] ?? 0),
             'meta' => $definition['meta'] ?? [],
         ];
+    }
+
+    /**
+     * `canonical_slug` fills in but never blanks out.
+     *
+     * A row synced before the column existed carries null, and a config that
+     * simply does not bother to declare the dated pin — most of them — must
+     * not wipe one an earlier sync recorded. A declared slug still wins, so
+     * re-pinning is a config edit like any other.
+     *
+     * @param  array<string, mixed>  $attributes
+     * @return array<string, mixed>
+     */
+    protected function backfillOnly(array $attributes, AiModel $existing): array
+    {
+        if (($attributes['canonical_slug'] ?? null) === null && $existing->canonical_slug !== null) {
+            unset($attributes['canonical_slug']);
+        }
+
+        return $attributes;
     }
 
     /**

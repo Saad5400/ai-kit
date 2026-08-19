@@ -16,6 +16,7 @@ abstract class DatabaseCatalogTestCase extends TestCase
         $app['config']->set('ai-kit.catalog.source', 'database');
         $app['config']->set('ai-kit.catalog.models', [
             'test/flash' => [
+                'canonical_slug' => 'test/flash-0731',
                 'label' => 'Flash',
                 'input_usd_per_million' => 0.30,
                 'output_usd_per_million' => 2.50,

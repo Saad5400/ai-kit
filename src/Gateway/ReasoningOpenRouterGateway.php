@@ -31,6 +31,7 @@ use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\TextEnd;
 use Laravel\Ai\Streaming\Events\TextStart;
 use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
+use Saad\AiKit\Catalog\ModelRouting;
 use Saad\AiKit\Support\TurnContext;
 use Throwable;
 
@@ -41,9 +42,10 @@ use Throwable;
  * Deltas vs stock laravel/ai 0.10.3, all additive:
  *  - client(): retry with linear backoff on transient statuses
  *  - validateTextResponse(): null-safe (OpenRouter can 200 with empty body)
- *  - buildStepBody(): forces usage accounting; withholds tools on the final
- *    step and injects an answer-now nudge (a tool call emitted on the final
- *    step would be silently discarded by TextGenerationLoop)
+ *  - buildStepBody(): injects the catalog's server-side routing (`models`
+ *    chain, `provider.max_price` cap); withholds tools on the final step and
+ *    injects an answer-now nudge (a tool call emitted on the final step would
+ *    be silently discarded by TextGenerationLoop)
  *  - parseTextResponse(): captures generation id + exact cost (non-streamed)
  *  - processTextStream(): copy of the stock method with reasoning re-emission
  *    (stock drops delta.reasoning), generation-id + cost capture, and a
@@ -66,6 +68,7 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         protected SpendCollector $spend,
         protected array $config = [],
         protected ?ModelCircuitBreaker $breaker = null,
+        protected ?ModelRouting $routing = null,
     ) {
         parent::__construct($events);
     }
@@ -255,8 +258,30 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             unset($body['tools'], $body['tool_choice']);
         }
 
-        if ($this->config['force_usage_accounting'] ?? true) {
-            $body['usage'] = array_merge($body['usage'] ?? [], ['include' => true]);
+        return $this->withServerSideRouting($body, $model);
+    }
+
+    /**
+     * Hand the model's declared chain and price cap to OpenRouter to enforce.
+     *
+     * Anything the caller put on the body wins: an agent that passed its own
+     * `models` list or provider preferences has said something more specific
+     * than the catalog's default, and `provider` is merged key-wise so a
+     * caller's `order`/`sort` survives alongside our `max_price`.
+     *
+     * @param  array<string, mixed>  $body
+     * @return array<string, mixed>
+     */
+    protected function withServerSideRouting(array $body, string $model): array
+    {
+        $fields = $this->routing?->requestFields($model) ?? [];
+
+        if (isset($fields['models']) && ! isset($body['models'])) {
+            $body['models'] = $fields['models'];
+        }
+
+        if (isset($fields['provider'])) {
+            $body['provider'] = array_merge($fields['provider'], $body['provider'] ?? []);
         }
 
         return $body;

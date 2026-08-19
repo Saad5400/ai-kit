@@ -37,7 +37,7 @@ task routing), **usage**, **safety** (wired live in uqucc via TurnGuard/KillSwit
 config + provider) + **undo** (ledger, CompensationApplier, UndoTurn),
 **attachments**, **agents** (MCP adapters — `laravel/mcp` is a live dependency),
 **credits**. Stub: rag. `Saad\AiKit\Testing` ships fakes + the Proposal factory.
-Suite: 300 tests green.
+Suite: 372 tests green.
 
 2026-08-18 alignment pass (after the DECISIONS.md reconcile): kit defaults now match
 the rulings — `conversations.encrypt => true` (#8, per-app opt-out) and
@@ -199,6 +199,73 @@ does the work":
   documented in the README.
 - Suite: 356 PHP tests green (was 336), 79 vitest green (was 47), `tsc --noEmit`
   clean, pint clean. npm package at 0.6.0 with `./timeline` and `./fields` exports.
+
+**v0.6.0 bundle — follow-ups** (2026-08-19; branch `feat/v0.6-bundle`, PR open,
+NOT merged or tagged). Four packages, each from a completed research audit; the
+common theme is code we wrote because nothing better existed at the time, and
+one class of corruption nothing was looking for.
+
+- **Three JS swaps.** `js/core/sse.ts` hands framing to `eventsource-parser`'s
+  `EventSourceParserStream` — maintained, fuzzed, and already covering what our
+  loop did not (leading BOM, bare-CR terminators, a `data:` payload split
+  across hundreds of tiny chunks without O(n²) re-concatenation). Our shell
+  stays: fetch/abort, `onDone`, the JSON-with-raw-fallback parse, the `id`
+  passed through, plus a `maxBufferSize` (1 MiB) so an unterminated proxy body
+  rejects instead of growing. One departure from the spec is kept deliberately
+  and now lives in a five-line transform: a final frame the server never closed
+  with a blank line is still dispatched, because our servers hang up that way
+  and a dropped `done` leaves the client spinning. `js/core/markdown.ts` runs
+  `remend` over the partial buffer in the LIVE path only, so a half-written
+  `**bold` never flashes its asterisks — `finish()` renders the real text, so
+  nothing the repair invented survives. And DOMPurify is gone for
+  `rehype-sanitize` on the hast tree (schema: default GitHub allow list, plus
+  `language-*` on `code`, minus the spec-legacy `irc`/`xmpp` href schemes),
+  with the link decorator ported to a rehype plugin that runs AFTER the
+  sanitizer so a stripped `javascript:` href cannot be dressed up as
+  navigation. Three consequences: no DOM needed (SSR and workers render
+  properly instead of degrading to pre-wrap), nothing is serialized-then-
+  reparsed, and the allow list is a value the tests can read. The `javascript:`
+  gate held; `data:`, `vbscript:` and `file:` were added beside it.
+- **Catalog keying.** OpenRouter's payload carries `id` (the stable alias) and
+  `canonical_slug` (the dated pin) and they are not interchangeable — pinning
+  the dated slug as the routing id freezes an app on a build that will be
+  retired, which is the shape of uqucc's `0731`/`0423` confusion. The catalog
+  now stores both (`canonical_slug` nullable column via its own migration,
+  sync mapping, and a fill-but-never-blank rule so a routine sync cannot wipe a
+  pin the config no longer bothers to declare), routes strictly on `id`, and
+  resolves a lookup by slug as a second leg so ids written down under the old
+  scheme still find their model — coming back on the alias.
+- **Server-side routing.** `FallbackChains` is deleted. It cloned an
+  `ai.providers.*` entry per chain position to ride laravel/ai's native
+  failover, and could only move on errors our own gateway saw and classified.
+  `Catalog\ModelRouting` translates the same declarations into OpenRouter's
+  `models: [...]` request array (upstream failover on downtime, rate limits,
+  moderation AND context-length overflow — the last of which a client-side loop
+  cannot detect without first paying for the rejection; priced by whichever
+  model answered) and `provider_max_price` into `provider: {max_price}` rather
+  than a local filter, so the ceiling binds the model that answers. The gateway
+  injects both in `buildStepBody` and never overrides what a caller set.
+  `gateway.force_usage_accounting` and its `usage: {include: true}` injection
+  are deleted — OpenRouter always returns full usage now; the inline cost and
+  generation-id extraction is untouched.
+- **Arabic PDF reversal probe.** Poppler returns some Arabic born-digital PDFs
+  in VISUAL order — words backwards, ligatures internally scrambled — and
+  `junkRatio()` scores that 0.0, because every codepoint IS valid Arabic and
+  only the order is wrong, so corrupted text sailed into the model. Local
+  parsing stays for clean PDFs; `PdfTextLayer::isReversedArabic()` counts
+  common function words against their reversals (their reversals are not
+  themselves Arabic words, which is what makes it a decision and not a guess)
+  behind an Arabic-dominance gate, and a positive returns null — the same
+  "no usable text layer" signal the scanned case already uses, so
+  `ExtractionRouter` takes the identical vision branch. No bidi correction in
+  PHP. The `-raw` cross-check was dropped on evidence: on real PDFs `-raw`
+  reorders words relative to the default for CLEAN Arabic too, so it
+  discriminates nothing and costs a second poppler process.
+- Suite: 372 PHP tests green (was 356), 92 vitest green (was 79),
+  `tsc --noEmit` clean, pint clean. Breaking for consumers:
+  `Catalog\FallbackChains` is gone, `ModelDefinition`'s constructor takes
+  `canonicalSlug` second, and `gateway.force_usage_accounting` no longer
+  exists.
 
 Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1, v0.5.0**.
 
