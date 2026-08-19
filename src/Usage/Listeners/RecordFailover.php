@@ -11,8 +11,11 @@ use Saad\AiKit\Usage\UsageEvent;
 
 /**
  * Writes a `failed_over` row per abandoned provider/model attempt — the raw
- * material for the turn-failure-rate metric and for judging whether a
- * fallback chain actually earns its keep. The event doesn't carry the
+ * material for the turn-failure-rate metric and for judging whether an app's
+ * declared provider failover actually earns its keep. Model-level fallbacks
+ * are invisible here by design — OpenRouter resolves those inside the one
+ * request, and this listener only sees laravel/ai giving up on a provider.
+ * The event doesn't carry the
  * invocation id, so it is read from the turn context. These rows never fire
  * TurnUsageRecorded: nothing billable happened.
  */
