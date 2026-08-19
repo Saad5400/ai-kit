@@ -3,8 +3,16 @@
  * One tool's status, from the `tool` wire event.
  *
  * The parent keys chips by the event's `id` and updates the same chip when
- * the `done` event for that id arrives. Tool names are identifiers, so the
- * name renders `dir="ltr"` even inside an RTL bubble.
+ * the `done` event for that id arrives. `name` may be the raw tool identifier
+ * or a localized label an app swapped in before the timeline (uqucc and
+ * catodemy both do), so it renders `dir="auto"` — a hardcoded `ltr` would
+ * scramble an Arabic label's bidi (a trailing ellipsis lands at the visual
+ * right, glued to the status mark).
+ *
+ * A running chip gets its trailing ellipsis from CSS, never from the label
+ * text: `::after` sits at the inline end so it follows the label's own
+ * direction, and it disappears the moment the chip settles — a baked "…"
+ * would keep reading "still working" under a ✓.
  */
 import { computed } from 'vue'
 import type { ToolPayload } from '../core/events'
@@ -31,7 +39,7 @@ const failed = computed(() => props.status === 'done' && props.successful === fa
     >
         <span v-if="status === 'running'" class="ai-kit-tool-chip__spinner" aria-hidden="true" />
         <span v-else class="ai-kit-tool-chip__mark" aria-hidden="true">{{ failed ? '✗' : '✓' }}</span>
-        <span class="ai-kit-tool-chip__name" dir="ltr">{{ name }}</span>
+        <span class="ai-kit-tool-chip__name" dir="auto">{{ name }}</span>
     </span>
 </template>
 
@@ -59,6 +67,11 @@ const failed = computed(() => props.status === 'done' && props.successful === fa
 
 .ai-kit-tool-chip__name {
     font-family: var(--ai-kit-chip-font, ui-monospace, SFMono-Regular, Menlo, monospace);
+    unicode-bidi: isolate;
+}
+
+.ai-kit-tool-chip.is-running .ai-kit-tool-chip__name::after {
+    content: '…';
 }
 
 .ai-kit-tool-chip__spinner {
