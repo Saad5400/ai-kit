@@ -46,6 +46,53 @@ export type ToolPayload = {
 }
 
 /**
+ * How ONE approval argument should be rendered, decided server-side by
+ * `Saad\AiKit\Approvals\Classified\FieldWidget`.
+ *
+ * `hidden` travels with the call but is never shown; `readonly` renders as a
+ * label and a value, never as an input. `markdown` and `code` are long-form
+ * text — a monospace editor by default, substitutable per app.
+ */
+export type ApprovalCardFieldWidget =
+    | 'hidden'
+    | 'readonly'
+    | 'text'
+    | 'number'
+    | 'boolean'
+    | 'select'
+    | 'textarea'
+    | 'markdown'
+    | 'code'
+
+export type ApprovalCardFieldOption = {
+    value: unknown
+    label: string
+}
+
+/**
+ * One field of an approval form. The server builds these so the client stops
+ * inferring input types from raw JSON — the failure mode that rendered every
+ * confirm dialog as a row of editable text boxes, ids included.
+ *
+ * `editable` is NOT a security boundary on its own: it says what to render.
+ * The server re-derives it on the way back in
+ * (`ApprovalCards::guardEdits()`), restoring readonly and hidden values from
+ * the pending call, so a tampered form cannot repoint the write.
+ */
+export type ApprovalCardField = {
+    name: string
+    widget: ApprovalCardFieldWidget
+    editable: boolean
+    /** Falls back to `name` when the tool declared no label. */
+    label: string | null
+    /** `select` only; null otherwise. */
+    options: ApprovalCardFieldOption[] | null
+    placeholder: string | null
+    /** The pending call's current value; null for an optional field the model left out. */
+    value: unknown
+}
+
+/**
  * A paused turn waiting on the user, rendered from
  * `Saad\AiKit\Approvals\Classified\ApprovalCards`. Every trust-bearing
  * field is resolved server-side; `arguments` is exactly what a resume will
@@ -67,17 +114,34 @@ export type ApprovalPayload = {
     destructive: boolean
     undoable: boolean
     editable: boolean
+    /**
+     * The flat argument map. Superseded by `fields` (which carries the same
+     * values plus how to render them) and kept for one version so a client
+     * that has not adopted the form schema keeps working.
+     *
+     * @deprecated render `fields` instead.
+     */
     arguments: Record<string, unknown>
+    /** The form schema, in render order. */
+    fields: ApprovalCardField[]
     /** Tool-shaped summary rows; `[]` when the tool renders no preview. */
     preview: unknown[] | Record<string, unknown>
     reason: string | null
 }
 
-/** An `AskUser` pause — answered, not approved. */
+/**
+ * An `AskUser` pause — answered, not approved.
+ *
+ * `options` are 2–4 suggested answers the model proposed, present only when
+ * it proposed any. They are suggestions: the card shows them as one-tap chips
+ * NEXT TO a free-text input, and the answer that resumes the turn is whatever
+ * the user sent either way.
+ */
 export type QuestionPayload = {
     kind: 'question'
     id: string
     question: string
+    options?: string[]
 }
 
 /**
@@ -159,4 +223,28 @@ export function isTerminal(event: string): boolean {
  */
 export function closesReasoning(event: string): boolean {
     return event === 'delta' || event === 'tool' || isTerminal(event)
+}
+
+/**
+ * The `arguments` of an `{action: 'edit'}` decision, built from a card's field
+ * schema and the user's in-progress edits: every EDITABLE field's current
+ * value, and nothing else.
+ *
+ * Readonly and hidden fields are left out rather than echoed back — the server
+ * restores them from the pending call either way
+ * (`ApprovalCards::guardEdits()`), so sending them only invites a client to
+ * think it owns them.
+ *
+ * @param edits values keyed by field name; a field the user has not touched
+ * falls back to the value the card arrived with.
+ */
+export function editableArguments(
+    fields: readonly ApprovalCardField[],
+    edits: Record<string, unknown> = {},
+): Record<string, unknown> {
+    return Object.fromEntries(
+        fields
+            .filter((field) => field.editable)
+            .map((field) => [field.name, edits[field.name] ?? field.value ?? null]),
+    )
 }

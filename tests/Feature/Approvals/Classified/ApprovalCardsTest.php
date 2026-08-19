@@ -89,6 +89,17 @@ it('renders AskUser pauses as question cards', function () {
     ]);
 });
 
+it('carries the model suggested answers on a question card, and omits the key otherwise', function () {
+    $withOptions = classifiedCards()->card(new PendingApproval('call-5', 'AskUser', [
+        'question' => 'Which semester?',
+        'options' => ['Fall 2026', 'Spring 2027'],
+    ], null));
+
+    expect($withOptions['options'])->toBe(['Fall 2026', 'Spring 2027'])
+        ->and(classifiedCards()->card(new PendingApproval('call-6', 'AskUser', ['question' => 'Why?'], null)))
+        ->not->toHaveKey('options');
+});
+
 it('emits one wire event per card through the stream mapper, then done', function () {
     $pause = new ToolApprovalRequest('evt-1', collect([
         new PendingApproval('call-1', 'ClassifiedRenameTool', ['name' => 'B'], null),
