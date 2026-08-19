@@ -28,6 +28,66 @@
   rework must preserve its real wins (server-derived `destructive`, idempotent execution
   ledger, preview == execution).
 
+## State (2026-08-19)
+
+**catodemy migration COMPLETE — four PRs merged to main and auto-deployed
+2026-08-19** (Coolify deploys catodemy main on merge; each deploy verified live):
+
+- **#550 platform** (`5550ccbb`): kit ^0.7.0 underneath — kit gateway (app
+  subclass deleted), kit EncryptedConversationStore + the 0.10 participant
+  rename/backfill on the live tables (morph alias `user`, 50 conversations;
+  migration batch 66), encrypted tool traces (trace_retention_days 14,
+  conversations kept forever per #9), app-side `AiModelCatalogSource` over the
+  existing `ai_models` (the kit DB source's canonical schema didn't fit — first
+  DB-backed consumer lesson), `ai_usage_events` + `TurnProviderSpend` (sums only
+  provider-sourced costs per turn; vision folds in, estimates never masquerade),
+  TurnGuard at the turn entry + queued-job kill-switch re-check + budget with a
+  cache override. Billing (`AssistantCreditMeter`/`SpendResolver`, idempotency
+  keys) byte-identical.
+- **#554 streaming** (`7ce2f45f`): app TurnBuffer/SSE controller deleted for the
+  kit's; wire renamed to the canonical contract (`delta {text}`, `reasoning
+  {text}`, tool `running/done`, snake_case done); client on kit `readSseStream`
+  (frame ids = resume cursor) + `createTimeline`; Carta stays for bubble
+  markdown per #19. Mid-stream provider `error` is now terminal, generic-copy,
+  unmetered (cancelled turns still meter).
+- **#558 approvals** (`2a14d26b`): plan flow
+  (WriteGate/ProposalBag/PlanStore/ActionRunner) DELETED; 13 write tools extend
+  app `WriteTool` on `Approvals\Classified` (pause per call, editable cards,
+  server guardEdits, kit WriteExecutions ledger over the app's aligned
+  `ai_write_executions` — turn_id widened uuid→varchar); AskUser is a real pause
+  with option chips; `POST /ai/turns/{turn}/decide` (floor-gated, queued resume,
+  409-stale/422-invented refusals); MCP writes stay immediate via
+  `withoutApproval()`. Known limit: pauses resume only within the buffer TTL
+  (2h) — older cards render as history (owner may want durable pauses later).
+- **#556 callers** (`8bc8acb8`): the five raw-HTTP OpenRouter callers are
+  laravel/ai agents (transcriber rides v0.7.0 input_audio); `ModelFallback`
+  parse-retry survives app-side; per-ATTEMPT cost accounting so retries never
+  bill; billing targets/keys preserved; per-caller feature labels in usage rows.
+
+Kit releases cut this day: **v0.7.0** (gateway maps audio→`input_audio`; 396
+tests), **v0.7.1** (module-gated migration loading + per-file flattened
+`ai-kit-migrations` publish — fixes approvals migrations loading into consumers
+with the module off; 402 tests), **v0.7.2** (ToolChip `dir=auto` + CSS running
+ellipsis — hardcoded ltr scrambled Arabic labels' bidi, found by owner on prod
+screenshots; consumers must not bake "…" into labels).
+
+Kit gaps logged by the migration (patch-release backlog): `runIntoBuffer()`
+takes `$meta` before the fold so post-stream completions can't use it (accept a
+Closure); `TurnBuffer::fail()` ends on `error` alone while catodemy-shaped
+clients tear down on `done` (opt-in trailing done, or document); mapper has no
+cancellation hook (generator-in-front pattern worth documenting);
+`timeline.ts` docblock shows an async-iterable example but the reader is
+callback-based; `ResumeDecisions::guarded($input, $guard)` helper would save
+queued-resume apps ~20 lines. CI learning: PHPStan `--memory-limit` is
+per-worker — 2-core runners OOM where 20-core boxes pass (catodemy #557 pins
+1G); EXPLAIN-plan tests must drop COMPETING btree indexes, not just ANALYZE +
+`enable_seqscan=off` (catodemy SearchLegsTest).
+
+Next per plan: catodemy clean-prod soak (≥2 weeks gates s-grade per #15) →
+retire the kit's transitional proposal module (uqucc + catodemy both off it,
+no consumers left) → uqucc TurnBuffer adoption + uqucc kit bump to v0.7.2 (chip
+bidi fix applies to its prod) → s-grade branch prep.
+
 ## State (2026-08-18)
 
 Real modules: **gateway**, **catalog** (config + DB sources, `ai-kit:sync-models`,
