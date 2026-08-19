@@ -3,6 +3,12 @@
      * The collapsible thinking block for the `reasoning` channel. Mirror of
      * `js/vue/ThinkingDisclosure.vue`.
      *
+     * @deprecated since 0.6.0 — use `ProcessGroup.svelte` over
+     * `groupSegments(timeline.segments)`. A single accumulated `text` prop
+     * cannot express a turn that thought more than once, which is what pinned
+     * the thinking block to the top of every message. Still exported for one
+     * version.
+     *
      * The wire carries no start/end brackets (see `ReasoningPayload`): the
      * parent accumulates `reasoning` deltas into `text` and sets `live`
      * false once a `delta`, `tool` or terminal event closes the block.

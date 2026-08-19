@@ -147,6 +147,32 @@ abstract class ClassifiedTool implements Approvable, Classified, Tool
     }
 
     /**
+     * How this tool's arguments should be rendered on its approval card —
+     * keyed by argument name, valued as a {@see Field}, a bare
+     * {@see FieldWidget}, or a partial spec array:
+     *
+     *     return [
+     *         'course_id' => FieldWidget::Readonly,
+     *         'body' => Field::make('body', FieldWidget::Markdown, label: 'المحتوى'),
+     *         'status' => ['widget' => 'select', 'options' => ['draft', 'published']],
+     *     ];
+     *
+     * Arguments left out are inferred from their value
+     * ({@see Field::infer()}), so a tool only declares what inference gets
+     * wrong. An entry for an argument the model did NOT send still renders
+     * (value null) — that is how a tool offers an optional input the model
+     * never filled. The declaration is advisory about LOOK only: whether an
+     * edit is honoured is decided by {@see ApprovalCards::guardEdits()} on
+     * the way back in.
+     *
+     * @return array<string, Field|FieldWidget|string|array<string, mixed>>
+     */
+    public function fields(): array
+    {
+        return [];
+    }
+
+    /**
      * The vendor's tool-name convention (ToolNameResolver honours name()).
      */
     public function name(): string

@@ -12,7 +12,15 @@ import { compileScript, compileTemplate, parse } from 'vue/compiler-sfc'
 const read = (path: string) => readFileSync(fileURLToPath(new URL(path, import.meta.url)), 'utf8')
 
 describe('vue components', () => {
-    it.each(['Markdown.vue', 'ThinkingDisclosure.vue', 'ToolChip.vue'])('compiles %s', (file) => {
+    it.each([
+        'ApprovalCard.vue',
+        'ApprovalFields.vue',
+        'Markdown.vue',
+        'ProcessGroup.vue',
+        'QuestionCard.vue',
+        'ThinkingDisclosure.vue',
+        'ToolChip.vue',
+    ])('compiles %s', (file) => {
         const source = read(`./vue/${file}`)
         const { descriptor, errors } = parse(source, { filename: file })
 
@@ -33,7 +41,15 @@ describe('vue components', () => {
 })
 
 describe('svelte components', () => {
-    it.each(['Markdown.svelte', 'ThinkingDisclosure.svelte', 'ToolChip.svelte'])('compiles %s', (file) => {
+    it.each([
+        'ApprovalCard.svelte',
+        'ApprovalFields.svelte',
+        'Markdown.svelte',
+        'ProcessGroup.svelte',
+        'QuestionCard.svelte',
+        'ThinkingDisclosure.svelte',
+        'ToolChip.svelte',
+    ])('compiles %s', (file) => {
         const { js, warnings } = compile(read(`./svelte/${file}`), {
             filename: file,
             generate: 'client',

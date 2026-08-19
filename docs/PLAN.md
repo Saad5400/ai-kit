@@ -119,6 +119,87 @@ green (2 pre-existing homepage failures). **#129 + #130 both await one Coolify
 deploy** — it must run `php artisan migrate` (adds `ai_write_executions`, runs the
 chat-model settings migration).
 
+**v0.6.0 — segment timeline + approval forms + AskUser choices** (owner feedback from
+prod testing, 2026-08-19; branch `feat/timeline-forms-askuser`, PR open, not merged):
+
+Three complaints from the owner's own use of the v0.5.0 surfaces, each traced to a
+place where the kit shipped a channel but left the *model* of it to the app:
+
+- **"Thinking always renders at the top."** Not a wire bug — the events already
+  arrive in true chronological order. The apps' client model was one accumulated
+  reasoning string beside one accumulated text string, which cannot express a turn
+  that talked, thought, called a tool, talked again and thought again. The kit now
+  ships the correct model: `js/core/timeline.ts` — `createTimeline(segments)` folds
+  the dispatch into an ordered `Segment` list (text / thinking / tool / card),
+  merging consecutive same-kind deltas, upserting tool chips **by id in place** so a
+  chip never jumps to the end when its call returns, and replacing a chip with the
+  same-id approval card (the v0.5.0 fold rule). It mutates the array it is handed, so
+  an app passes `reactive([])` / `$state([])` in and reads it straight back.
+  `groupSegments()` then applies s-grade's proven grouping — consecutive thinking +
+  tool segments collapse into ONE `process` disclosure, `text` and `card` stay
+  top-level in place. Two deliberate departures from s-grade's version: consecutive
+  text segments are NOT merged back into one answer block (that flattening IS the
+  bug), and cards are never swallowed into a process group (an approval card is a
+  decision surface, not a progress detail). `ProcessGroup.vue` / `.svelte` render one
+  group; `ThinkingDisclosure` is deprecated but still exported for one version.
+- **"Every approval argument is a raw editable text input."** The card sent
+  `arguments` and the client guessed. Cards now carry `fields` — a server-built form
+  schema (`Field` + `FieldWidget`: hidden / readonly / text / number / boolean /
+  select / textarea / markdown / code, each with `editable`, `label`, `options`,
+  `placeholder`, `value`). A tool declares what inference gets wrong via
+  `ClassifiedTool::fields()` (full `Field`, bare widget, or partial spec array);
+  everything else is inferred from the pending value, `id` / `*_id` arguments are
+  readonly on principle (they address the record the write lands on), and a
+  destructive one-click card locks every field. The flat `arguments` map stays for one
+  version. **The security half is server-side**: `ApprovalCards::guardEdits()` returns
+  the safe argument set — edited values for editable fields, ORIGINAL values for
+  readonly/hidden ones silently restored, numbers and booleans cast back to their
+  declared types, and a throw when an edit invents an argument key. It is wired where
+  it cannot be skipped: `ResumeDecisions::fromClient($input, $cards->editGuard($pending))`
+  guards inside the only path from client input to `Decisions`, before a
+  `Decision::edit` exists. `ApprovalFields.vue` / `.svelte` render the schema, with a
+  slot/snippet seam for per-widget editors.
+- **"AskUser questions are bare text prompts."** The tool schema now takes optional
+  `options` (2–4 suggested answers, min/max/unique in the schema, sanitized and capped
+  server-side), the question card carries them, and `QuestionCard.vue` / `.svelte`
+  render the Claude-style shape: option chips, a free-text input as the last option,
+  and a skip that rejects. `AskUser::fields()` makes `answer` the one editable field,
+  so a guarded question resume restores the model's own `question` / `options` instead
+  of trusting the client's echo.
+2026-08-19 (same day, owner reviewed prod screenshots): a **UI pass on the same
+branch** — the components had to be visually right by default, not merely
+mechanically right, because "themeable" had been shipping as "unstyled until the app
+does the work":
+
+- **Bidi.** An RTL card rendered `action: create` as a scrambled "create action:".
+  Field rows now isolate (`unicode-bidi: isolate` + `<bdi>`): a raw argument name is a
+  machine token — mono, `dir="ltr"`, isolated — while a tool-supplied `label` renders
+  as `dir="auto"` prose. Readonly values get the same treatment when they look like
+  ids or enum members (`js/core/fields.ts` owns that judgement so the Vue and Svelte
+  mirrors cannot drift). Readonly fields render as definition rows, never disabled
+  inputs. Tool chips and card titles isolate too.
+- **Long text.** The prod card put a 1,733-character markdown body in one `<input>`.
+  Long-text widgets are an auto-growing editor (`field-sizing: content`) capped at
+  ~40vh with internal scroll, mono for markdown/code, plus a character count — which
+  is what makes the >120-chars-or-newline inference rule matter.
+- **ProcessGroup is a real disclosure**: chevron (rotating up/down, so RTL needs no
+  mirror), tool-count badge, opens while `live` and collapses on its own once
+  settled — until the user toggles it, after which their choice wins.
+- **New `ApprovalCard`** (Vue + Svelte): the full chrome — icon slot, title, status
+  chip, reason, preview lines, the form, and a confirm/reject row with confirm first
+  in reading order. Destructive cards take the destructive accent on border, tint and
+  confirm button, derived from the server flag rather than app guessing. Its `decide`
+  event emits exactly what `ResumeDecisions::fromClient()` accepts.
+- **QuestionCard answered state**: an optional `answer` / `skipped` renders what was
+  actually said instead of a bare "تمت الإجابة".
+- **Tokens that work on dark by default.** Neutral fallbacks are now mixed out of
+  `currentColor` (`color-mix(in oklab, currentColor N%, transparent)`) instead of
+  hardcoded greys, across the components and `prose.css`, so the defaults read on the
+  dark admin panel of the screenshots with no app CSS. The `--ai-kit-*` token list is
+  documented in the README.
+- Suite: 356 PHP tests green (was 336), 79 vitest green (was 47), `tsc --noEmit`
+  clean, pint clean. npm package at 0.6.0 with `./timeline` and `./fields` exports.
+
 Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1, v0.5.0**.
 
 ## What the surveys established (the shared core)

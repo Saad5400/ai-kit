@@ -1,7 +1,7 @@
 {
     "name": "@saad5400/ai-kit",
-    "version": "0.5.0",
-    "description": "Frontend half of saad/ai-kit: the SSE wire contract, a reader for it, a sanitized markdown pipeline, and thin Vue + Svelte components.",
+    "version": "0.6.0",
+    "description": "Frontend half of saad/ai-kit: the SSE wire contract, a reader for it, an ordered segment timeline, a sanitized markdown pipeline, and thin Vue + Svelte components.",
     "license": "UNLICENSED",
     "private": false,
     "type": "module",
@@ -17,6 +17,8 @@
     "exports": {
         "./events": "./js/core/events.ts",
         "./sse": "./js/core/sse.ts",
+        "./timeline": "./js/core/timeline.ts",
+        "./fields": "./js/core/fields.ts",
         "./markdown": "./js/core/markdown.ts",
         "./vue/*": "./js/vue/*",
         "./svelte/*": "./js/svelte/*",

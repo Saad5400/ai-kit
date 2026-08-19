@@ -46,6 +46,53 @@ export type ToolPayload = {
 }
 
 /**
+ * How ONE approval argument should be rendered, decided server-side by
+ * `Saad\AiKit\Approvals\Classified\FieldWidget`.
+ *
+ * `hidden` travels with the call but is never shown; `readonly` renders as a
+ * label and a value, never as an input. `markdown` and `code` are long-form
+ * text — a monospace editor by default, substitutable per app.
+ */
+export type ApprovalCardFieldWidget =
+    | 'hidden'
+    | 'readonly'
+    | 'text'
+    | 'number'
+    | 'boolean'
+    | 'select'
+    | 'textarea'
+    | 'markdown'
+    | 'code'
+
+export type ApprovalCardFieldOption = {
+    value: unknown
+    label: string
+}
+
+/**
+ * One field of an approval form. The server builds these so the client stops
+ * inferring input types from raw JSON — the failure mode that rendered every
+ * confirm dialog as a row of editable text boxes, ids included.
+ *
+ * `editable` is NOT a security boundary on its own: it says what to render.
+ * The server re-derives it on the way back in
+ * (`ApprovalCards::guardEdits()`), restoring readonly and hidden values from
+ * the pending call, so a tampered form cannot repoint the write.
+ */
+export type ApprovalCardField = {
+    name: string
+    widget: ApprovalCardFieldWidget
+    editable: boolean
+    /** Falls back to `name` when the tool declared no label. */
+    label: string | null
+    /** `select` only; null otherwise. */
+    options: ApprovalCardFieldOption[] | null
+    placeholder: string | null
+    /** The pending call's current value; null for an optional field the model left out. */
+    value: unknown
+}
+
+/**
  * A paused turn waiting on the user, rendered from
  * `Saad\AiKit\Approvals\Classified\ApprovalCards`. Every trust-bearing
  * field is resolved server-side; `arguments` is exactly what a resume will
@@ -67,17 +114,34 @@ export type ApprovalPayload = {
     destructive: boolean
     undoable: boolean
     editable: boolean
+    /**
+     * The flat argument map. Superseded by `fields` (which carries the same
+     * values plus how to render them) and kept for one version so a client
+     * that has not adopted the form schema keeps working.
+     *
+     * @deprecated render `fields` instead.
+     */
     arguments: Record<string, unknown>
+    /** The form schema, in render order. */
+    fields: ApprovalCardField[]
     /** Tool-shaped summary rows; `[]` when the tool renders no preview. */
     preview: unknown[] | Record<string, unknown>
     reason: string | null
 }
 
-/** An `AskUser` pause — answered, not approved. */
+/**
+ * An `AskUser` pause — answered, not approved.
+ *
+ * `options` are 2–4 suggested answers the model proposed, present only when
+ * it proposed any. They are suggestions: the card shows them as one-tap chips
+ * NEXT TO a free-text input, and the answer that resumes the turn is whatever
+ * the user sent either way.
+ */
 export type QuestionPayload = {
     kind: 'question'
     id: string
     question: string
+    options?: string[]
 }
 
 /**
@@ -127,6 +191,23 @@ export type AiKitEventName = AiKitSseEvent['event']
 
 /** A pause card, whichever kind arrived. */
 export type AiKitCard = ApprovalPayload | QuestionPayload
+
+/**
+ * The decision a client sends back to resume a paused turn, keyed by tool-call
+ * id — the shape `Saad\AiKit\Approvals\Classified\ResumeDecisions::fromClient()`
+ * accepts:
+ *
+ *     POST …/decide  { decisions: { [id]: ClientDecision } }
+ *
+ * An `edit` is how a form's values travel, and how an `AskUser` answer travels
+ * (`{answer: '…'}`). The server reconciles an edit's arguments against the
+ * pending call before anything executes, so readonly and hidden fields cannot
+ * be changed from here whatever the client sends.
+ */
+export type ClientDecision =
+    | { action: 'approve' }
+    | { action: 'edit'; arguments: Record<string, unknown> }
+    | { action: 'reject'; reason?: string }
 
 const NAMES: readonly AiKitEventName[] = [
     'delta',
