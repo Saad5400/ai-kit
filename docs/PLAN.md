@@ -271,7 +271,29 @@ one class of corruption nothing was looking for.
   `canonicalSlug` second, and `gateway.force_usage_accounting` no longer
   exists.
 
-Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1, v0.5.0**.
+**v0.7.0 — audio attachments on the chat endpoint** (2026-08-19; branch
+`feat/gateway-input-audio`, PR open, not merged):
+
+- laravel/ai's OpenRouter `MapsAttachments` knows images and documents and
+  throws `InvalidArgumentException` on every `Files\Audio` subclass, so an app
+  that wanted audio could not send it through an agent at all — catodemy's
+  `GeminiTranscriber` posts raw HTTP `chat/completions` with a hand-built
+  `input_audio` part for exactly this reason, and pays for it in no segments,
+  no cost capture, no failover, no metering. (The vendor's `audio/transcriptions`
+  path is not a substitute: it returns a bare string.) The gateway now overrides
+  `mapAttachments()` — audio becomes
+  `{"type":"input_audio","input_audio":{"data":…,"format":…}}`, everything else
+  is handed to the stock mapper one attachment at a time so its mapping, its
+  throw and the given order are unchanged. Base64/local/stored/remote audio and
+  uploaded audio files all end up inline base64 (OpenRouter has no URL form for
+  audio). `format` is a container token derived from the mime, then the filename
+  extension, defaulting to `mp3`; stock's `audioFormat()` is deliberately not
+  reused — it belongs to the transcription endpoint and throws on the
+  mime-less attachments the chat path must still handle. The vendor
+  `MapsAttachments.php` is now pinned in the drift guard.
+- Suite: 396 PHP tests green (was 372), pint clean.
+
+Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1, v0.5.0, v0.6.0**.
 
 ## What the surveys established (the shared core)
 
