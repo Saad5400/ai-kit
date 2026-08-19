@@ -3,9 +3,12 @@
 namespace Saad\AiKit;
 
 use Illuminate\Support\ServiceProvider;
+use Saad\AiKit\Support\LoadsKitMigrations;
 
 class AiKitServiceProvider extends ServiceProvider
 {
+    use LoadsKitMigrations;
+
     /**
      * Module providers, keyed by their `ai-kit.modules.*` config toggle.
      *
@@ -45,14 +48,13 @@ class AiKitServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
-        // Loaded once here rather than per module: the modules share one
-        // migrations directory, and three providers loading the same path
-        // is just three chances to register it twice.
-        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
-
-        $this->publishes([
-            __DIR__.'/../database/migrations' => database_path('migrations'),
-        ], 'ai-kit-migrations');
+        // Only the shared migrations live here — currently the laravel/ai
+        // conversation tables, which the kit ships on the SDK's behalf and
+        // every module's store reads through. Module-owned tables live in
+        // `database/migrations/{module}` and are loaded by that module's
+        // provider, which only registers when its toggle is on; a consumer
+        // that turns a module off must not grow (or collide with) its tables.
+        $this->loadKitMigrations(__DIR__.'/../database/migrations');
 
         $this->loadTranslationsFrom(__DIR__.'/../lang', 'ai-kit');
 

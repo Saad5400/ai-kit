@@ -5,9 +5,12 @@ namespace Saad\AiKit\Catalog;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use Saad\AiKit\Catalog\Console\SyncModelsCommand;
+use Saad\AiKit\Support\LoadsKitMigrations;
 
 class CatalogServiceProvider extends ServiceProvider
 {
+    use LoadsKitMigrations;
+
     public function register(): void
     {
         $this->app->singleton(ConfigCatalogSource::class, fn (Application $app) => new ConfigCatalogSource(
@@ -37,7 +40,7 @@ class CatalogServiceProvider extends ServiceProvider
         // The ai_models table exists only for database-sourced catalogs —
         // config-catalog apps must not grow an empty table.
         if ($this->app['config']->get('ai-kit.catalog.source', 'config') === 'database') {
-            $this->loadMigrationsFrom(__DIR__.'/../../database/migrations/catalog');
+            $this->loadKitMigrations(__DIR__.'/../../database/migrations/catalog');
         }
 
         if ($this->app->runningInConsole()) {

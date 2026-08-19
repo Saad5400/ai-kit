@@ -20,4 +20,17 @@ abstract class TestCase extends Orchestra
         // The encrypted conversation store needs a real app key.
         $app['config']->set('app.key', 'base64:'.base64_encode(random_bytes(32)));
     }
+
+    /**
+     * The migrations the migrator would run from the paths the kit registered,
+     * named the way the `migrations` table names them: basename, no path.
+     *
+     * @return list<string>
+     */
+    protected function migrationNames(): array
+    {
+        $migrator = $this->app->make('migrator');
+
+        return array_keys($migrator->getMigrationFiles($migrator->paths()));
+    }
 }

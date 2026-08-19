@@ -9,6 +9,7 @@ use Saad\AiKit\Approvals\Contracts\UndoLedger;
 use Saad\AiKit\Approvals\Undo\CompensationApplier;
 use Saad\AiKit\Approvals\Undo\DatabaseUndoLedger;
 use Saad\AiKit\Approvals\Undo\UndoTurn;
+use Saad\AiKit\Support\LoadsKitMigrations;
 
 /**
  * Two approval seams (owner ruling, docs/DECISIONS.md #3):
@@ -25,6 +26,8 @@ use Saad\AiKit\Approvals\Undo\UndoTurn;
  */
 class ApprovalsServiceProvider extends ServiceProvider
 {
+    use LoadsKitMigrations;
+
     public function register(): void
     {
         // Bind the concrete registry and alias the contract to it, so an app
@@ -65,9 +68,13 @@ class ApprovalsServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        // Reaching boot() at all is the module gate: the root provider only
+        // registers this provider when `ai-kit.modules.approvals` is true.
+        $this->loadKitMigrations(__DIR__.'/../../database/migrations/approvals');
+
         // The undo ledger's table exists only for apps that opted in.
         if ($this->app['config']->get('ai-kit.approvals.undo') === true) {
-            $this->loadMigrationsFrom(__DIR__.'/../../database/migrations/undo');
+            $this->loadKitMigrations(__DIR__.'/../../database/migrations/undo');
         }
     }
 }
