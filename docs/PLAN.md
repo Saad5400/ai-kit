@@ -293,6 +293,33 @@ one class of corruption nothing was looking for.
   `MapsAttachments.php` is now pinned in the drift guard.
 - Suite: 396 PHP tests green (was 372), pint clean.
 
+**v0.7.1 — migrations gate on the module toggle** (2026-08-19; branch
+`fix/module-gated-migrations`, PR open, not merged):
+
+- The root provider loaded the flat `database/migrations` unconditionally, so
+  every kit table was created in every consumer whatever `modules.*` said.
+  Found by catodemy (PR #550): `modules.approvals => false` plus its own
+  pre-existing `ai_write_executions`, and the kit's approvals migrations
+  collided anyway — worked around with `Migrator::withoutMigrations()` naming
+  each file, a list that goes stale the moment the kit adds a third one.
+  The approvals and usage migrations move into `database/migrations/{module}`
+  (joining `catalog/` and `undo/`) and are loaded by that module's provider,
+  which only registers when its toggle is on — the same predicate, not a
+  second one. The root directory keeps only what is genuinely shared: the
+  laravel/ai conversation tables. `Support\LoadsKitMigrations` loads a
+  directory and registers its files for the `ai-kit-migrations` tag flattened
+  per-file, because a subdirectory published into an app's
+  `database/migrations` would never run (the migrator globs one level).
+- Backward compatible for uqucc (approvals + usage on, already migrated in
+  prod): filenames are unchanged and the migrator identifies a migration by
+  basename alone (`Migrator::getMigrationName()`), so the moves are invisible
+  to `migrations` rows, and its global name sort across all registered paths
+  means splitting one directory into several cannot reorder anything —
+  including uqucc's own `…_import_ai_usage_into_ai_kit_usage_events` and
+  `…_import_admin_pending_actions_into_ai_proposals`, which still land after
+  the kit creates the tables they read.
+- Suite: 402 PHP tests green (was 396), pint clean.
+
 Tags: v0.1.0 … v0.3.2, **v0.4.0, v0.4.1, v0.5.0, v0.6.0**.
 
 ## What the surveys established (the shared core)
