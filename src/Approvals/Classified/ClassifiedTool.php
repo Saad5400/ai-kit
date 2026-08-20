@@ -41,6 +41,12 @@ use Stringable;
  * {@see capability()} (the classification) and the vendor contract's
  * description/schema. Compensation for the undo ledger comes from
  * {@see compensation()}; card copy from {@see title()} / {@see preview()}.
+ *
+ * DISPATCH QUEUED JOBS `->afterCommit()`. A gated effect's {@see perform()}
+ * runs inside the exactly-once transaction, so a job dispatched from it can
+ * be picked up by a worker before the rows it needs are committed — the job
+ * then reads a record that does not exist yet, and a rolled-back write
+ * leaves a job running for an effect that never happened.
  */
 abstract class ClassifiedTool implements Approvable, Classified, Tool
 {

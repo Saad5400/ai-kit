@@ -21,7 +21,9 @@ use Illuminate\Contracts\Cache\Repository as Cache;
  * `done {...}` when it completed, or `error {message}` when it did not.
  * `error` is terminal; no `done` ever follows it. A client that tears its
  * stream down on either event therefore behaves the same whether the turn
- * was streamed inline or replayed out of this buffer.
+ * was streamed inline or replayed out of this buffer. ({@see fail()} has an
+ * opt-in trailing `done` for clients that only tear down on that event —
+ * off by default, so the contract holds unless an app breaks it knowingly.)
  *
  * Cancellation lives under its OWN cache key — never a read-modify-write on
  * the turn record — so a user's "stop" can never race the generating job's
@@ -108,11 +110,25 @@ class TurnBuffer
      * and emitting both would leave clients guessing which one ended the
      * turn. The failure is also recorded in the record's meta.
      *
+     * `$trailingDone` opts one app out of that, appending an empty `done`
+     * after the `error`. Some clients hang their whole teardown off `done`
+     * — closing the reader, clearing the "streaming" flag, re-enabling the
+     * composer — and treat `error` as nothing but a message to display; an
+     * `error`-only turn leaves such a client spinning until its own timeout.
+     * Fixing the client is the better fix; this is here for the ones that
+     * ship elsewhere. Default OFF: the contract above is what the kit
+     * promises unless an app asks for otherwise.
+     *
      * @param  array<string, mixed>  $meta
      */
-    public function fail(string $turnId, string $message, array $meta = []): void
+    public function fail(string $turnId, string $message, array $meta = [], bool $trailingDone = false): void
     {
         $this->append($turnId, 'error', ['message' => $message]);
+
+        if ($trailingDone) {
+            $this->append($turnId, 'done', []);
+        }
+
         $this->complete($turnId, 'failed', $meta + ['error' => $message]);
     }
 

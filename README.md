@@ -43,6 +43,26 @@ A turn ends with exactly one terminal event. Buffered frames are led by an `id:`
 
 Opt out of the defaults per app with `$mapper->withoutReasoning()` / `->withoutToolEvents()`; replace them with `->onReasoning(...)` or `->on(ToolCall::class, ...)`.
 
+On the buffered path, `runIntoBuffer($stream, $buffer, $turnId, $meta)` also takes `$meta` as a closure — `fn (StreamResult $result): array` — for the facts that only exist once the fold is over (the turn's final cost, the id of the message just persisted). It runs after the stream drains and its return is the meta folded into the terminal frame.
+
+**Cancelling a turn** is not a mapper hook: compose a generator in front of it, so the provider stream itself stops rather than its events being silenced.
+
+```php
+$untilCancelled = function (iterable $stream) use ($buffer, $turnId): Generator {
+    foreach ($stream as $event) {
+        if ($buffer->isCancelled($turnId)) {
+            return;
+        }
+
+        yield $event;
+    }
+};
+
+$mapper->runIntoBuffer($untilCancelled($stream), $buffer, $turnId, $meta);
+```
+
+A cancelled stream simply ends, so the fold takes its normal exit and the turn finishes on `done` with whatever it produced — a stop is a completed short turn, not an error. (`TurnBuffer::fail()` takes a fourth argument to append an empty `done` after `error`, for clients that hang their whole teardown off `done`. Off by default; the terminal contract above is what the kit promises.)
+
 ## Approval forms
 
 An approval card describes its own form. `ClassifiedTool::fields()` declares the arguments a tool wants rendered a particular way; everything it leaves out is inferred from the pending value (`bool` → boolean, `int|float` → number, a string with a newline or over 120 chars → textarea, an array → readonly, otherwise text), and any argument named `id` or `*_id` is readonly because it addresses the record the write lands on:
@@ -74,6 +94,8 @@ $decisions = ResumeDecisions::fromClient(
 
 return $agent->continue($decisions);      // guarded arguments only
 ```
+
+Resuming on a queue? A closure cannot travel in a job payload, so guard in the request and dispatch the plain result — `ResumeDecisions::guarded($input, $cards->editGuard($pending))` returns the same client-shaped decisions with every edit reconciled, having round-tripped them through `fromClient()` so an unreadable shape throws in the request rather than in the job. The job then resumes with a bare `fromClient($guarded)`.
 
 `AskUser` participates: its `answer` is the one editable field, so the model's own `question` and `options` are restored from the pause rather than taken from the client. Its schema takes optional `options` (2–4 suggested answers, sanitized and capped server-side) and the tool description tells the model to send them only when the answer space is enumerable.
 
@@ -123,9 +145,9 @@ Pass your framework's reactive array **in**, so every mutation goes through its 
 const segments = reactive<Segment[]>([])          // Vue;  Svelte 5: let segments = $state<Segment[]>([])
 const timeline = createTimeline(segments)
 
-for await (const { event, data } of readSseStream(response)) {
+await readSseStream(response, (event, data) => {
     timeline.push(event, data)                    // unknown events are ignored — pass everything
-}
+})
 ```
 
 Merge rules: consecutive `delta`s merge into the trailing text segment and consecutive `reasoning`s into the trailing thinking segment; a `tool` event upserts **by id in place**, so a `running` chip stays where the call started and `done` updates it there; an `approval`/`question` card whose id matches an existing tool segment **replaces** it in place (the v0.5.0 fold rule — no spinner is left running behind a decision card); anything else appends.

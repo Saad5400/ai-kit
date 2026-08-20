@@ -10,6 +10,7 @@ use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\ToolCall;
 use Laravel\Ai\Streaming\Events\ToolResult;
 use Saad\AiKit\Streaming\StreamEventMapper;
+use Saad\AiKit\Streaming\StreamResult;
 use Saad\AiKit\Streaming\TextTransformer;
 use Saad\AiKit\Streaming\TurnBuffer;
 
@@ -375,6 +376,37 @@ it('ends a buffered turn on error with no done after it', function () {
         ->and($result->failed)->toBeTrue();
 });
 
+it('resolves closure meta after the fold, so post-stream facts reach the terminal frame', function () {
+    $buffer = $this->app->make(TurnBuffer::class);
+    $buffer->start('t1', ['user_id' => 7]);
+
+    $this->mapper->runIntoBuffer([
+        fakeDelta('Hello'),
+        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+    ], $buffer, 't1', fn (StreamResult $result): array => [
+        'completion_tokens' => $result->usage?->completionTokens,
+        'message' => ['role' => 'assistant', 'content' => $result->text],
+    ]);
+
+    expect($buffer->get('t1')['meta'])->toBe([
+        'user_id' => 7,
+        'completion_tokens' => 5,
+        'message' => ['role' => 'assistant', 'content' => 'Hello'],
+    ]);
+});
+
+it('resolves closure meta on the failed path too', function () {
+    $buffer = $this->app->make(TurnBuffer::class);
+    $buffer->start('t1');
+
+    $this->mapper->runIntoBuffer([
+        fakeDelta('partial'),
+        new Error('e1', 'provider_error', 'boom', false, 1),
+    ], $buffer, 't1', fn (StreamResult $result): array => ['partial' => $result->failed ? $result->text : null]);
+
+    expect($buffer->get('t1')['meta'])->toBe(['partial' => 'partial', 'error' => 'boom']);
+});
+
 it('appends reasoning and tool events to a buffered turn without extra wiring', function () {
     $buffer = $this->app->make(TurnBuffer::class);
     $buffer->start('t1');
@@ -393,6 +425,41 @@ it('appends reasoning and tool events to a buffered turn without extra wiring', 
         ['seq' => 4, 'event' => 'delta', 'data' => ['text' => 'answer']],
         ['seq' => 5, 'event' => 'done', 'data' => []],
     ]);
+});
+
+it('stops on a cancelling generator composed in front of it, finishing on done', function () {
+    // The documented cancellation pattern: the mapper has no hook, the
+    // generator in front of it stops the provider stream itself.
+    $buffer = $this->app->make(TurnBuffer::class);
+    $buffer->start('t1');
+
+    $untilCancelled = function (iterable $stream) use ($buffer): Generator {
+        foreach ($stream as $event) {
+            if ($buffer->isCancelled('t1')) {
+                return;
+            }
+
+            yield $event;
+        }
+    };
+
+    $stream = (function () use ($buffer): Generator {
+        yield fakeDelta('before');
+
+        $buffer->cancel('t1');
+
+        yield fakeDelta('after');
+    })();
+
+    $this->mapper->doneUsing(fn ($result) => ['text' => $result->text]);
+
+    $result = $this->mapper->runIntoBuffer($untilCancelled($stream), $buffer, 't1');
+
+    expect($buffer->get('t1')['events'])->toBe([
+        ['seq' => 1, 'event' => 'delta', 'data' => ['text' => 'before']],
+        ['seq' => 2, 'event' => 'done', 'data' => ['text' => 'before']],
+    ])
+        ->and($result->failed)->toBeFalse();
 });
 
 it('emits identical event sequences inline and buffered', function (array $stream) {

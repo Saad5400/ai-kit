@@ -38,6 +38,9 @@ use Laravel\Ai\Approvals\Decisions;
  *     );
  *
  *     $agent->continue($decisions);   // guarded arguments only
+ *
+ * Resuming on a QUEUE instead? A closure cannot travel in a job payload, so
+ * guard in the request and send the plain result — {@see guarded()}.
  */
 final class ResumeDecisions
 {
@@ -56,6 +59,51 @@ final class ResumeDecisions
         }
 
         return Decisions::from($map);
+    }
+
+    /**
+     * The same guarded payload, still in the CLIENT's shape — for the apps
+     * that resume on a queue, where {@see fromClient()}'s guard closure
+     * cannot travel: a job carries plain data, so the reconciliation has to
+     * happen in the request that still holds the server's pending set.
+     *
+     * Every `edit` decision's arguments come back replaced by
+     * {@see ApprovalCards::guardEdits()}'s reconciled set (readonly and
+     * hidden fields restored from the pause); approvals and rejections pass
+     * through untouched — they carry no arguments to tamper with. The result
+     * is then round-tripped through {@see fromClient()} so a shape the resume
+     * could not read throws HERE rather than inside the job, and the job
+     * itself resumes with a bare `fromClient($guarded)` — no guard, because
+     * nothing unguarded reached the queue:
+     *
+     *     $pending = (new StoredApprovals)->pending($conversationId);
+     *
+     *     $guarded = ResumeDecisions::guarded(
+     *         $request->validated('decisions'),
+     *         $cards->editGuard($pending),
+     *     );
+     *
+     *     ResumeTurn::dispatch($conversationId, $guarded);
+     *
+     * @param  array<string, array{action: string, arguments?: array<string, mixed>, reason?: string}|string|bool>  $input
+     * @param  Closure(string, array<string, mixed>): array<string, mixed>  $guard  {@see ApprovalCards::editGuard()}
+     * @return array<string, array{action: string, arguments?: array<string, mixed>, reason?: string}|string|bool>
+     *
+     * @throws InvalidArgumentException on an unreadable shape, an argument name the card never carried, or an id that is not pending
+     */
+    public static function guarded(array $input, Closure $guard): array
+    {
+        $guarded = [];
+
+        foreach ($input as $id => $raw) {
+            $guarded[(string) $id] = is_array($raw) && ($raw['action'] ?? null) === 'edit'
+                ? ['action' => 'edit', 'arguments' => $guard((string) $id, (array) ($raw['arguments'] ?? []))]
+                : $raw;
+        }
+
+        self::fromClient($guarded);
+
+        return $guarded;
     }
 
     /**

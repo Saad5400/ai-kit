@@ -61,6 +61,28 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  * resumable background-job path use {@see runIntoBuffer()}, which keeps the
  * buffer the sole author of the turn's terminal event.
  *
+ * CANCELLATION is deliberately not a hook here. The fold has no business
+ * deciding when a turn should stop; a generator composed IN FRONT of the
+ * mapper does, and it stops the provider stream itself rather than merely
+ * silencing its events:
+ *
+ *     $untilCancelled = function (iterable $stream) use ($buffer, $turnId): Generator {
+ *         foreach ($stream as $event) {
+ *             if ($buffer->isCancelled($turnId)) {
+ *                 return;
+ *             }
+ *
+ *             yield $event;
+ *         }
+ *     };
+ *
+ *     $mapper->runIntoBuffer($untilCancelled($stream), $buffer, $turnId, $meta);
+ *
+ * A cancelled stream simply ENDS, so the fold takes its normal exit: held
+ * text flushes, `beforeDone` hooks run, and the turn finishes on `done`
+ * with whatever it produced — a stop is a completed short turn, not an
+ * error.
+ *
  * Extension points:
  * - {@see transformText}: a pipeline on the text channel. Transformers may
  *   hold text back mid-stream (uqucc's streaming link guard buffers until a
@@ -298,10 +320,17 @@ class StreamEventMapper
      * The turn must already have been started; `$meta` is folded into the
      * record either way (conversation id, final message, credit outcome).
      *
+     * `$meta` may be a Closure — `fn (StreamResult $result): array` — for the
+     * facts that only EXIST once the fold is over: the turn's final cost, the
+     * id of the message just persisted, the plan the model settled on. It is
+     * invoked after the stream drains and its return becomes the meta folded
+     * into the terminal frame, on the failed path too (read `$result->failed`
+     * to tell the two apart). A plain array behaves exactly as it always has.
+     *
      * @param  iterable<StreamEvent>  $stream
-     * @param  array<string, mixed>  $meta
+     * @param  array<string, mixed>|Closure(StreamResult): array<string, mixed>  $meta
      */
-    public function runIntoBuffer(iterable $stream, TurnBuffer $buffer, string $turnId, array $meta = []): StreamResult
+    public function runIntoBuffer(iterable $stream, TurnBuffer $buffer, string $turnId, array|Closure $meta = []): StreamResult
     {
         $done = null;
         $error = null;
@@ -315,6 +344,8 @@ class StreamEventMapper
                 $buffer->append($turnId, $event, $data);
             }
         });
+
+        $meta = $meta instanceof Closure ? $meta($result) : $meta;
 
         if ($error !== null) {
             $buffer->fail($turnId, $error, $meta);
