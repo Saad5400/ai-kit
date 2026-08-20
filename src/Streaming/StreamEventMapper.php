@@ -102,6 +102,20 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  */
 class StreamEventMapper
 {
+    /**
+     * Tri-state coalescing switch: null means "the path's default" — OFF on
+     * inline {@see run()} so a directly-streamed app keeps its per-token
+     * feel, ON on the buffered path ({@see runBuffered()}, and therefore
+     * {@see runIntoBuffer()} and the {@see TurnRunner}) where every frame
+     * is a cache write. {@see coalesce()} / {@see withoutCoalescing()}
+     * override either default.
+     */
+    protected ?bool $coalesce = null;
+
+    protected int $coalesceWindowMs = 100;
+
+    protected int $coalesceMaxChars = 400;
+
     /** @var list<TextTransformer> */
     protected array $transformers = [];
 
@@ -235,17 +249,98 @@ class StreamEventMapper
     }
 
     /**
+     * Merge runs of consecutive `delta` (and, separately, `reasoning`)
+     * frames before they reach the sink: a run is released when `$windowMs`
+     * elapses since its first frame, when it reaches `$maxChars`, when an
+     * event of another kind arrives (which always flushes FIRST, so wire
+     * order is unchanged), and when the fold ends. Implemented as a stage
+     * in front of the sink — never inside the {@see TextTransformer}
+     * pipeline — so {@see StreamResult::$text} is byte-identical with or
+     * without it. See {@see CoalescingSink} for the exact semantics.
+     */
+    public function coalesce(int $windowMs = 100, int $maxChars = 400): static
+    {
+        $this->coalesce = true;
+        $this->coalesceWindowMs = $windowMs;
+        $this->coalesceMaxChars = $maxChars;
+
+        return $this;
+    }
+
+    /**
+     * Emit every text frame as it comes, even on the buffered path — for
+     * an app that wants its replay log token-exact and accepts the write
+     * amplification.
+     */
+    public function withoutCoalescing(): static
+    {
+        $this->coalesce = false;
+
+        return $this;
+    }
+
+    /**
      * Fold the stream into wire events on the sink. On a terminal error the
      * fold stops after emitting `error` — no `done` is emitted, mirroring
      * the apps' contract (the client treats `error` as terminal).
+     *
+     * Coalescing is OFF here unless the app called {@see coalesce()}: an
+     * inline SSE response wants each token on the wire the moment it
+     * exists.
      *
      * @param  iterable<StreamEvent>  $stream
      * @param  callable(string, array<string, mixed>): void  $emit
      */
     public function run(iterable $stream, callable $emit): StreamResult
     {
+        return $this->mapped($stream, $emit, $this->coalesce === true);
+    }
+
+    /**
+     * The buffered-path twin of {@see run()}: the same fold, but coalescing
+     * defaults ON because here every frame becomes a {@see TurnBuffer}
+     * write and the log it grows is replayed to every resuming client.
+     * {@see runIntoBuffer()} and the {@see TurnRunner} both fold through
+     * this; {@see withoutCoalescing()} opts out.
+     *
+     * @param  iterable<StreamEvent>  $stream
+     * @param  callable(string, array<string, mixed>): void  $emit
+     */
+    public function runBuffered(iterable $stream, callable $emit): StreamResult
+    {
+        return $this->mapped($stream, $emit, $this->coalesce ?? true);
+    }
+
+    /**
+     * @param  iterable<StreamEvent>  $stream
+     * @param  callable(string, array<string, mixed>): void  $emit
+     */
+    protected function mapped(iterable $stream, callable $emit, bool $coalesce): StreamResult
+    {
         $result = new StreamResult;
 
+        $sink = $coalesce
+            ? new CoalescingSink(Closure::fromCallable($emit), $this->coalesceWindowMs, $this->coalesceMaxChars)
+            : null;
+
+        // The flush rides a finally so text the model produced before a
+        // mid-stream throw still reaches the sink — uncoalesced, those
+        // frames had already been emitted by the time the throw landed.
+        try {
+            $this->fold($stream, $sink ?? $emit, $result);
+        } finally {
+            $sink?->flush();
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param  iterable<StreamEvent>  $stream
+     * @param  callable(string, array<string, mixed>): void  $emit
+     */
+    protected function fold(iterable $stream, callable $emit, StreamResult $result): void
+    {
         foreach ($stream as $event) {
             $this->collect($event, $result);
 
@@ -258,7 +353,7 @@ class StreamEventMapper
                     if ($continue !== true) {
                         $result->failed = true;
 
-                        return $result;
+                        return;
                     }
                 }
 
@@ -294,7 +389,7 @@ class StreamEventMapper
 
                 $emit('error', ['message' => ($this->errorMessage)($event)]);
 
-                return $result;
+                return;
             }
         }
 
@@ -305,8 +400,6 @@ class StreamEventMapper
         }
 
         $emit('done', ($this->doneUsing)($result));
-
-        return $result;
     }
 
     /**
@@ -335,7 +428,7 @@ class StreamEventMapper
         $done = null;
         $error = null;
 
-        $result = $this->run($stream, function (string $event, array $data) use ($buffer, $turnId, &$done, &$error): void {
+        $result = $this->runBuffered($stream, function (string $event, array $data) use ($buffer, $turnId, &$done, &$error): void {
             if ($event === 'done') {
                 $done = $data;
             } elseif ($event === 'error') {
