@@ -91,6 +91,18 @@ return [
     | silence so proxies don't buffer the stream shut, and polls the buffer
     | every `poll_interval_ms`.
     |
+    | The log is stored as a header plus pages of `page_size` events, so an
+    | append costs the same on the ten-thousandth token as on the first.
+    | The producer heartbeats the header on every append (and with
+    | `touch()` while silent inside a long tool call); a tail that finds a
+    | running turn with no heartbeat for `stale_after_seconds` fails it
+    | with the `ai-kit::streaming.stale` message instead of spinning until
+    | the TTL — the liveness signal for a worker killed mid-turn. Keep the
+    | producer's touch interval well under it. `stale_trailing_done`
+    | appends an empty `done` after that stale `error`, for clients that
+    | only tear down on `done` (see TurnBuffer::fail()). 0 disables the
+    | stale check.
+    |
     */
 
     'streaming' => [
@@ -99,6 +111,9 @@ return [
         'max_stream_seconds' => (int) env('AI_KIT_STREAMING_MAX_SECONDS', 180),
         'keepalive_seconds' => (int) env('AI_KIT_STREAMING_KEEPALIVE_SECONDS', 15),
         'poll_interval_ms' => (int) env('AI_KIT_STREAMING_POLL_INTERVAL_MS', 150),
+        'page_size' => 64,
+        'stale_after_seconds' => 300,
+        'stale_trailing_done' => false,
     ],
 
     /*
