@@ -1,6 +1,6 @@
 {
     "name": "@saad5400/ai-kit",
-    "version": "0.8.0",
+    "version": "0.9.0",
     "description": "Frontend half of saad/ai-kit: the SSE wire contract, a reader for it, an ordered segment timeline, a sanitized markdown pipeline, and thin Vue + Svelte components.",
     "license": "UNLICENSED",
     "private": false,
