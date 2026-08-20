@@ -343,11 +343,12 @@ it('folds a stream into a buffered turn, with the buffer writing the one done', 
 
     $turn = $buffer->get('t1');
 
+    // Coalescing is the buffered path's default (v0.8.0): the two adjacent
+    // deltas land as ONE log entry.
     expect($turn['status'])->toBe('done')
         ->and($turn['events'])->toBe([
-            ['seq' => 1, 'event' => 'delta', 'data' => ['text' => 'Hel']],
-            ['seq' => 2, 'event' => 'delta', 'data' => ['text' => 'lo']],
-            ['seq' => 3, 'event' => 'done', 'data' => ['text' => 'Hello']],
+            ['seq' => 1, 'event' => 'delta', 'data' => ['text' => 'Hello']],
+            ['seq' => 2, 'event' => 'done', 'data' => ['text' => 'Hello']],
         ])
         ->and($turn['meta'])->toBe(['user_id' => 7, 'conversation_id' => 'c9'])
         ->and($result->text)->toBe('Hello');

@@ -4,6 +4,7 @@ namespace Saad\AiKit\Streaming;
 
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
+use Saad\AiKit\Safety\KillSwitch;
 
 class StreamingServiceProvider extends ServiceProvider
 {
@@ -15,6 +16,12 @@ class StreamingServiceProvider extends ServiceProvider
         // between deltas), so it binds transiently — every resolve is a
         // fresh fold.
         $this->app->bind(StreamEventMapper::class);
+
+        // The kill switch only exists when the safety module is on; the
+        // runner degrades to no re-check rather than dragging the module in.
+        $this->app->bind(TurnRunner::class, fn (Application $app) => new TurnRunner(
+            $app->bound(KillSwitch::class) ? $app->make(KillSwitch::class) : null,
+        ));
 
         $this->app->singleton(TurnBuffer::class, function (Application $app) {
             $config = $app['config']->get('ai-kit.streaming', []);
