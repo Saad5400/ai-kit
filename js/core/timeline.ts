@@ -37,7 +37,7 @@
  * proxy's back and nothing re-renders.
  */
 
-import type { AiKitCard, ToolPayload } from './events'
+import type { AiKitCard, ToolPayload, ToolProgress } from './events'
 
 /** A run of model text. Consecutive `delta` events merge into one. */
 export type TextSegment = {
@@ -54,7 +54,9 @@ export type ThinkingSegment = {
 /**
  * One tool call, at the position where it STARTED. A `done` event updates
  * this segment in place rather than appending — the chip must not jump to the
- * end of the turn when the call returns.
+ * end of the turn when the call returns. `progress` is whatever the latest
+ * `running` frame reported (see {@link ToolProgress}); it is gone once the
+ * call is `done`.
  */
 export type ToolSegment = {
     type: 'tool'
@@ -62,6 +64,7 @@ export type ToolSegment = {
     name: string
     status: ToolPayload['status']
     successful?: boolean
+    progress?: ToolProgress
 }
 
 /**
@@ -120,7 +123,26 @@ export function createTimeline(segments: Segment[] = []): Timeline {
         )
 
         if (at === -1) {
-            segments.push({ ...payload, type: 'tool' })
+            // The first frame for an id is the `running` one and carries the
+            // name; an orphan progress frame (no name, nothing held) is still
+            // kept rather than dropped, since its progress is what the user
+            // wants to see.
+            const fresh: ToolSegment = {
+                type: 'tool',
+                id: payload.id,
+                name: payload.name ?? '',
+                status: payload.status,
+            }
+
+            if (payload.successful !== undefined) {
+                fresh.successful = payload.successful
+            }
+
+            if (payload.status === 'running' && payload.progress !== undefined) {
+                fresh.progress = payload.progress
+            }
+
+            segments.push(fresh)
 
             return
         }
@@ -128,13 +150,27 @@ export function createTimeline(segments: Segment[] = []): Timeline {
         // In place: the chip stays where the call started. Reading the element
         // out of the (possibly proxied) array hands back the reactive child,
         // so these writes are observed.
+        //
+        // The merge rules of the `tool` contract (see `ToolPayload`): an
+        // absent `name` keeps the held one; `progress` is replaced wholesale
+        // when sent, kept when a `running` frame omits it, and dropped on
+        // `done` — a settled chip must never keep showing "12/40".
         const existing = segments[at] as ToolSegment
 
-        existing.name = payload.name
+        if (payload.name !== undefined) {
+            existing.name = payload.name
+        }
+
         existing.status = payload.status
 
         if (payload.successful !== undefined) {
             existing.successful = payload.successful
+        }
+
+        if (payload.status === 'done') {
+            delete existing.progress
+        } else if (payload.progress !== undefined) {
+            existing.progress = payload.progress
         }
     }
 
@@ -243,7 +279,11 @@ const text = (data: unknown): string => {
 const isTool = (data: unknown): data is ToolPayload => {
     const payload = data as ToolPayload | null
 
-    return typeof payload?.id === 'string' && typeof payload.name === 'string'
+    return (
+        typeof payload?.id === 'string' &&
+        (payload.name === undefined || typeof payload.name === 'string') &&
+        (payload.status === 'running' || payload.status === 'done')
+    )
 }
 
 const isCard = (data: unknown): data is AiKitCard =>

@@ -31,18 +31,47 @@ export type ReasoningPayload = {
 }
 
 /**
- * Tool progress, correlated by `id` — `running` when the call starts,
- * `done` when it returns. Arguments and results are deliberately absent:
- * these apps are public-facing and tool payloads carry retrieved records.
- * An app that wants more hooks `ToolCall` server-side and emits its own
- * extension event.
+ * What a long-running tool reports about itself while it works, through
+ * `Saad\AiKit\Streaming\ToolProgress` server-side. Every field is optional:
+ * a tool that only knows "step 3 of 10" sends `current`/`total`, one that
+ * only knows a phase sends `label`, and a client renders whatever it got —
+ * a determinate bar when `percent` or `current`/`total` is known, an
+ * indeterminate spinner otherwise.
+ */
+export type ToolProgress = {
+    /** A short human phrase — "Grading submissions". Rendered `dir="auto"`. */
+    label?: string
+    /** 0–100. Wins over `current`/`total` for the bar when both are sent. */
+    percent?: number
+    /** Items done so far; rendered as `current/total` when `total` is known. */
+    current?: number
+    total?: number
+}
+
+/**
+ * Tool status, correlated by `id` — `running` when the call starts, `done`
+ * when it returns, and any number of `running` frames in between carrying
+ * `progress`. Arguments and results are deliberately absent: these apps are
+ * public-facing and tool payloads carry retrieved records. An app that wants
+ * more hooks `ToolCall` server-side and emits its own extension event.
+ *
+ * UPSERT BY ID. A client holds ONE record per `id` and folds every frame for
+ * that id into it. The first `running` frame always carries `name`; the
+ * progress frames that follow may omit it, and an absent `name` means "keep
+ * the one you already hold" — never blank the chip. `progress` is present
+ * only while `running`: a frame that carries it replaces the held progress
+ * wholesale (no per-field merge), a `running` frame without it keeps what
+ * is held, and the `done` frame drops it.
  */
 export type ToolPayload = {
     id: string
-    name: string
+    /** Always on the first `running` frame; optional on progress frames (keep the held one). */
+    name?: string
     status: 'running' | 'done'
     /** Present on `status: 'done'` only. */
     successful?: boolean
+    /** Present on `status: 'running'` only — see {@link ToolProgress}. */
+    progress?: ToolProgress
 }
 
 /**

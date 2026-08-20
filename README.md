@@ -110,6 +110,7 @@ npm install github:Saad5400/ai-kit#semver:^0.6.0
 ```ts
 import { readSseStream } from '@saad5400/ai-kit/sse'
 import { createTimeline, groupSegments } from '@saad5400/ai-kit/timeline'
+import { resumeTurn } from '@saad5400/ai-kit/resume'
 import { renderMarkdown } from '@saad5400/ai-kit/markdown'
 import type { AiKitSseEvent } from '@saad5400/ai-kit/events'
 
@@ -119,7 +120,7 @@ import Markdown from '@saad5400/ai-kit/svelte/Markdown.svelte'    // catodemy, s
 import '@saad5400/ai-kit/styles/prose.css'                        // optional
 ```
 
-Contents: `events` (the table above, as TypeScript), `sse` (a reader for POST-response streams — `EventSource` cannot send a body — wrapping `eventsource-parser` for the framing and keeping the fetch/abort shell, a JSON-with-raw-fallback parse, a `maxBufferSize` cap, and one deliberate spec departure: a final frame the server never closed with a blank line is still dispatched), `timeline` (the ordered segment reducer, below), `fields` (the form-schema presentation helpers the two component sets share), `markdown` (unified + GFM, sanitized on the hast tree by `rehype-sanitize` so no DOM is needed, raw HTML escaped to literal text, every link `target="_blank" rel="noopener noreferrer nofollow"`, plus a throttled `createLiveRenderer` that runs `remend` over the partial buffer so a half-written `**bold` never flashes its asterisks), and `vue/` + `svelte/` components (`Markdown`, `ProcessGroup`, `ApprovalCard`, `ApprovalFields`, `QuestionCard`, `ToolChip`).
+Contents: `events` (the table above, as TypeScript), `sse` (a reader for POST-response streams — `EventSource` cannot send a body — wrapping `eventsource-parser` for the framing and keeping the fetch/abort shell, a JSON-with-raw-fallback parse, a `maxBufferSize` cap, and one deliberate spec departure: a final frame the server never closed with a blank line is still dispatched), `timeline` (the ordered segment reducer, below), `resume` (the resumable-turn reader for the buffered path, below), `fields` (the form-schema presentation helpers the two component sets share), `markdown` (unified + GFM, sanitized on the hast tree by `rehype-sanitize` so no DOM is needed, raw HTML escaped to literal text, every link `target="_blank" rel="noopener noreferrer nofollow"`, plus a throttled `createLiveRenderer` that runs `remend` over the partial buffer so a half-written `**bold` never flashes its asterisks), and `vue/` + `svelte/` components (`Markdown`, `ProcessGroup`, `ApprovalCard`, `ApprovalFields`, `QuestionCard`, `ToolChip`).
 
 Theming is CSS variables only — set them once on a container and every component follows:
 
@@ -132,6 +133,7 @@ Theming is CSS variables only — set them once on a container and every compone
 | `--ai-kit-surface` | `color-mix(currentColor 4–12%, transparent)` | card and disclosure backgrounds |
 | `--ai-kit-radius` | `0.5rem` | corners |
 | `--ai-kit-code-font` / `--ai-kit-code-size` | mono stack / `0.8125rem` | machine names, ids, code and markdown editors |
+| `--ai-kit-progress` | `var(--ai-kit-accent)` | the tool chip's determinate progress bar |
 
 The neutral defaults are mixed out of `currentColor` rather than hardcoded greys, so the components read correctly on a **dark** admin panel with no app CSS at all — mapping the tokens to your design system is refinement, not a prerequisite.
 
@@ -152,6 +154,8 @@ await readSseStream(response, (event, data) => {
 
 Merge rules: consecutive `delta`s merge into the trailing text segment and consecutive `reasoning`s into the trailing thinking segment; a `tool` event upserts **by id in place**, so a `running` chip stays where the call started and `done` updates it there; an `approval`/`question` card whose id matches an existing tool segment **replaces** it in place (the v0.5.0 fold rule — no spinner is left running behind a decision card); anything else appends.
 
+The `tool` upsert follows the v0.8.0 progress contract: a frame without `name` keeps the name already held (progress frames may omit it — never blank the chip), a frame carrying `progress` replaces the held progress **wholesale** (no per-field merge), a `running` frame without `progress` keeps what is held, and the `done` frame drops it — a settled chip never keeps showing `12/40`.
+
 Your message component then renders groups, not raw segments. `groupSegments()` collapses consecutive thinking and tool segments into one `process` group (a single steps disclosure) while `text` and `card` segments stay top-level in place — cards are never swallowed, because an approval card is a decision surface, not a progress detail:
 
 ```svelte
@@ -170,6 +174,8 @@ Your message component then renders groups, not raw segments. `groupSegments()` 
 {/each}
 ```
 
+**Tool progress.** A long-running tool reports through `Saad\AiKit\Streaming\ToolProgress` server-side, which lands on the wire as extra `tool {status: 'running'}` frames carrying `progress: {label?, percent?, current?, total?}` — present only while running, upserted by `id`. `ToolChip` takes the segment's `progress` and renders the `label` (`dir="auto"`) after the tool name, `current/total` as `12/40` inside an LTR-isolated span (an Arabic host must not flip the digits into `40/12`), and — when `percent` or `current`/`total` gives it a figure — a thin determinate bar in place of the indeterminate spinner. The bar's fill color is `--ai-kit-progress`, defaulting to the accent; reduced motion disables its width transition the way it already slows the spinner. While a `ProcessGroup` is `live`, its summary line swaps the static label for the **last running** chip's progress label, so a collapsed disclosure reads "Grading submissions" instead of a generic "steps"; it falls back to the static label when no running chip carries one.
+
 `ProcessGroup` supersedes `ThinkingDisclosure` (deprecated, still exported for one version): a real `<details>` with a chevron and a tool-count badge, open while `live` and collapsing on its own once the group settles — until the user toggles it, after which their choice sticks.
 
 `ApprovalCard` is the whole card: header with an `icon` slot, title, a status chip (`لا يمكن التراجع` / `قابل للتراجع`), the reason, preview lines, the form, and the confirm/reject row with confirm first in reading order so RTL puts it on the right. A destructive card takes the destructive accent on its border and confirm button, derived from the same server flag as the behaviour. Its `decide` event hands you exactly what `ResumeDecisions::fromClient()` accepts — `{action: 'approve'}`, `{action: 'edit', arguments}` or `{action: 'reject'}` — so the handler is one request.
@@ -177,6 +183,25 @@ Your message component then renders groups, not raw segments. `groupSegments()` 
 `ApprovalFields` renders the field schema on its own if you want your own chrome: hidden skipped, readonly as a definition row (never a disabled input), the rest as their matching control, long text as an auto-growing editor that scrolls internally past ~40vh with a character count, and `markdown`/`code` in mono — each replaceable per widget through the `field` slot (Vue) or snippet (Svelte). Raw argument names render mono, `dir="ltr"` and bidi-**isolated**, which is what stops `action: create` from rendering as a scrambled "create action:" inside an Arabic card; a tool that supplies its own `label` gets `dir="auto"` prose instead.
 
 `QuestionCard` takes an optional `answer` (or `skipped`) and settles into a record of what was actually answered rather than a bare "answered" label — pass it from your persisted thread and a reloaded page renders its history the same way.
+
+### Resuming a long turn
+
+`resumeTurn()` (from `@saad5400/ai-kit/resume`) is the client half of the buffered path — the resume logic that lived in catodemy's `chat-state`, extracted so every app stops rewriting it. Point it at the app's stream route and feed the frames to the timeline:
+
+```ts
+const stream = resumeTurn({
+    url: (cursor) => `/ai/turns/${turnId}/stream?cursor=${cursor}`,   // the app owns the route + locale prefix
+    onEvent: (event, data, seq) => timeline.push(event, data),
+    onLost: (reason) => showError(reason === 'expired' ? '…' : '…'),  // 'expired' | 'failed' | 'gone'
+    onSilence: () => (waiting = true),                                // the "still processing" line; clear it in onEvent
+})
+
+// stream.cursor — the last buffer sequence seen
+// stream.done   — resolves when the reader stopped, for ANY reason; never rejects
+stream.stop()    // the user's stop, or a new turn replacing this one
+```
+
+Semantics: the cursor is taken from each frame's `id:` and re-issued on **every** attempt, so a reconnect replays only what this client has not folded. A read that ends without a terminal event — the server's own hangup ceiling, a broken connection, a rejected `fetch`, a non-ok status — counts one failure and retries after `backoffMs(n)` (default `min(1000·2^(n−1), 8000)`); any frame carrying an `id` resets the count, so a ten-minute turn that hangs up every 180 s never exhausts its retries, while a dead tail gives up after `maxConsecutiveFailures` (default 8) with `onLost('failed')`. A 404 is `onLost('expired')` on the spot — the buffer is gone. A terminal `done`/`error` frame resolves `done` and stops. `onSilence(silentMs)` fires once per `silenceMs` (default 20 000) window with no frames at all and is re-armed by any frame. `fetch` is injectable for tests.
 
 `styles/prose.css` is optional and opt-in: a small flat prose sheet for `.ai-kit-markdown`, worth taking mainly because it uses logical properties throughout (`padding-inline-start`, `border-inline-start`, `text-align: start`), so Arabic replies lay out correctly with no mirrored RTL stylesheet. Map `--ai-kit-link`, `--ai-kit-border`, `--ai-kit-muted-bg` and `--ai-kit-muted` to your design tokens. An app with its own prose system should skip it.
 

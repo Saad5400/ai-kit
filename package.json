@@ -18,6 +18,7 @@
         "./events": "./js/core/events.ts",
         "./sse": "./js/core/sse.ts",
         "./timeline": "./js/core/timeline.ts",
+        "./resume": "./js/core/resume.ts",
         "./fields": "./js/core/fields.ts",
         "./markdown": "./js/core/markdown.ts",
         "./vue/*": "./js/vue/*",
