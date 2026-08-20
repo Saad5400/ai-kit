@@ -24,11 +24,12 @@
  *     let segments = $state<Segment[]>([])
  *     const timeline = createTimeline(segments)
  *
- * Then feed it the reader's dispatch verbatim:
+ * Then feed it the reader's dispatch verbatim — `readSseStream` is
+ * callback-based, and its handler's arguments are exactly `push()`'s:
  *
- *     for await (const { event, data } of readSseStream(response)) {
+ *     await readSseStream(response, (event, data) => {
  *         timeline.push(event, data)
- *     }
+ *     })
  *
  * Reading the raw array back out of `timeline.segments` in a template works
  * too, but only because it IS the proxy you passed in — do not hand it a

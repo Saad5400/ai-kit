@@ -77,6 +77,20 @@ it('fail ends the turn on error, with no done after it', function () {
         ->and($turn['meta'])->toBe(['conversation_id' => 'c9', 'error' => 'something broke']);
 });
 
+it('appends a minimal done after error only when the app opts in', function () {
+    $this->buffer->start('t1');
+    $this->buffer->fail('t1', 'something broke', ['conversation_id' => 'c9'], trailingDone: true);
+
+    $turn = $this->buffer->get('t1');
+
+    expect($turn['status'])->toBe('failed')
+        ->and($turn['events'])->toBe([
+            ['seq' => 1, 'event' => 'error', 'data' => ['message' => 'something broke']],
+            ['seq' => 2, 'event' => 'done', 'data' => []],
+        ])
+        ->and($turn['meta'])->toBe(['conversation_id' => 'c9', 'error' => 'something broke']);
+});
+
 it('keeps cancellation on a separate key so it cannot race the producer appends', function () {
     $this->buffer->start('t1');
     $this->buffer->append('t1', 'delta', ['text' => 'a']);

@@ -83,6 +83,12 @@ per-worker — 2-core runners OOM where 20-core boxes pass (catodemy #557 pins
 1G); EXPLAIN-plan tests must drop COMPETING btree indexes, not just ANALYZE +
 `enable_seqscan=off` (catodemy SearchLegsTest).
 
+That backlog is implemented on `feat/v0.7.3-patches` (six items, all six of the
+above plus a `ClassifiedTool` docblock note that queued dispatches inside a
+gated write must be `->afterCommit()`; 409 tests). Closure meta, the opt-in
+trailing `done` and `ResumeDecisions::guarded()` are additive — nothing on
+0.7.2 changes behaviour.
+
 Next per plan: catodemy clean-prod soak (≥2 weeks gates s-grade per #15) →
 retire the kit's transitional proposal module (uqucc + catodemy both off it,
 no consumers left) → uqucc TurnBuffer adoption + uqucc kit bump to v0.7.2 (chip
