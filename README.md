@@ -188,6 +188,17 @@ optimizeDeps: { exclude: ['@saad5400/ai-kit'] },
 ssr: { noExternal: ['@saad5400/ai-kit'] },   // Inertia SSR builds
 ```
 
+## Upgrading to v0.8.0
+
+v0.8.0 deletes the transitional propose → confirm → execute module — `Proposal`, `ProposalBag`, `ProposalExecutor`, `ProposalStatus`, `ProposalTrailer`, `ProposedWrite`, `Plan`, `PlanBuilder`, `CachePlanStore`, `WriteGate`, `WriteGateMode`, `ArrayActionRegistry`, the `PlanStore` / `ProposableAction` / `ActionRegistry` contracts, the exceptions only that flow threw (`ProposalNotPendingException`, `UnknownActionException`, `ActionValidationException`, `WriteRefusedException`) and `Testing\ProposalFactory`. It shipped in v0.3.0 while the classified-approvals decision was not visible ([`docs/DECISIONS.md`](docs/DECISIONS.md) #3) and was always flagged transitional; both consumers now run on `Approvals\Classified`.
+
+**If your app is already on the classified seam, this release is a no-op.** Nothing in `Approvals\Classified`, the `WriteExecutions` ledger or `Approvals\Undo` changed.
+
+Two config keys' worth of cleanup, and one database note:
+
+- Drop `ai-kit.approvals.proposals_table`, `plan_cache_store`, `plan_ttl_seconds` and `auto_approve` from your published config — nothing reads them any more. `write_executions_table`, `undo` and `undo_table` stay. The `AI_KIT_PLAN_CACHE_STORE` / `AI_KIT_PLAN_TTL_SECONDS` env vars are dead.
+- **Your `ai_proposals` table is left exactly where it is.** The kit simply stops shipping the migration that created it; it ships no drop migration and touches no data. An app that ran the old migration keeps the table (and its rows) until it chooses to drop it itself — do that on your own schedule, after confirming the rows are dead.
+
 ## Development
 
 ```bash

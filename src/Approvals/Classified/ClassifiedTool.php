@@ -24,7 +24,8 @@ use Stringable;
  * ledger, destructive calls pause the turn through laravel/ai's native
  * `Approvable` and resume via `Decisions`.
  *
- * What the transitional proposal module got right survives here:
+ * What the transitional proposal module (v0.3.0, retired in v0.8.0) got
+ * right survives here:
  *
  * - `destructive` is server-derived: {@see capability()} is code the model
  *   never sees, so the card's classification cannot be prompted around.

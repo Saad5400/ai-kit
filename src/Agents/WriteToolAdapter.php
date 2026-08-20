@@ -16,8 +16,9 @@ use Throwable;
  *
  * Apps gate registration (hide the write surface from actors who cannot
  * write) by overriding {@see shouldRegister}, and route execution through
- * their own runner (proposal bag, action runner, ledger) by overriding
- * {@see handle}.
+ * their own runner (an action runner, an audit ledger) by overriding
+ * {@see handle}. A tool that is a `Classified\ClassifiedTool` in chat runs
+ * here with its pause skipped — the MCP client owns the confirmation.
  */
 #[IsDestructive(false)]
 class WriteToolAdapter extends AiToolAdapter

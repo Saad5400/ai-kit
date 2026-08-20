@@ -33,6 +33,10 @@ recommendation at decision time.
    tagging v0.4.0, so catodemy never adopts the transitional machinery.** Shipped
    same day as `Approvals\Classified` (Capability/Effect, ClassifiedTool,
    ApprovalCards, ResumeDecisions, AskUser), preserving all three wins.
+   *Status note (appended 2026-08-20, no ruling changed): with uqucc (#129) and
+   catodemy (#558) both live on the classified seam, the transitional module had
+   no consumers left and was **retired from the kit in v0.8.0** — the classified
+   pause is now the only approval seam the kit ships.*
 4. **Confirm UI**: editable form for payload writes (prefilled from tool schema,
    same validated path as human UI, audit flags `edited_by_user`); one-click cards for
    destructive. ⚠ Typed-name confirm tier dropped — undo ledger is the net.
@@ -100,7 +104,7 @@ recommendation at decision time.
 
 | Shipped (v0.3.x / PR #127–#128) | Owner ruling 2026-08-17 | Resolution |
 |---|---|---|
-| Approvals on kit Plan/WriteGate, `Approvable` rejected | **Revert** | ✅ Rework SHIPPED 2026-08-18 (pulled forward by Saad's 2026-08-18 ruling, ahead of v0.4.0); transitional module stays only until uqucc migrates off proposals |
+| Approvals on kit Plan/WriteGate, `Approvable` rejected | **Revert** | ✅ Rework SHIPPED 2026-08-18 (pulled forward by Saad's 2026-08-18 ruling, ahead of v0.4.0); transitional module stays only until uqucc migrates off proposals; ✅ retired from the kit in v0.8.0 (2026-08-20) |
 | Conversation encryption opt-in, uqucc plaintext | **Turn ON in uqucc** | `conversations.encrypt => true` in uqucc config (shipped with this record) |
 | uqucc retention 7 days | **Restore ~90d** | `retention_days => 90` in uqucc config (shipped with this record) |
 | Tool traces never persisted | **Restore encrypted 7–30d** | ✅ Kit side shipped 2026-08-18: traces encrypted + `trace_retention_days` window; apps enable on next kit bump |

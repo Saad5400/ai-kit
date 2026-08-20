@@ -13,8 +13,8 @@ return new class extends Migration
             $table->string('turn_id')->index();
             $table->unsignedInteger('sequence');
             $table->string('action_type');
-            // String owner key, matching proposals.proposed_by — the kit
-            // never assumes a users table.
+            // The app's own string owner key — the kit never assumes a
+            // users table.
             $table->string('executed_by')->nullable();
             // The executed write's real result (ids + message), for
             // replay/audit.
@@ -22,8 +22,8 @@ return new class extends Migration
             $table->boolean('undoable')->default(false);
             $table->timestamps();
 
-            // Exactly-once per plan step: the second attempt at the same
-            // (turn, step) collides here and is swallowed by the helper.
+            // Exactly-once per gated write: the second attempt at the same
+            // (turn, sequence) collides here and is swallowed by the helper.
             $table->unique(['turn_id', 'sequence']);
         });
     }

@@ -7,8 +7,9 @@ use Illuminate\Database\Eloquent\Model;
 /**
  * One undo-ledger row: write-once (no updated_at), deleted in bulk when its
  * turn is undone (one-shot — undo can never replay into a double-revert).
- * `owner` is the same string owner key as Proposal.proposed_by, and is part
- * of every read so one user can never undo another's turn.
+ * `owner` is the app's own string owner key (the same one the write
+ * executions ledger records), and is part of every read so one user can
+ * never undo another's turn.
  *
  * @property int $id
  * @property string $turn_id

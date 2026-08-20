@@ -7,7 +7,6 @@ it('loads the shared and default-enabled modules migrations', function () {
         // Shared: the laravel/ai conversation tables.
         ->toContain('2026_08_17_000000_create_agent_conversations_tables')
         // approvals => true by default.
-        ->toContain('2026_08_17_000000_create_ai_proposals_table')
         ->toContain('2026_08_17_000001_create_ai_write_executions_table')
         // usage => true by default.
         ->toContain('2026_08_13_000000_create_ai_usage_events_table');
@@ -28,7 +27,7 @@ it('publishes every loaded migration flat under the ai-kit-migrations tag', func
 
     expect($sources)
         ->toContain('2026_08_17_000000_create_agent_conversations_tables.php')
-        ->toContain('2026_08_17_000000_create_ai_proposals_table.php')
+        ->toContain('2026_08_17_000001_create_ai_write_executions_table.php')
         ->toContain('2026_08_13_000000_create_ai_usage_events_table.php');
 
     // A destination that kept the module subdirectory would land in

@@ -13,7 +13,6 @@ uses(ApprovalsDisabledTestCase::class);
  */
 it('withholds the approvals migrations when the module is off', function () {
     expect($this->migrationNames())
-        ->not->toContain('2026_08_17_000000_create_ai_proposals_table')
         ->not->toContain('2026_08_17_000001_create_ai_write_executions_table');
 });
 
