@@ -1,6 +1,7 @@
 <?php
 
 use Laravel\Ai\Responses\Data\Usage;
+use Saad\AiKit\Catalog\Catalog;
 use Saad\AiKit\Catalog\CatalogServiceProvider;
 use Saad\AiKit\Catalog\CatalogSource;
 use Saad\AiKit\Catalog\ConfigCatalogSource;
@@ -126,4 +127,17 @@ it('feeds cheapest and smartest declarations into the provider config', function
 
     expect(config('ai.providers.openrouter.models.text.cheapest'))->toBe('cheap/model')
         ->and(config('ai.providers.openrouter.models.text.smartest'))->toBe('smart/model');
+});
+
+it('serves the fleet default chat model, and lets an app override it', function () {
+    // DECISIONS.md #21: the kit carries the shared default; apps inherit it
+    // unless they say otherwise, so the published config's own value is what
+    // a fresh app gets.
+    $catalog = new Catalog(app(CatalogSource::class));
+
+    expect($catalog->chatModel())->toBe('google/gemini-3.5-flash-lite');
+
+    config()->set('ai-kit.chat.model', 'google/gemini-3.1-flash-lite');
+
+    expect($catalog->chatModel())->toBe('google/gemini-3.1-flash-lite');
 });

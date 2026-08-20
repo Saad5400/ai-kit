@@ -20,10 +20,15 @@
         "./timeline": "./js/core/timeline.ts",
         "./resume": "./js/core/resume.ts",
         "./fields": "./js/core/fields.ts",
+        "./cards": "./js/core/cards.ts",
         "./markdown": "./js/core/markdown.ts",
+        "./resizable": "./js/core/resizable.ts",
+        "./vue/resizable": "./js/vue/resizable.ts",
+        "./svelte/resizable": "./js/svelte/resizable.ts",
         "./vue/*": "./js/vue/*",
         "./svelte/*": "./js/svelte/*",
         "./styles/prose.css": "./js/styles/prose.css",
+        "./styles/resizable.css": "./js/styles/resizable.css",
         "./package.json": "./package.json"
     },
     "dependencies": {

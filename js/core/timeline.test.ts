@@ -264,6 +264,49 @@ describe('grouping segments for render', () => {
         expect((groups[0] as { items: unknown[] }).items).toHaveLength(2)
     })
 
+    it('breaks a pending card out of the thinking that surrounds it', () => {
+        // Owner ruling #22: a card the user must act on cannot end up inside a
+        // collapsed disclosure. Thinking on both sides of it, and a chip whose
+        // own id the card did NOT fold, is the worst case for that guarantee.
+        const groups = groupSegments(
+            play([
+                ['reasoning', { text: 'first' }],
+                ['tool', { id: 't1', name: 'Lookup', status: 'done', successful: true }],
+                ['question', question('q1')],
+                ['tool', { id: 't2', name: 'Lookup', status: 'running' }],
+                ['reasoning', { text: 'second' }],
+                ['approval', approval('a1')],
+                ['reasoning', { text: 'third' }],
+            ]),
+        )
+
+        expect(groups.map((group) => group.type)).toEqual([
+            'process',
+            'card',
+            'process',
+            'card',
+            'process',
+        ])
+
+        // Neither card is reachable from inside a process group's items.
+        const nested = groups
+            .flatMap((group) => (group.type === 'process' ? group.items : []))
+            .filter((item) => item.type !== 'thinking' && item.type !== 'tool')
+
+        expect(nested).toEqual([])
+    })
+
+    it('keeps a card top-level whatever its kind or state', () => {
+        const groups = groupSegments(
+            play([
+                ['question', question('q1')],
+                ['approval', approval('a1')],
+            ]),
+        )
+
+        expect(groups.map((group) => group.type)).toEqual(['card', 'card'])
+    })
+
     it('groups nothing out of an empty turn', () => {
         expect(groupSegments([])).toEqual([])
     })

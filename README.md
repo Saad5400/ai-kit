@@ -24,6 +24,18 @@ Toggled per app via `config/ai-kit.php` → `modules.*`:
 
 `Saad\AiKit\Testing` ships fakes + exported contract test suites for apps (dev-only, not a toggle).
 
+## Default chat model
+
+The kit carries the fleet's **shared default chat model** ([`docs/DECISIONS.md`](docs/DECISIONS.md) #21) — apps inherit it and override only if they mean to:
+
+```php
+'chat' => [
+    'model' => env('AI_KIT_CHAT_MODEL', 'google/gemini-3.5-flash-lite'),
+],
+```
+
+Read it through `Catalog::chatModel()`. The slug is pinned by owner ruling, not by taste: Gemini Flash Lite (tools + reasoning + structured outputs + multimodal, 1M context), with `google/gemini-3.1-flash-lite` / `google/gemini-2.5-flash-lite` as the cheaper fallback candidates. Resolution order stays the app's — an app-level setting that already wins over config keeps winning (uqucc's `AiSettings->chat_model` row must be migrated at adoption); this key is the floor of that chain so the decision lives in one place instead of three. A slug the app's catalog also declares picks up that entry's `fallbacks` and price cap for free.
+
 ## The wire contract
 
 One turn is one SSE stream of `event: NAME\ndata: {json}\n\n` frames, written by `SseStream` and folded out of the provider stream by `StreamEventMapper`. The inline path and the resumable `TurnBuffer` path emit the same sequence for the same turn, so a client works against either.
@@ -174,10 +186,14 @@ import type { AiKitSseEvent } from '@saad5400/ai-kit/events'
 import Markdown from '@saad5400/ai-kit/vue/Markdown.vue'          // uqucc
 import Markdown from '@saad5400/ai-kit/svelte/Markdown.svelte'    // catodemy, s-grade
 
+import { resizable } from '@saad5400/ai-kit/svelte/resizable'      // sidebar resize (Svelte action)
+import { useResizable } from '@saad5400/ai-kit/vue/resizable'      // …or Vue composable
+
 import '@saad5400/ai-kit/styles/prose.css'                        // optional
+import '@saad5400/ai-kit/styles/resizable.css'                    // optional
 ```
 
-Contents: `events` (the table above, as TypeScript), `sse` (a reader for POST-response streams — `EventSource` cannot send a body — wrapping `eventsource-parser` for the framing and keeping the fetch/abort shell, a JSON-with-raw-fallback parse, a `maxBufferSize` cap, and one deliberate spec departure: a final frame the server never closed with a blank line is still dispatched), `timeline` (the ordered segment reducer, below), `resume` (the resumable-turn reader for the buffered path, below), `fields` (the form-schema presentation helpers the two component sets share), `markdown` (unified + GFM, sanitized on the hast tree by `rehype-sanitize` so no DOM is needed, raw HTML escaped to literal text, every link `target="_blank" rel="noopener noreferrer nofollow"`, plus a throttled `createLiveRenderer` that runs `remend` over the partial buffer so a half-written `**bold` never flashes its asterisks), and `vue/` + `svelte/` components (`Markdown`, `ProcessGroup`, `ApprovalCard`, `ApprovalFields`, `QuestionCard`, `ToolChip`).
+Contents: `events` (the table above, as TypeScript), `sse` (a reader for POST-response streams — `EventSource` cannot send a body — wrapping `eventsource-parser` for the framing and keeping the fetch/abort shell, a JSON-with-raw-fallback parse, a `maxBufferSize` cap, and one deliberate spec departure: a final frame the server never closed with a blank line is still dispatched), `timeline` (the ordered segment reducer, below), `resume` (the resumable-turn reader for the buffered path, below), `fields` (the form-schema presentation helpers the two component sets share — label humanizing, the identity-field split, machine-value detection), `cards` (the card-level ones: `previewLines()`, which drops a preview row that only repeats the title), `resizable` (the framework-free sidebar resize helper, below), `markdown` (unified + GFM, sanitized on the hast tree by `rehype-sanitize` so no DOM is needed, raw HTML escaped to literal text, every link `target="_blank" rel="noopener noreferrer nofollow"`, plus a throttled `createLiveRenderer` that runs `remend` over the partial buffer so a half-written `**bold` never flashes its asterisks), and `vue/` + `svelte/` components (`Markdown`, `ProcessGroup`, `ApprovalCard`, `ApprovalFields`, `QuestionCard`, `ToolChip`).
 
 Theming is CSS variables only — set them once on a container and every component follows:
 
@@ -186,13 +202,19 @@ Theming is CSS variables only — set them once on a container and every compone
 | `--ai-kit-accent` / `--ai-kit-accent-fg` | `#3b82f6` / `#fff` | confirm button, focus ring, answered marker |
 | `--ai-kit-destructive` / `--ai-kit-destructive-fg` | `#ef4444` / `#fff` | destructive card border/tint/confirm, failed chip |
 | `--ai-kit-muted` | `color-mix(currentColor 65%, transparent)` | labels, reasons, thinking text |
-| `--ai-kit-border` | `color-mix(currentColor 22%, transparent)` | every border and rule |
-| `--ai-kit-surface` | `color-mix(currentColor 4–12%, transparent)` | card and disclosure backgrounds |
+| `--ai-kit-border` | `color-mix(currentColor 22%, transparent)` | card borders, rules, disclosure rails |
+| `--ai-kit-control-border` | `color-mix(currentColor 30%, transparent)` | option chips, inputs, the badge and the reject button — deliberately NOT `--ai-kit-border`, so a hairline divider token cannot make a tappable chip look like text |
+| `--ai-kit-surface` | `transparent` + a static `currentColor 5%` tint | card and disclosure backgrounds |
+| `--ai-kit-badge-bg` | `color-mix(currentColor 10%, transparent)` | the status badge's pill |
+| `--ai-kit-hover` | `color-mix(currentColor 8–10%, transparent)` | chip / skip / disclosure hover |
 | `--ai-kit-radius` | `0.5rem` | corners |
 | `--ai-kit-code-font` / `--ai-kit-code-size` | mono stack / `0.8125rem` | machine names, ids, code and markdown editors |
 | `--ai-kit-progress` | `var(--ai-kit-accent)` | the tool chip's determinate progress bar |
+| `--ai-kit-handle-size` / `--ai-kit-handle-hover` | `0.25rem` / `color-mix(currentColor 22%, transparent)` | the sidebar resize handle |
 
 The neutral defaults are mixed out of `currentColor` rather than hardcoded greys, so the components read correctly on a **dark** admin panel with no app CSS at all — mapping the tokens to your design system is refinement, not a prerequisite.
+
+**Map them to COLORS, not to channel triplets.** `--ai-kit-accent: var(--primary)` is right when `--primary` is `oklch(…)` or `#…`; it is a silent catastrophe when the app stores raw channels for `hsl()` to consume (`--primary: 240 6% 10%`, the shadcn-v3 convention) — the substituted value is not a color, the declaration is invalid at computed-value time, and the fill or border simply does not paint. Use `hsl(var(--primary))` in that case. Since v0.9.0 the components keep every token color out of the `border` / `outline` shorthands, so a mistake here degrades to a `currentColor` border instead of erasing the border, the badge and the button fill at once — but the mapping is still yours to get right.
 
 ### The segment timeline
 
@@ -235,11 +257,49 @@ Your message component then renders groups, not raw segments. `groupSegments()` 
 
 `ProcessGroup` supersedes `ThinkingDisclosure` (deprecated, still exported for one version): a real `<details>` with a chevron and a tool-count badge, open while `live` and collapsing on its own once the group settles — until the user toggles it, after which their choice sticks.
 
-`ApprovalCard` is the whole card: header with an `icon` slot, title, a status chip (`لا يمكن التراجع` / `قابل للتراجع`), the reason, preview lines, the form, and the confirm/reject row with confirm first in reading order so RTL puts it on the right. A destructive card takes the destructive accent on its border and confirm button, derived from the same server flag as the behaviour. Its `decide` event hands you exactly what `ResumeDecisions::fromClient()` accepts — `{action: 'approve'}`, `{action: 'edit', arguments}` or `{action: 'reject'}` — so the handler is one request.
+`ApprovalCard` is the whole card: header with an `icon` slot, the title (once — see below), a status badge (`لا يمكن التراجع` / `قابل للتراجع`), the reason, preview lines, the form, and the confirm/reject row with confirm first in reading order so RTL puts it on the right. A destructive card takes the destructive accent on its border and confirm button, derived from the same server flag as the behaviour. Its `decide` event hands you exactly what `ResumeDecisions::fromClient()` accepts — `{action: 'approve'}`, `{action: 'edit', arguments}` or `{action: 'reject'}` — so the handler is one request. There is no separate "edit" button: the form **is** the edit affordance.
 
-`ApprovalFields` renders the field schema on its own if you want your own chrome: hidden skipped, readonly as a definition row (never a disabled input), the rest as their matching control, long text as an auto-growing editor that scrolls internally past ~40vh with a character count, and `markdown`/`code` in mono — each replaceable per widget through the `field` slot (Vue) or snippet (Svelte). Raw argument names render mono, `dir="ltr"` and bidi-**isolated**, which is what stops `action: create` from rendering as a scrambled "create action:" inside an Arabic card; a tool that supplies its own `label` gets `dir="auto"` prose instead.
+`ApprovalFields` renders the field schema on its own if you want your own chrome: hidden skipped, readonly as a definition row (never a disabled input), the rest as their matching control, long text as an auto-growing editor that scrolls internally past ~40vh with a character count, and `markdown`/`code` in mono — each replaceable per widget through the `field` slot (Vue) or snippet (Svelte). A value that looks like a machine token (an id, an enum member, a path) renders mono, `dir="ltr"` and bidi-**isolated**, which is what stops `action: create` from rendering as a scrambled "create action:" inside an Arabic card.
 
 `QuestionCard` takes an optional `answer` (or `skipped`) and settles into a record of what was actually answered rather than a bare "answered" label — pass it from your persisted thread and a reloaded page renders its history the same way.
+
+### The v0.9.0 card pass
+
+The cards were redesigned from prod screenshots ([`docs/DECISIONS.md`](docs/DECISIONS.md) #22 — per-app **theming** stays, card structure and behaviour are the kit's). What changed, and what it means for a consumer:
+
+- **Bidi everywhere.** Every text node that can carry mixed direction — question, option, title, reason, preview line, field label, field value, badge, button copy — is a `<bdi dir="auto">`. That is what stops `الشابتر"Web"` and `العابدية والزاهر48` from gluing the wrong way round. Layout is logical-only (`margin-inline`, `border-inline-start`, `text-align: start`); a test in `js/components.test.ts` fails the build if a physical `left`/`right` creeps back in.
+- **Options are chips.** Bordered, rounded, hoverable, focus-visible, keyboard-activatable buttons that wrap — and the tapped one keeps an `aria-pressed` "chosen" state while the decision is in flight, so choosing reads as a choice.
+- **One title.** `previewLines()` drops a preview row that only repeats the title (whitespace- and case-insensitively), which is what rendered it twice in prod. A `{key: value}` preview map now renders as humanized `Label: value` rows too.
+- **Two tiers of field.** Readonly identity fields (`id`, `*_id`, `*_uuid`) collapse into a `<details>` disclosure under `detailsLabel` instead of leading the card with `track_id: v6oPvGqX`. Everything else stays a headline row in declared order.
+- **Real labels.** A tool's own `Field` label reaches the card unchanged — **declare them**, in the conversation's language, and this is the fix worth making app-side. An unlabelled argument is humanized (`track_id` → `Track`) rather than printed as a snake_case token.
+- **No bare dashes.** An absent value renders `emptyLabel`.
+- **Prominence.** A pending card carries an accent rail on its inline-start edge and a static `currentColor` tint over whatever `--ai-kit-surface` resolves to, so it separates from the page and from the process disclosure next to it. Pass `pending={false}` for a historical card. `groupSegments()` guarantees the card is a **top-level** group — render it as a sibling of the steps disclosure, never inside it, or the app buries the card again.
+- **Copy is props, all of it.** `confirmLabel`, `rejectLabel`, `destructiveLabel`, `undoableLabel`, `pendingLabel` (overrides the non-destructive badge), `detailsLabel`, `emptyLabel` on the approval side; `placeholder`, `sendLabel`, `skipLabel`, `answeredLabel`, `skippedLabel`, `pendingLabel` on the question side. Defaults are Arabic (the fleet is Arabic-first, and both consumers were relying on those defaults) — pass your own through `t()`.
+
+### Resizable sidebar
+
+Every app that hosts the assistant in a sidebar makes it user-resizable on desktop, width remembered per browser ([`docs/DECISIONS.md`](docs/DECISIONS.md) #23). `createResizable()` is the framework-free helper; the Svelte action and the Vue composable are thin wrappers over it.
+
+```svelte
+<aside class="assistant" bind:this={panel}>
+    {#if panel}
+        <div class="ai-kit-resize-handle" use:resizable={{ panel, storageKey: 'catodemy.assistant.width' }}></div>
+    {/if}
+    …
+</aside>
+```
+
+```ts
+const { handle, panel, width } = useResizable({ storageKey: 'uqucc.assistant.width', min: 320, max: 640 })
+// <aside ref="panel"> <div ref="handle" class="ai-kit-resize-handle" /> …
+```
+
+- **RTL-aware.** The drag is logical: the handle sits on the panel's inline-**start** edge (for the default `dock: 'inline-end'`), and dragging toward the inline start widens it. The physical sign is read from the panel's own direction per drag, so the same sidebar grows the right way in Arabic and English. `dock: 'inline-start'` flips it for a panel docked the other way.
+- **Desktop only.** Below `media` (default `(min-width: 1024px)`) the helper attaches nothing and applies nothing, so a stacked phone layout never inherits a 520px width; it watches the query, so crossing the breakpoint turns resizing on and off without a remount.
+- **Persistence** is one `localStorage` write per drag (on release, not per frame), under your `storageKey`, clamped to `min`/`max` on read. Storage that throws (sandboxed iframes, full quota) is caught, not fatal; pass `storage: null` to keep a drag ephemeral.
+- **Keyboard and a11y.** The handle is marked `role="separator"`, focusable, with `aria-valuemin/max/now`; ArrowLeft/ArrowRight move it by `step` in the same logical direction as the drag.
+- **`apply(width, panel)`** overrides how the width lands (default: an inline `width` in px) for a layout driven by a CSS variable or a grid track; `width()`, `resize()`, `reset()` and `destroy()` are the rest of the surface.
+- `styles/resizable.css` is optional, but `touch-action: none` on the handle and the `user-select` kill under `.ai-kit-resizing` are load-bearing — copy them if you style your own.
 
 ### Resuming a long turn
 
@@ -269,6 +329,16 @@ It ships **source TypeScript with no build step**, so the consuming app's bundle
 optimizeDeps: { exclude: ['@saad5400/ai-kit'] },
 ssr: { noExternal: ['@saad5400/ai-kit'] },   // Inertia SSR builds
 ```
+
+## Upgrading to v0.9.0
+
+Additive: nothing was removed, no prop or event changed shape, and every new prop has a default. A v0.8.0 consumer compiles and renders untouched. Three things are worth doing on the bump:
+
+- **Declare `Field` labels on your classified tools.** The card humanizes an unlabelled `track_id` to `Track`, which is better than a snake_case token and still not Arabic. A label is one argument: `Field::make('name', label: 'اسم الشابتر')`.
+- **Pass the new copy props** — `detailsLabel`, `emptyLabel`, and `pendingLabel` if you want the badge to say "awaiting your approval" rather than "undoable" — through your own translator. The defaults are Arabic, so an Arabic app is not wrong out of the box, just generic.
+- **Check your `--ai-kit-*` mapping is made of colors.** See the theming note above: a token mapped to raw HSL channels never painted, and that is most of what the redesign was fixing.
+
+Also new: `ai-kit.chat.model` (the shared default chat model, `Catalog::chatModel()`), the resizable sidebar helper, and `js/core/cards.ts`. `fieldLabel()`'s `machine` flag is deprecated — labels are always human copy now, so it is always `false`; `displayValue()` takes the empty-value placeholder as a second argument.
 
 ## Upgrading to v0.8.0
 

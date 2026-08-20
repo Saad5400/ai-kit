@@ -236,7 +236,17 @@ export type SegmentGroup = TextSegment | CardSegment | ProcessGroup
  *
  * Cards are deliberately NOT swallowed into a process group: an approval card
  * is a decision surface the user has to reach, not a progress detail to hide
- * behind a summary.
+ * behind a summary. A card arriving BETWEEN two runs of thinking splits them
+ * into two groups rather than joining either, so a pending card can never land
+ * inside a collapsed disclosure — the guarantee owner ruling #22 asks for, and
+ * it holds for a settled card too, whose outcome is the record of a decision
+ * the user made rather than progress detail.
+ *
+ * THE OTHER HALF OF THAT GUARANTEE IS THE APP'S. This function hands the card
+ * over as a top-level group; an app that renders that group INSIDE its own
+ * thinking disclosure — or on the same surface, with no separation — buries it
+ * again, which is what the prod screenshots showed. Render `card` groups as
+ * siblings of the process disclosure, never as children of it.
  *
  * Consecutive text segments are NOT merged either, even though they could be:
  * text separated by thinking or a tool call is text the model wrote at two

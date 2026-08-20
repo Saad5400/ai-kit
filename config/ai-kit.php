@@ -240,6 +240,31 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Chat
+    |--------------------------------------------------------------------------
+    |
+    | The shared DEFAULT chat model for the fleet (DECISIONS.md #21). Every
+    | app inherits this slug unless it overrides it — through
+    | AI_KIT_CHAT_MODEL, through its own published config, or through an
+    | app-level setting that wins over config (uqucc's `AiSettings->chat_model`
+    | row does, and has to be migrated at adoption).
+    |
+    | The slug is PINNED by owner ruling, not chosen here: Google Gemini
+    | Flash Lite, the latest lite generation at ruling time (tools +
+    | reasoning + structured outputs + multimodal, 1M context). Cheaper prior
+    | generations (`google/gemini-3.1-flash-lite`,
+    | `google/gemini-2.5-flash-lite`) are the fallback candidates if cost or
+    | behaviour disappoints. Read it through `Catalog::chatModel()`; a model
+    | the catalog also declares picks up that entry's fallbacks and price cap.
+    |
+    */
+
+    'chat' => [
+        'model' => env('AI_KIT_CHAT_MODEL', 'google/gemini-3.5-flash-lite'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Approvals
     |--------------------------------------------------------------------------
     |
