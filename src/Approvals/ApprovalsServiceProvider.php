@@ -3,8 +3,6 @@
 namespace Saad\AiKit\Approvals;
 
 use Illuminate\Support\ServiceProvider;
-use Saad\AiKit\Approvals\Contracts\ActionRegistry;
-use Saad\AiKit\Approvals\Contracts\PlanStore;
 use Saad\AiKit\Approvals\Contracts\UndoLedger;
 use Saad\AiKit\Approvals\Undo\CompensationApplier;
 use Saad\AiKit\Approvals\Undo\DatabaseUndoLedger;
@@ -12,17 +10,22 @@ use Saad\AiKit\Approvals\Undo\UndoTurn;
 use Saad\AiKit\Support\LoadsKitMigrations;
 
 /**
- * Two approval seams (owner ruling, docs/DECISIONS.md #3):
+ * One approval seam (owner ruling, docs/DECISIONS.md #3): `Classified\*`,
+ * the classified pause on laravel/ai's native `Approvable`
+ * ({@see Classified\ClassifiedTool}). Tools declare a server-derived
+ * Capability; reads run free, undoable writes execute immediately, and
+ * destructive calls pause the turn until a human decides.
  *
- * - `Classified\*` is the DECIDED contract — the classified pause on
- *   laravel/ai's native `Approvable` ({@see Classified\ClassifiedTool}).
- *   It needs no bindings of its own; it rides the WriteExecutions ledger
- *   and the UndoLedger registered here.
- * - The propose → confirm → execute machinery (Proposal / WriteGate /
- *   Plan…) is TRANSITIONAL: it shipped while the ruling was not visible,
- *   stays until the apps running it (uqucc) migrate onto the classified
- *   seam, then it is retired. Its wins — server-derived `destructive`,
- *   idempotent execution, preview == execution — live on in the seam.
+ * The seam needs no bindings of its own — it rides the exactly-once
+ * {@see WriteExecutions} ledger and the {@see UndoLedger} registered here,
+ * so all this provider does is choose the undo implementation and load the
+ * module's migrations.
+ *
+ * The transitional propose → confirm → execute machinery (Proposal /
+ * WriteGate / Plan…) that shipped in v0.3.0 while the ruling was not
+ * visible was RETIRED in v0.8.0, once both consumers had migrated. Its
+ * wins — server-derived `destructive`, idempotent execution, preview ==
+ * execution — live on in the seam.
  */
 class ApprovalsServiceProvider extends ServiceProvider
 {
@@ -30,17 +33,6 @@ class ApprovalsServiceProvider extends ServiceProvider
 
     public function register(): void
     {
-        // Bind the concrete registry and alias the contract to it, so an app
-        // resolving either gets the SAME instance to register actions on.
-        $this->app->singleton(ArrayActionRegistry::class);
-        $this->app->alias(ArrayActionRegistry::class, ActionRegistry::class);
-
-        // Scoped (not singleton): the agent and every tool it runs in one
-        // turn share one bag/gate, and Octane resets them per request/job so
-        // no mode or collected write leaks across turns on a reused worker.
-        $this->app->scoped(ProposalBag::class);
-        $this->app->scoped(WriteGate::class);
-
         // Turn undo is opt-in: the database ledger + replay only when the
         // app asked for the table; the no-op default keeps the `undoable`
         // flag flowing everywhere else.
@@ -55,15 +47,6 @@ class ApprovalsServiceProvider extends ServiceProvider
 
         $this->app->singleton(CompensationApplier::class);
         $this->app->singleton(UndoTurn::class);
-
-        $this->app->singleton(PlanStore::class, function ($app) {
-            $config = $app['config'];
-
-            return new CachePlanStore(
-                $app['cache']->store($config->get('ai-kit.approvals.plan_cache_store')),
-                (int) $config->get('ai-kit.approvals.plan_ttl_seconds', 3600),
-            );
-        });
     }
 
     public function boot(): void

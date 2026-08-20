@@ -23,10 +23,11 @@
 - **Delivery**: feature branch + GitHub PR per app; merges allowed once tests pass.
 - **Approvals design** (owner ruling 2026-08-17, DECISIONS.md #3): the contract is
   laravel/ai 0.10 native **`Approvable`** with classified pause — the owner reverted this
-  plan's propose→confirm→execute standardization. The shipped v0.3.0 approvals module is
-  **transitional**: it stays in prod until the Approvable rework ships (see M5), and the
-  rework must preserve its real wins (server-derived `destructive`, idempotent execution
-  ledger, preview == execution).
+  plan's propose→confirm→execute standardization. The shipped v0.3.0 approvals module was
+  **transitional**: it stayed in prod until the Approvable rework shipped (see M5), and the
+  rework had to preserve its real wins (server-derived `destructive`, idempotent execution
+  ledger, preview == execution). ✅ **Retired from the kit in v0.8.0** once both consumers
+  ran on `Approvals\Classified`; only that seam ships now.
 
 ## State (2026-08-19)
 
@@ -93,6 +94,36 @@ Next per plan: catodemy clean-prod soak (≥2 weeks gates s-grade per #15) →
 retire the kit's transitional proposal module (uqucc + catodemy both off it,
 no consumers left) → uqucc TurnBuffer adoption + uqucc kit bump to v0.7.2 (chip
 bidi fix applies to its prod) → s-grade branch prep.
+
+## State (2026-08-20) — v0.8.0, the transitional proposal module is gone
+
+**v0.8.0 is the kit's first breaking release**, and it breaks nothing anyone
+still runs: the propose → confirm → execute machinery that shipped in v0.3.0
+while DECISIONS.md #3 was not visible is **deleted**. uqucc (#129) and catodemy
+(#558) both run exclusively on `Approvals\Classified`, so the module had no
+consumers left.
+
+Removed: `Proposal` / `ProposalBag` / `ProposalExecutor` / `ProposalStatus` /
+`ProposalTrailer` / `ProposedWrite`, `Plan` / `PlanBuilder` / `CachePlanStore`,
+`WriteGate` / `WriteGateMode`, `ArrayActionRegistry`, the `PlanStore` /
+`ProposableAction` / `ActionRegistry` contracts, the four exceptions that only
+that flow threw (`ProposalNotPending`, `UnknownAction`, `ActionValidation`,
+`WriteRefused` — the last one's constructor took a `ProposedWrite`, so it could
+not outlive it), `Testing\ProposalFactory`, the `ai_proposals` migration, the
+provider bindings, the `proposals_table` / `plan_cache_store` /
+`plan_ttl_seconds` / `auto_approve` config keys and the two `approvals` lang
+strings only `ProposalExecutor` used.
+
+Kept, untouched: the whole `Approvals\Classified` seam, `WriteExecutions` +
+the `ai_write_executions` ledger migration (the Classified exactly-once ledger,
+NOT proposal machinery), `Approvals\Undo\*`, `Contracts\Classified` +
+`Contracts\UndoLedger`, and the MCP `WriteToolAdapter` (it never touched the
+proposal classes — it runs a wrapped tool immediately, and
+`DestructiveToolAdapter` extends it).
+
+**Upgrading is a no-op** for an app already on the classified seam — see the
+README's *Upgrading to v0.8.0* note. Suite: 409 → **349 tests** green (60 tests
+covered only deleted code); JS unchanged at 92.
 
 ## State (2026-08-18)
 
@@ -539,8 +570,9 @@ separate trace-retention window (DECISIONS.md #7). ✅ **uqucc migrated off
 `Proposal`/`WriteGate`** onto the classified seam (PR #129, 2026-08-18 — traces
 enabled with the bump; deploy pending). Remaining:
 
-- **retire the transitional proposal module** from the kit once uqucc's #129 deploy
-  is out and stable — it has no consumers after that.
+- ✅ **retire the transitional proposal module** from the kit — done in **v0.8.0**
+  (2026-08-20), once uqucc #129 and catodemy #558 were both live on the classified
+  seam and it had no consumers left.
 - **resumable turns in uqucc** — adopt the kit `TurnBuffer` path (queue-worker
   generation, replay-from-last-id + tail) per DECISIONS.md #17; today uqucc still
   generates inside the HTTP request.
@@ -569,8 +601,9 @@ catalog schema + sync from kit (11 rows stay); credit ledger core from kit
 **s-grade** (~3k lines absorbed of ~17k): gateway swap + 5 Context reads →
 SpendCollector; EncryptedConversationStore + **production data migration**
 (user_id → participant_type/participant_id); TurnBuffer from kit; metering/catalog/
-extraction from kit; plan flow onto kit approvals (keeps ActionType enum + executor +
-compensation specifics); laravel/ai 0.7.2 → ~0.10 + mcp 0.8 → 0.9 (adapters unaffected);
+extraction from kit; plan flow onto `Approvals\Classified` — the only seam the kit
+ships since v0.8.0 (keeps ActionType enum + executor + compensation specifics);
+laravel/ai 0.7.2 → ~0.10 + mcp 0.8 → 0.9 (adapters unaffected);
 delete dead `ChatMessage.proposals` scaffolding; rewrite the reflection test.
 
 ## Working agreements

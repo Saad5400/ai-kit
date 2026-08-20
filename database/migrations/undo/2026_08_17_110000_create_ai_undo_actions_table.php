@@ -15,7 +15,7 @@ return new class extends Migration
             // The streaming turn's id — not an FK: turns live in the buffer.
             $table->string('turn_id');
             $table->unsignedInteger('sequence')->default(0);
-            // Same string owner key as Proposal.proposed_by.
+            // The app's own string owner key, as on ai_write_executions.
             $table->string('owner')->index();
             $table->string('action_type');
             // Display-only pointer to what was touched.

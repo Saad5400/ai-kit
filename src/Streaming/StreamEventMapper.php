@@ -89,7 +89,7 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  *   candidate link completes); held tails are flushed through the rest of
  *   the pipeline when the stream ends.
  * - {@see on}: intercept any stream event class and emit whatever the app's
- *   contract needs (proposal, plan, question, step, segment, ...). The hook
+ *   contract needs (approval, question, step, segment, citations, ...). The hook
  *   replaces the default emission for that event — including the default
  *   `reasoning` / `tool` emissions; bookkeeping (tool calls / results,
  *   usage) is still collected first.

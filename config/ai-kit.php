@@ -228,7 +228,7 @@ return [
     | Approvals
     |--------------------------------------------------------------------------
     |
-    | Two seams live here. The DECIDED contract (DECISIONS.md #3) is the
+    | One seam lives here — the DECIDED contract (DECISIONS.md #3), the
     | classified pause on laravel/ai's native `Approvable`: tools extend
     | `Classified\ClassifiedTool`, declare a server-derived Capability
     | (read / write+undoable / destructive), reads run free, undoable
@@ -237,25 +237,17 @@ return [
     | `Classified\ApprovalCards` renders the cards and `Classified\AskUser`
     | rides the same pause for mid-turn questions.
     |
-    | TRANSITIONAL: the propose → confirm → execute machinery below
-    | predates that ruling; it stays until the apps running it (uqucc)
-    | migrate onto the classified seam, then it is retired.
+    | Executed writes claim exactly-once rows in `write_executions_table`,
+    | so a resumed or replayed turn never runs the same write twice.
     |
-    | The propose → confirm → execute pattern: proposals persist in
-    | `proposals_table`, executed plan steps claim exactly-once rows in
-    | `write_executions_table`, and proposed plans wait for their confirm
-    | turn in the plan cache store for `plan_ttl_seconds` (an abandoned plan
-    | quietly lapses). `auto_approve` lets a single non-destructive, undoable
-    | step skip the approval card; turn it off to always show the card.
+    | The transitional propose → confirm → execute machinery was RETIRED in
+    | v0.8.0; its `proposals_table`, `plan_cache_store`, `plan_ttl_seconds`
+    | and `auto_approve` keys are gone with it.
     |
     */
 
     'approvals' => [
-        'proposals_table' => 'ai_proposals',
         'write_executions_table' => 'ai_write_executions',
-        'plan_cache_store' => env('AI_KIT_PLAN_CACHE_STORE'),
-        'plan_ttl_seconds' => (int) env('AI_KIT_PLAN_TTL_SECONDS', 3600),
-        'auto_approve' => true,
 
         // Turn undo (opt-in): executed writes ledger their compensations in
         // `undo_table` and UndoTurn replays a whole turn in reverse. Keep
