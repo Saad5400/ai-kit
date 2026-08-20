@@ -1,0 +1,76 @@
+/*
+ * OPTIONAL styling for the sidebar resize handle (owner ruling #23). The
+ * helper in `js/core/resizable.ts` is behaviour only — it needs an element to
+ * drag, and this is a handle worth dragging:
+ *
+ *   import '@saad5400/ai-kit/styles/resizable.css'
+ *
+ * Skip it and style `.ai-kit-resize-handle` yourself; two rules here are
+ * load-bearing rather than cosmetic, so copy them if you do:
+ *
+ *   - `touch-action: none` — without it a touch drag scrolls the page instead
+ *     of resizing (the pointer events still fire, so the panel and the scroll
+ *     fight each other).
+ *   - `.ai-kit-resizing` on `<html>` (set by the helper for the duration of a
+ *     drag) killing `user-select` — otherwise a drag past the handle selects
+ *     the whole conversation.
+ *
+ * The handle is positioned by the APP: it belongs on the panel's inline-START
+ * edge for a panel docked at the inline end (the default `dock`), and logical
+ * properties keep that correct in Arabic without a mirrored rule:
+ *
+ *   .assistant { position: relative; }
+ *   .assistant > .ai-kit-resize-handle { position: absolute; inset-block: 0; inset-inline-start: 0; }
+ *
+ * Colors come from the same `--ai-kit-*` tokens as the components, mixed out
+ * of `currentColor` by default so the handle is visible on a dark panel with
+ * no app CSS.
+ */
+.ai-kit-resize-handle {
+    /* A 4px target hit-tested as 12px: precise to look at, forgiving to grab. */
+    inline-size: var(--ai-kit-handle-size, 0.25rem);
+    flex: none;
+    padding-inline: var(--ai-kit-handle-padding, 0.25rem);
+    margin-inline: calc(-1 * var(--ai-kit-handle-padding, 0.25rem));
+    box-sizing: content-box;
+    background-clip: content-box;
+    background-color: transparent;
+    border: 0;
+    cursor: col-resize;
+    touch-action: none;
+    transition: background-color 0.12s ease;
+}
+
+.ai-kit-resize-handle:hover,
+.ai-kit-resize-handle:focus-visible {
+    background-color: var(--ai-kit-handle-hover, color-mix(in oklab, currentColor 22%, transparent));
+}
+
+.ai-kit-resize-handle.is-dragging {
+    background-color: var(--ai-kit-accent, #3b82f6);
+}
+
+.ai-kit-resize-handle:focus-visible {
+    /* Longhands, not the `outline` shorthand: a token mapped to something that
+       is not a color would take the whole shorthand down with it, and the ring
+       is how a keyboard user finds the handle at all. */
+    outline-width: 2px;
+    outline-style: solid;
+    outline-color: var(--ai-kit-accent, #3b82f6);
+    outline-offset: -1px;
+}
+
+/* Set on <html> for the length of a drag. */
+.ai-kit-resizing {
+    cursor: col-resize;
+}
+
+.ai-kit-resizing * {
+    user-select: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ai-kit-resize-handle {
+        transition: none;
+    }
+}

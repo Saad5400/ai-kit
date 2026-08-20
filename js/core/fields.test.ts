@@ -5,9 +5,12 @@ import {
     displayValue,
     editableArguments,
     fieldLabel,
+    humanizeFieldName,
+    isIdentityField,
     isLongText,
     isMachineValue,
     isMono,
+    partitionFields,
 } from './fields'
 
 const field = (
@@ -65,17 +68,55 @@ describe('the decision a confirmed card sends', () => {
 })
 
 describe('deciding how a field reads', () => {
-    it('treats a bare argument name as a machine name and a tool label as prose', () => {
+    it('humanizes a bare argument name and takes a tool label verbatim', () => {
         expect(fieldLabel(field('course_id', 'text', true, 1))).toEqual({
-            text: 'course_id',
-            machine: true,
+            text: 'Course',
+            machine: false,
         })
         expect(fieldLabel(field('body', 'text', true, '', 'المحتوى'))).toEqual({
             text: 'المحتوى',
             machine: false,
         })
         // An empty label is not a label.
-        expect(fieldLabel(field('body', 'text', true, '', '')).machine).toBe(true)
+        expect(fieldLabel(field('body', 'text', true, '', '')).text).toBe('Body')
+    })
+
+    it('humanizes snake, kebab and camel names, dropping a trailing id', () => {
+        expect(humanizeFieldName('name')).toBe('Name')
+        expect(humanizeFieldName('track_id')).toBe('Track')
+        expect(humanizeFieldName('chapter-uuid')).toBe('Chapter')
+        expect(humanizeFieldName('createdBy')).toBe('Created by')
+        expect(humanizeFieldName('publish_at')).toBe('Publish at')
+        // Nothing would be left once the suffix goes, so the suffix stays.
+        expect(humanizeFieldName('id')).toBe('Id')
+        // Never returns an empty label.
+        expect(humanizeFieldName('__')).toBe('__')
+    })
+
+    it('treats a readonly id as identity and anything reachable as a row', () => {
+        expect(isIdentityField(field('id', 'readonly', false, 1))).toBe(true)
+        expect(isIdentityField(field('track_id', 'readonly', false, 'v6oPvGqX'))).toBe(true)
+        expect(isIdentityField(field('trackId', 'readonly', false, 'v6oPvGqX'))).toBe(true)
+        // Editable, so the tool opened it on purpose.
+        expect(isIdentityField(field('track_id', 'text', true, 'v6oPvGqX'))).toBe(false)
+        // Readonly but not an id: a resolved record the reader wants to see.
+        expect(isIdentityField(field('course', 'readonly', false, 'مقرر'))).toBe(false)
+        // A widget the user can reach is never hidden behind a disclosure.
+        expect(isIdentityField(field('track_id', 'select', false, 'v6oPvGqX'))).toBe(false)
+    })
+
+    it('splits the visible fields into headline rows and technical details', () => {
+        const split = partitionFields([
+            field('chapter_id', 'readonly', false, null),
+            field('name', 'text', true, 'Web'),
+            field('internal_note', 'hidden', false, 'server-only'),
+            field('track_id', 'readonly', false, 'v6oPvGqX'),
+            field('course', 'readonly', false, 'مقرر'),
+        ])
+
+        // Declared order survives inside each half; hidden appears in neither.
+        expect(split.rows.map((entry) => entry.name)).toEqual(['name', 'course'])
+        expect(split.details.map((entry) => entry.name)).toEqual(['chapter_id', 'track_id'])
     })
 
     it('isolates ids, enum members and tokens but not human copy', () => {
@@ -92,8 +133,13 @@ describe('deciding how a field reads', () => {
     })
 
     it('never renders an empty readonly cell', () => {
-        expect(displayValue(null)).toBe('—')
-        expect(displayValue('')).toBe('—')
+        // A localized placeholder, never the bare dash prod showed.
+        expect(displayValue(null)).toBe('غير محدَّد')
+        expect(displayValue('')).toBe('غير محدَّد')
+        expect(displayValue(null, 'Not set')).toBe('Not set')
+        expect(displayValue(undefined, 'Not set')).toBe('Not set')
+        // A real value is never replaced by the placeholder.
+        expect(displayValue(0, 'Not set')).toBe('0')
         expect(displayValue(0)).toBe('0')
         expect(displayValue(false)).toBe('false')
         expect(displayValue({ a: 1 })).toBe('{"a":1}')

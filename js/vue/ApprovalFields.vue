@@ -1,9 +1,8 @@
 <script setup lang="ts">
 /**
  * An approval card's editable form, rendered from the SERVER's field schema
- * (`ApprovalPayload.fields`) instead of guessed from raw arguments — the fix
- * for confirm dialogs that offered every argument, ids included, as a plain
- * text input.
+ * (`ApprovalPayload.fields`) instead of guessed from raw arguments. Mirror of
+ * `js/svelte/ApprovalFields.svelte`.
  *
  * Per widget: `hidden` is skipped entirely, `readonly` renders as a definition
  * row (muted label, value as text — never a disabled input), the rest render
@@ -12,37 +11,75 @@
  * with a character count, because the argument that provoked this was a
  * 1,733-character markdown body in one `<input>`.
  *
- * BIDI. A raw argument name is a machine token, so it renders mono, `dir="ltr"`
- * and bidi-ISOLATED — dropping `action` into an RTL line unisolated is what
- * rendered `action: create` as a scrambled "create action:". A tool that gave
- * the field its own `label` gets ordinary `dir="auto"` prose instead. Readonly
- * values are isolated the same way when they look like ids or enum members.
+ * TWO TIERS SINCE v0.9.0 (owner ruling #22). The prod card led with
+ * `track_id: v6oPvGqX` and `chapter_id: –` and buried the one argument the user
+ * actually had to read. Readonly IDENTITY fields (`id`, `*_id`, `*_uuid` — see
+ * `isIdentityField()`) now collapse into a `<details>` disclosure under
+ * `detailsLabel`: still there for anyone auditing what the write addresses, out
+ * of the way of the decision. Everything else stays a headline row in the
+ * tool's declared order. Everything in that half is `readonly` by
+ * construction, which is why the disclosure renders definition rows only.
+ *
+ * LABELS. A tool that labels its arguments —
+ * `Field::make('body', FieldWidget::Markdown, label: 'المحتوى')` — gets that
+ * label verbatim, in the conversation's language, and that is the fix worth
+ * making app-side. An unlabelled argument is HUMANIZED rather than printed raw
+ * (`track_id` → `Track`), because `name` / `track_id` / `chapter_id` as
+ * headline labels is what the owner called out.
+ *
+ * BIDI. Labels, values and the disclosure toggle are `<bdi dir="auto">`, so a
+ * Latin fragment inside an Arabic card cannot reorder the line — dropping
+ * `action` into an RTL line unisolated is what rendered `action: create` as a
+ * scrambled "create action:". A value that looks like a machine token (an id,
+ * an enum member, a path) additionally renders mono and `dir="ltr"`.
+ *
+ * An empty value renders `emptyLabel` — a localized "not set", never a bare
+ * dash, which told an Arabic reader nothing about whether the field was empty,
+ * unknown or broken.
  *
  * Substitute a real editor with the `field` slot, which receives every field so
- * an app can switch on `field.widget` and fall through for the rest:
+ * an app can switch on `field.widget`:
  *
- *     <ApprovalFields :fields="card.fields" @update="onUpdate">
+ *     <ApprovalFields :fields="card.fields" @update="stage">
  *         <template #field="{ field, value, update }">
- *             <MyMarkdownEditor v-if="field.widget === 'markdown'"
- *                 :model-value="value" @update:model-value="update" />
+ *             <MyEditor v-if="field.widget === 'markdown'" :value="value" @change="update" />
  *         </template>
  *     </ApprovalFields>
  *
- * `update` emits the full map of EDITABLE field values — the arguments of an
+ * `update` receives the full map of EDITABLE field values — the arguments of an
  * `{action: 'edit'}` decision. Readonly and hidden fields are deliberately
- * absent: the server restores those from the pending call anyway
+ * absent: the server restores those from the pending call
  * (`ApprovalCards::guardEdits()`), which is what makes the form safe rather
  * than these flags.
  */
 import { computed, ref } from 'vue'
 import type { ApprovalCardField } from '../core/events'
-import { displayValue, editableArguments, fieldLabel, isLongText, isMachineValue, isMono } from '../core/fields'
+import {
+    displayValue,
+    editableArguments,
+    fieldLabel,
+    isLongText,
+    isMachineValue,
+    isMono,
+    partitionFields,
+} from '../core/fields'
 
-const props = defineProps<{
-    fields: ApprovalCardField[]
-    /** Set while a decision is in flight, so a double submit cannot edit. */
-    disabled?: boolean
-}>()
+const props = withDefaults(
+    defineProps<{
+        fields: ApprovalCardField[]
+        /** Set while a decision is in flight, so a double submit cannot edit. */
+        disabled?: boolean
+        /** Toggle copy for the identity-fields disclosure. */
+        detailsLabel?: string
+        /** Stands in for a value the model left out. */
+        emptyLabel?: string
+    }>(),
+    {
+        disabled: false,
+        detailsLabel: 'تفاصيل تقنية',
+        emptyLabel: 'غير محدَّد',
+    },
+)
 
 const emit = defineEmits<{
     update: [values: Record<string, unknown>]
@@ -54,12 +91,17 @@ const edited = ref<Record<string, unknown>>(
     Object.fromEntries(props.fields.map((field) => [field.name, field.value])),
 )
 
-// Hidden fields never render; label copy is resolved once per field rather
-// than three times per branch in the template.
+// Hidden fields never render; identity fields render behind the disclosure;
+// label copy is resolved once per field rather than three times per branch in
+// the template.
+const split = computed(() => partitionFields(props.fields))
+
 const rows = computed(() =>
-    props.fields
-        .filter((field) => field.widget !== 'hidden')
-        .map((field) => ({ field, label: fieldLabel(field) })),
+    split.value.rows.map((field) => ({ field, label: fieldLabel(field).text })),
+)
+
+const details = computed(() =>
+    split.value.details.map((field) => ({ field, label: fieldLabel(field).text })),
 )
 
 const valueOf = (field: ApprovalCardField): unknown => edited.value[field.name] ?? field.value
@@ -85,13 +127,13 @@ const onInput = (field: ApprovalCardField, event: Event): void => {
             <!-- Readonly: a definition row, not a dead input. -->
             <div v-if="field.widget === 'readonly'" class="ai-kit-fields__row is-readonly">
                 <span class="ai-kit-fields__label">
-                    <bdi :class="{ 'is-machine': label.machine }" :dir="label.machine ? 'ltr' : 'auto'">{{ label.text }}</bdi>
+                    <bdi dir="auto">{{ label }}</bdi>
                 </span>
                 <bdi
                     class="ai-kit-fields__value"
                     :class="{ 'is-machine': isMachineValue(field.value) }"
                     :dir="isMachineValue(field.value) ? 'ltr' : 'auto'"
-                >{{ displayValue(field.value) }}</bdi>
+                >{{ displayValue(field.value, emptyLabel) }}</bdi>
             </div>
 
             <!-- Boolean: the control belongs beside its own label. -->
@@ -106,13 +148,13 @@ const onInput = (field: ApprovalCardField, event: Event): void => {
                     />
                 </slot>
                 <span class="ai-kit-fields__label">
-                    <bdi :class="{ 'is-machine': label.machine }" :dir="label.machine ? 'ltr' : 'auto'">{{ label.text }}</bdi>
+                    <bdi dir="auto">{{ label }}</bdi>
                 </span>
             </label>
 
             <label v-else class="ai-kit-fields__row">
                 <span class="ai-kit-fields__label">
-                    <bdi :class="{ 'is-machine': label.machine }" :dir="label.machine ? 'ltr' : 'auto'">{{ label.text }}</bdi>
+                    <bdi dir="auto">{{ label }}</bdi>
                     <span v-if="isLongText(field.widget) && textOf(field).length > 0" class="ai-kit-fields__count" dir="ltr">
                         {{ textOf(field).length }}
                     </span>
@@ -169,6 +211,35 @@ const onInput = (field: ApprovalCardField, event: Event): void => {
                 </slot>
             </label>
         </template>
+
+        <!-- The ids the write addresses: auditable, not headline. -->
+        <details v-if="details.length" class="ai-kit-fields__details">
+            <summary class="ai-kit-fields__summary">
+                <svg class="ai-kit-fields__chevron" viewBox="0 0 12 12" aria-hidden="true">
+                    <path
+                        d="M3 4.5 6 7.5 9 4.5"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    />
+                </svg>
+                <bdi dir="auto">{{ detailsLabel }}</bdi>
+            </summary>
+            <div class="ai-kit-fields__details-body">
+                <div v-for="{ field, label } in details" :key="field.name" class="ai-kit-fields__row is-readonly">
+                    <span class="ai-kit-fields__label">
+                        <bdi dir="auto">{{ label }}</bdi>
+                    </span>
+                    <bdi
+                        class="ai-kit-fields__value"
+                        :class="{ 'is-machine': isMachineValue(field.value) }"
+                        :dir="isMachineValue(field.value) ? 'ltr' : 'auto'"
+                    >{{ displayValue(field.value, emptyLabel) }}</bdi>
+                </div>
+            </div>
+        </details>
     </div>
 </template>
 
@@ -177,6 +248,7 @@ const onInput = (field: ApprovalCardField, event: Event): void => {
     display: flex;
     flex-direction: column;
     gap: 0.625rem;
+    text-align: start;
 }
 
 .ai-kit-fields__row {
@@ -217,16 +289,22 @@ const onInput = (field: ApprovalCardField, event: Event): void => {
 
 .ai-kit-fields__input {
     width: 100%;
-    padding: 0.3125rem 0.5rem;
-    border: 1px solid var(--ai-kit-border, color-mix(in oklab, currentColor 22%, transparent));
+    padding: 0.375rem 0.5rem;
+    border-width: 1px;
+    border-style: solid;
+    border-color: var(--ai-kit-control-border, color-mix(in oklab, currentColor 30%, transparent));
     border-radius: var(--ai-kit-radius, 0.5rem);
-    background: var(--ai-kit-input-bg, color-mix(in oklab, currentColor 4%, transparent));
+    background-color: var(--ai-kit-input-bg, color-mix(in oklab, currentColor 6%, transparent));
     color: inherit;
     font: inherit;
+    text-align: start;
 }
 
-.ai-kit-fields__input:focus-visible {
-    outline: 2px solid var(--ai-kit-accent, #3b82f6);
+.ai-kit-fields__input:focus-visible,
+.ai-kit-fields__summary:focus-visible {
+    outline-width: 2px;
+    outline-style: solid;
+    outline-color: var(--ai-kit-accent, #3b82f6);
     outline-offset: 1px;
 }
 
@@ -236,7 +314,7 @@ const onInput = (field: ApprovalCardField, event: Event): void => {
 
 /*
  * Grows with its content instead of stranding a long body in three lines, then
- * scrolls internally rather than pushing the decision buttons off-screen.
+ * scrolls internally rather than pushing the buttons off-screen.
  */
 .ai-kit-fields__area {
     field-sizing: content;
@@ -249,5 +327,52 @@ const onInput = (field: ApprovalCardField, event: Event): void => {
 
 .ai-kit-fields__area.is-machine {
     font-size: var(--ai-kit-code-size, 0.8125rem);
+}
+
+.ai-kit-fields__summary {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    width: fit-content;
+    padding: 0.125rem 0.375rem;
+    margin-inline-start: -0.375rem;
+    border-radius: var(--ai-kit-radius, 0.5rem);
+    color: var(--ai-kit-muted, color-mix(in oklab, currentColor 65%, transparent));
+    font-size: var(--ai-kit-label-size, 0.75rem);
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+}
+
+/* Safari still paints its own triangle without this. */
+.ai-kit-fields__summary::-webkit-details-marker {
+    display: none;
+}
+
+.ai-kit-fields__summary:hover {
+    background-color: var(--ai-kit-hover, color-mix(in oklab, currentColor 8%, transparent));
+}
+
+/* Down when open, up when closed — direction-neutral, so RTL needs no mirror. */
+.ai-kit-fields__chevron {
+    width: 0.75em;
+    height: 0.75em;
+    flex: none;
+    transform: rotate(180deg);
+}
+
+.ai-kit-fields__details[open] .ai-kit-fields__chevron {
+    transform: rotate(0deg);
+}
+
+.ai-kit-fields__details-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    margin-block-start: 0.375rem;
+    padding-inline-start: 0.625rem;
+    border-inline-start-width: 2px;
+    border-inline-start-style: solid;
+    border-inline-start-color: var(--ai-kit-border, color-mix(in oklab, currentColor 22%, transparent));
 }
 </style>
