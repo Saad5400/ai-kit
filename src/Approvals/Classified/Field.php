@@ -77,8 +77,16 @@ final class Field
      * Read a tool's `fields()` entry, which may be a full Field, a bare
      * widget, or a partial spec array — so declaring one field's widget
      * costs one line and does not force the whole object.
+     *
+     * A spec array WITHOUT a `widget` key inherits the widget {@see infer()}
+     * derives from the pending `$value` — so `['label' => 'الصفحة']` on a
+     * `page_id` stays readonly and on a boolean stays a toggle. Before
+     * v0.9.1 such a spec silently fell back to an editable text field, which
+     * turned "add a label" into "unlock the identity field that addresses
+     * the write" — the exact repointing {@see infer()} exists to prevent.
+     * A spec that DOES name a widget still wins outright.
      */
-    public static function fromSpec(string $name, mixed $spec): self
+    public static function fromSpec(string $name, mixed $spec, mixed $value = null): self
     {
         if ($spec instanceof self) {
             return $spec->name === $name ? $spec : $spec->renamed($name);
@@ -97,7 +105,7 @@ final class Field
         }
 
         /** @var array<string, mixed> $spec */
-        $widget = $spec['widget'] ?? FieldWidget::Text;
+        $widget = $spec['widget'] ?? self::infer($name, $value)->widget;
 
         return self::make(
             name: $name,

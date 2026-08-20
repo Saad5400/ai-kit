@@ -1,9 +1,11 @@
 <?php
 
 use Laravel\Ai\Approvals\PendingApproval;
+use Laravel\Ai\Tools\ToolNameResolver;
 use Saad\AiKit\Approvals\Classified\ApprovalCards;
 use Saad\AiKit\Approvals\Classified\AskUser;
 use Saad\AiKit\Approvals\Classified\Field;
+use Saad\AiKit\Approvals\Classified\FieldWidget;
 use Saad\AiKit\Approvals\Classified\ResumeDecisions;
 use Saad\AiKit\Tests\Support\ClassifiedArticleTool;
 use Saad\AiKit\Tests\Support\ClassifiedDeleteTool;
@@ -214,4 +216,53 @@ it('normalizes option shapes into value/label rows', function () {
 it('refuses a widget name it does not know', function () {
     expect(fn () => Field::fromSpec('x', 'wysiwyg'))
         ->toThrow(InvalidArgumentException::class, 'Unknown field widget');
+});
+
+it('keeps the inferred widget when a spec declares only a label', function () {
+    // The v0.9.0 upgrade advice — "declare labels on your fields" — must not
+    // quietly unlock anything: a spec array with no `widget` inherits the
+    // widget the pending value infers, instead of defaulting to editable text.
+    $id = Field::fromSpec('page_id', ['label' => 'الصفحة'], 42);
+    $flag = Field::fromSpec('hidden', ['label' => 'مخفية'], true);
+
+    expect($id->widget)->toBe(FieldWidget::Readonly)
+        ->and($id->editable)->toBeFalse()
+        ->and($id->label)->toBe('الصفحة')
+        ->and($flag->widget)->toBe(FieldWidget::Boolean)
+        ->and($flag->label)->toBe('مخفية');
+});
+
+it('lets an explicit widget in a spec win over inference', function () {
+    // Naming a widget is a deliberate act; only the OMITTED widget infers.
+    $field = Field::fromSpec('note', ['widget' => 'textarea', 'label' => 'ملاحظة'], 'short');
+
+    expect($field->widget)->toBe(FieldWidget::Textarea)
+        ->and($field->editable)->toBeTrue();
+});
+
+it('a label-only spec cannot repoint a write through guardEdits', function () {
+    // End-to-end: the tool labels article_id without restating a widget; an
+    // edit that retypes it is restored from the pause like any readonly field.
+    $tool = new class extends ClassifiedArticleTool
+    {
+        public function fields(): array
+        {
+            return ['article_id' => ['label' => 'المقال']];
+        }
+    };
+
+    $cards = new ApprovalCards([$tool]);
+
+    $approval = new PendingApproval('call-1', ToolNameResolver::resolve($tool), [
+        'article_id' => 5,
+        'body' => 'original',
+    ], null);
+
+    $rendered = $cards->fields($approval);
+
+    expect($rendered['article_id']->editable)->toBeFalse()
+        ->and($rendered['article_id']->label)->toBe('المقال');
+
+    expect($cards->guardEdits($approval, ['article_id' => 999, 'body' => 'edited']))
+        ->toBe(['article_id' => 5, 'body' => 'edited']);
 });
