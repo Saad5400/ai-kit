@@ -29,6 +29,55 @@
   ledger, preview == execution). ✅ **Retired from the kit in v0.8.0** once both consumers
   ran on `Approvals\Classified`; only that seam ships now.
 
+## State (2026-08-20, later) — long turns merged (#9–#11; tags as v0.10.0)
+
+The long-running-turns slice (owner rulings recorded as DECISIONS.md #24: the
+work stays inside the open chat turn, robustness is general turn machinery,
+polling over held connections, the chat UI is the only surface) is merged to
+main as three PRs:
+
+- **#9 TurnBuffer** (`2e4ccb9`): the record splits into a header +
+  `page_size` pages (default 64), so `append()` is O(1) in the turn's length
+  (was a whole-record read-modify-write per delta — O(n²) over a 10-minute
+  turn); `heartbeat_at` stamped on every write + `touch()` between them; the
+  tail fails a running turn whose heartbeat is older than
+  `stale_after_seconds` (300) with a localized terminal (`staleMessage`
+  argument, `ai-kit::streaming.stale` en/ar, `stale_trailing_done` for
+  done-teardown clients) behind an atomic claim; `upsert()` keeps
+  progress-style events to one log entry; `status()`/`exists()` header-only
+  reads; pre-split inline records still read back.
+- **#10 frontend** (`50ec98e`): `ToolPayload.progress {label?, percent?,
+  current?, total?}` + the timeline's merge rules (an absent `name` keeps the
+  held one, `progress` replaces wholesale, dropped on `done`); `ToolChip`
+  renders the label / `12/40` (LTR-isolated) / a determinate bar on
+  `--ai-kit-progress`; `ProcessGroup` passes progress through and its live
+  summary line shows the last running chip's label; `js/core/resume.ts`
+  (`./resume` export) — catodemy's cursor / backoff-ladder / 404 / silence
+  reader, extracted.
+- **#11 mapper + runner** (`b912da2`): `coalesce()` / `withoutCoalescing()`
+  with the new `runBuffered()` — coalescing defaults ON on the buffered fold
+  (every frame is a cache write replayed to every resuming client) and OFF
+  inline (uqucc's per-token feel untouched); `ToolProgress` /
+  `ToolProgressReporter` (static per-turn seam, 1/s throttle that still
+  touches the heartbeat, `each()` stops iterating on cancel — no exception);
+  `TurnRunner::run(...): TurnOutcome` — kill-switch re-check, feature
+  Context label, acting-user swap, cancel generator, append/upsert sink; the
+  app keeps metering, prompt building, per-turn spend reset and writes the
+  terminal finish/fail itself from the outcome.
+
+Suite: **420 PHP** green (was 349), **116 vitest** (was 92). **No version
+bump or tag yet** — sequencing agreed 2026-08-20 with the v0.9.0
+cards/sidebar/default-model work (rulings #21–#23, the ai-kit PM session):
+they tag v0.9.0 first, long-turns tags **v0.10.0** on top.
+
+Follow-ups: the catodemy adoption slice (branch `claude/slice-long-turns`;
+spec at catodemy `docs/design/slices/slice-long-turns-plan.md` — TurnRunner
+under `GenerateAssistantReply`, a dedicated `assistant` queue + Horizon
+supervisor, first progress consumers `ClassifyResources` + `GenerateMcq`,
+client onto `resumeTurn()`); uqucc swaps the app-side reconnect ladder it
+shipped in its PR #136 onto `js/core/resume.ts` at its next kit bump
+(tracked on its backlog); s-grade unchanged per DECISIONS.md #15.
+
 ## State (2026-08-19)
 
 **catodemy migration COMPLETE — four PRs merged to main and auto-deployed
