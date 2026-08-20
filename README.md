@@ -32,7 +32,7 @@ One turn is one SSE stream of `event: NAME\ndata: {json}\n\n` frames, written by
 |---|---|---|
 | `delta` | `{text}` | Model text. Deltas concatenate. |
 | `reasoning` | `{text}` | Thinking. **On by default.** No start/end events — the client opens its block on the first `reasoning` and closes it on the first following `delta`, `tool` or terminal event. |
-| `tool` | `{id, name, status: running\|done, successful?}` | **On by default.** Arguments and results never reach the wire; hook `ToolCall` server-side if an app wants more. |
+| `tool` | `{id, name?, status: running\|done, successful?, progress?}` | **On by default.** Upserted by `id`. Extra `running` frames may carry `progress {label?, percent?, current?, total?}`; progress frames omit `name` — keep the one you hold. Arguments and results never reach the wire; hook `ToolCall` server-side if an app wants more. |
 | `approval` | `{kind, id, tool, title, destructive, undoable, editable, arguments, fields, preview, reason}` | A paused turn's card, every trust-bearing field server-derived. `id` is the tool call's id, so a paused call's `running` chip folds into its card. `fields` is the form schema (see below); the flat `arguments` map is deprecated but still sent. |
 | `question` | `{kind, id, question, options?}` | An `AskUser` pause — answered, not approved. `options` carries 2–4 suggested answers when the model proposed any. |
 | `citations` | `{items}` | Post-stream, from a `beforeDone` hook. |
@@ -62,6 +62,63 @@ $mapper->runIntoBuffer($untilCancelled($stream), $buffer, $turnId, $meta);
 ```
 
 A cancelled stream simply ends, so the fold takes its normal exit and the turn finishes on `done` with whatever it produced — a stop is a completed short turn, not an error. (`TurnBuffer::fail()` takes a fourth argument to append an empty `done` after `error`, for clients that hang their whole teardown off `done`. Off by default; the terminal contract above is what the kit promises.)
+
+## Long turns
+
+Anything the AI does may take a long time — a summary, a slide-deck translation, a 40-item classification — so the robustness lives in the general turn machinery, never in per-feature plumbing, and a long turn is still ONE chat turn: it stays open until it ends, the buffered tail (180 s hangup + cursor reconnect) stays the transport, and progress rides the existing `tool` event ([`docs/DECISIONS.md`](docs/DECISIONS.md) #24). What follows is the machinery that makes a ten-minute turn behave like a ten-second one.
+
+**The buffer is a header plus pages.** `TurnBuffer` used to hold one record with an inline event list, so every appended delta re-read and re-wrote the whole log — O(n²) cache I/O that made a long turn slower per token the longer it ran. It is now a small header (`ai-kit:turn:{id}`: status, cursor, meta, heartbeat) plus pages of events (`ai-kit:turn:{id}:p{n}`, `page_size` entries each, default 64), so `append()` rewrites the header and at most one page whatever the turn's length. `eventsAfter()` reads only the pages past the cursor and `tail()` polls the header; `get()` keeps its return shape but is now the expensive read (it loads every page) — a controller that only checks uses `exists()` / `status()`, which read the header alone. Every write re-puts with the TTL so it slides for the life of the turn, records written before the split still read back, and the single-writer rule is unchanged: one producer per turn, ever.
+
+**Heartbeat and the stale tail.** The header carries `heartbeat_at`, stamped by every append and refreshed between appends with `touch($turnId)` — the producer's proof of life while it is busy but silent inside a long tool call. A worker killed mid-turn (OOM, deploy, timeout) used to leave the record `running` and every client spinning until the TTL; now a tail that finds a running turn whose heartbeat is older than `stale_after_seconds` (default 300) writes the terminal itself — `error` with `$staleMessage` (a `tail()` argument; default `__('ai-kit::streaming.stale')`, shipped en + ar — apps pass their localized line), meta `stale: true` — behind an atomic claim so concurrent tailers write exactly one. Because `append()` refuses writes once a turn is no longer running, a producer that wakes up late cannot write past that terminal. `stale_trailing_done` appends an empty `done` after the stale `error`, for the clients that hang their teardown off `done` (the same trade-off as `fail()`'s trailing done, decided once at construction); a `stale_after_seconds` of 0 disables the check.
+
+**`upsert()` keeps repeated state to one entry.** `upsert($turnId, $event, $data, $key = 'id')` appends — unless the LAST entry in the log is the same event about the same subject (`data[$key]` equal), in which case it replaces that entry in place with a fresh sequence number. A six-minute tool reporting three hundred times stays ONE log entry, yet a live or resuming client still receives the latest state because the seq advances; seqs stay ascending because only the tail entry is ever rewritten.
+
+**Coalescing.** The mapper merges runs of consecutive `delta`s (and, separately, `reasoning`s) before they reach the sink — a run is released when its window elapses (default 100 ms), it reaches `maxChars` (default 400), an event of another kind arrives (which flushes held text FIRST, so wire order is unchanged), or the fold ends. The stage sits after the mapper's bookkeeping, so `StreamResult::$text` is byte-identical with or without it. The defaults differ by path, deliberately: ON on the buffered fold (`runBuffered()`, and therefore `runIntoBuffer()` and the `TurnRunner`), where every frame is a cache write and a log entry replayed to every resuming client; OFF on inline `run()`, where each token should hit the wire the moment it exists. `coalesce(windowMs, maxChars)` / `withoutCoalescing()` override either default.
+
+**Tool progress.** A tool runs deep inside laravel/ai's tool loop with no path to the turn's sink, so `ToolProgress` is a static per-turn binding — bound by the runner before the fold, unbound in its finally, the same Octane-safety shape as `TurnContext`. A tool always just calls `current()`: when nothing is bound (an MCP call, a plain test) it gets a no-op instance, so tools need no environment checks.
+
+```php
+public function handle(Request $request): string
+{
+    $progress = ToolProgress::current()->for($request);      // pinned to this call's id
+
+    $progress->each($items, function (Item $item): void {    // "1/40", "2/40", … + a cancel check per item
+        $this->classify($item);
+    }, label: 'Classifying');
+
+    $progress->report(label: 'Uploading', percent: 80.0);    // or by hand — label, percent, current/total, any mix
+
+    if ($progress->isCancelled()) {                          // hand-rolled loops poll this themselves
+        return $this->partialResult();
+    }
+    // ...
+```
+
+Reports land on the wire as `tool {id, status: 'running', progress: {label?, percent?, current?, total?}}` — without `name`, which the client already holds — throttled to one emit per second per call id, except for what the user must not miss: a label change and the final state always emit. A skipped emit still touches the heartbeat, so a tool reporting every 100 ms keeps the turn visibly alive without growing the log; on the buffered path the runner routes progress frames to `upsert()`. Cancellation inside a tool is the read side of the same seam: `isCancelled()` polls the buffer's cancel flag (throttled to one cache read per second, sticky once true), and `each()` checks it per item and simply STOPS ITERATING — no exception, because laravel/ai's tool executor would only fold a throw into a tool-error string for the model to reason about. The tool returns what it accumulated, and the runner's cancel generator ends the turn on the next stream event.
+
+**`TurnRunner`** is the DRY core of the background turn job every app wrote verbatim. It re-checks the kill switch where the spend would actually happen (a switch engaged mid-incident exists precisely to stop a queued backlog; the stream closure is invoked only after the guards pass, so a killed turn never opens a provider connection), labels the turn's usage rows via the feature `Context` key, authenticates the acting user for the whole fold (restored in the finally — a recycled worker never leaks it into the next job), binds `ToolProgress`, wraps the stream in the cancel generator (one cache read per second, each poll also touching the heartbeat), and routes the sink: non-terminal events to `append()`, progress frames to `upsert()` — re-stamped with the tool's remembered `name`, so a client resuming from cursor 0 never replays a nameless chip — and the terminal held back:
+
+```php
+$outcome = app(TurnRunner::class)->run(
+    turnId: $turnId,
+    stream: fn (): iterable => $agent->stream($prompt),    // invoked only after the guards pass
+    mapper: app(StreamEventMapper::class)->onError(fn (): string => __('assistant.errors.generic')),
+    buffer: $buffer,
+    feature: 'assistant',                                  // kill-switch scope + usage Context label
+    actingAs: $user,
+    failMessage: fn (?Throwable $e): string => __('assistant.errors.generic'),
+);
+
+if ($outcome->failed) {
+    $buffer->fail($turnId, $outcome->failure, $meta);      // the APP writes the terminal…
+} else {
+    $buffer->finish($turnId, $donePayload, $meta);         // …because its payload only exists after the fold
+}
+```
+
+`TurnOutcome` carries the `StreamResult`, `cancelled` and `failed` as independent axes (a stop is a completed short turn with partial text, never an error), the resolved `failure` line, the `exception` when a throw ended the turn, and the mapper's assembled `done` payload for apps that build on it. What stays app-side, deliberately: model/user resolution, prompt assembly, metering, per-turn spend reset (catodemy's `TurnProviderSpend` is an app-level accumulator; the kit has no equivalent to reset), and — above all — the terminal event, because a completion payload (credit outcome, grounding, persisted message id) only exists app-side and only after the fold. `runIntoBuffer()` remains for apps that want the terminal written for them.
+
+Three `streaming` config keys tune all of this — `page_size` (64), `stale_after_seconds` (300), `stale_trailing_done` (false) — and the provider wires them into the `TurnBuffer` it binds. The client half is `resumeTurn()`: see *Resuming a long turn* under the frontend layer.
 
 ## Approval forms
 

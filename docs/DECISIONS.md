@@ -127,6 +127,21 @@ recommendation at decision time.
     resize helper for both frameworks. Catodemy additionally scales the
     assistant font up slightly on desktop — it is hard to read.
 
+24. **Long turns are ordinary turns — RULED 2026-08-20 (Saad)**: long AI work
+    runs INSIDE the chat turn, and the turn stays open until it ends — a
+    separate task entity, job, card or endpoint was explicitly rejected.
+    Anything the AI does may take a long time (a summary, a slide-deck
+    translation, a 40-item classification); that is GENERAL, not a special
+    case, so robustness belongs to the kit's general turn machinery, never to
+    per-feature plumbing. For anything beyond the turn's own SSE tail (the
+    180 s hangup + cursor reconnect stays the contract), polling beats a held
+    connection. The chat UI is the only surface — progress rides the existing
+    `tool` event on the tool chip; no new surfaces. Shipped as the "long
+    turns" work (kit PRs #9–#11; tags as v0.10.0 after the #22/#23 v0.9.0
+    release): TurnBuffer header/pages split + heartbeat + stale-tail terminal
+    + `upsert()`, mapper coalescing + `ToolProgress` + `TurnRunner`, and the
+    `tool.progress` wire field + chip progress bar + `resume.ts` client-side.
+
 ## Deviation ledger
 
 | Shipped (v0.3.x / PR #127–#128) | Owner ruling 2026-08-17 | Resolution |
