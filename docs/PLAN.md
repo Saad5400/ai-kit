@@ -29,7 +29,7 @@
   ledger, preview == execution). ✅ **Retired from the kit in v0.8.0** once both consumers
   ran on `Approvals\Classified`; only that seam ships now.
 
-## State (2026-08-20, later) — long turns merged (#9–#11; tags as v0.10.0)
+## State (2026-08-20, later) — long turns merged (#9–#11; shipped inside v0.9.0)
 
 The long-running-turns slice (owner rulings recorded as DECISIONS.md #24: the
 work stays inside the open chat turn, robustness is general turn machinery,
@@ -68,7 +68,7 @@ main as three PRs:
 Suite: **420 PHP** green (was 349), **116 vitest** (was 92). **No version
 bump or tag yet** — sequencing agreed 2026-08-20 with the v0.9.0
 cards/sidebar/default-model work (rulings #21–#23, the ai-kit PM session):
-they tag v0.9.0 first, long-turns tags **v0.10.0** on top.
+they tag v0.9.0 first — and since #9–#12 merged ahead of #13, **v0.9.0 carries the whole long-turns slice; the separate v0.10.0 was dropped** (agreed with the PM session 2026-08-20).
 
 Follow-ups: the catodemy adoption slice (branch `claude/slice-long-turns`;
 spec at catodemy `docs/design/slices/slice-long-turns-plan.md` — TurnRunner
