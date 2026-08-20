@@ -25,6 +25,9 @@ class StreamingServiceProvider extends ServiceProvider
                 (int) ($config['max_stream_seconds'] ?? 180),
                 (int) ($config['keepalive_seconds'] ?? 15),
                 (int) ($config['poll_interval_ms'] ?? 150),
+                (int) ($config['page_size'] ?? 64),
+                (int) ($config['stale_after_seconds'] ?? 300),
+                (bool) ($config['stale_trailing_done'] ?? false),
             );
         });
     }
