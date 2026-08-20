@@ -99,6 +99,33 @@ recommendation at decision time.
     is too slow (no "low" reasoning effort, high effort crawls). A faster
     same-price-class replacement with reliable tool calling is being selected;
     model ids stay per-app config, never hard-coded in the kit.
+    *Superseded in part by #21 (2026-08-20): the kit now carries the shared
+    DEFAULT model id; per-app overrides remain config.*
+21. **Shared default chat model — RULED 2026-08-20 (Saad)**: the kit ships a
+    shared default chat model in its config; apps inherit it unless they
+    explicitly override. All three apps default to **Google Gemini Flash
+    Lite** — slug pinned `google/gemini-3.5-flash-lite` (latest lite
+    generation at ruling time; tools + reasoning + structured outputs +
+    multimodal, 1M context; $0.30/$2.50 per M). Cheaper prior generations
+    (`3.1-flash-lite`, `2.5-flash-lite`) are the fallback candidates if cost
+    or behavior disappoints. uqucc caveat: its `AiSettings->chat_model` DB row
+    overrides config and must be migrated at adoption. s-grade inherits at its
+    migration (#15).
+22. **AI cards are first-class UI — RULED 2026-08-20 (Saad, prod screenshots)**:
+    the question and approval cards shipped in v0.6.0 are not good enough
+    ("very bad and meh"). Kit components get a real design pass: proper option
+    chips and buttons (not text runs), full RTL/bidi correctness (Latin
+    fragments inside Arabic copy must isolate), no raw field names / internal
+    ids / bare-dash empties in the primary view, and a visual hierarchy that
+    makes a pending card unmistakable. App-side card copy (tool `title()` /
+    `preview()`) must be localizable — an English title rendered to an Arabic
+    user is a defect, not a default. Refines #19's "look & feel stays per-app":
+    per-app THEMING stays, but card structure/behavior is kit-owned.
+23. **Resizable AI sidebar + readability — RULED 2026-08-20 (Saad)**: every
+    app that hosts the assistant in a sidebar makes that sidebar user-resizable
+    on desktop (width persisted per user/browser); the kit ships the shared
+    resize helper for both frameworks. Catodemy additionally scales the
+    assistant font up slightly on desktop — it is hard to read.
 
 ## Deviation ledger
 
