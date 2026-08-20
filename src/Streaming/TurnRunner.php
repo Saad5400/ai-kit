@@ -94,75 +94,83 @@ class TurnRunner
             ? (string) $failMessage($e)
             : (string) ($e?->getMessage() ?? '');
 
-        // The HTTP entry point already guarded this turn, but that was
-        // before it was queued — possibly long before. Re-check where the
-        // model calls actually happen; nothing has streamed yet and no
-        // provider connection is opened.
-        if ($this->killSwitch?->engaged($feature)) {
-            return TurnOutcome::failed(new StreamResult, (string) __('ai-kit::safety.killed'));
-        }
-
-        // Label every model call this turn makes so the usage rows are
-        // attributable; inherited by any pre-pass the app runs inside the
-        // stream closure as well as the streamed turn itself.
-        if ($feature !== null) {
-            Context::add((string) config('ai-kit.usage.feature_context_key', 'ai-kit.feature'), $feature);
-        }
-
-        // Acting-user scoping: authenticate the acting user for the WHOLE
-        // fold so every model scope / policy / audit causer that reads
-        // auth()->user() is correct, then restore the prior guard state in
-        // the finally (Octane-safe).
         $guard = Auth::guard();
         $previousUser = null;
+        $swapped = false;
 
-        if ($actingAs !== null) {
-            $previousUser = $guard->hasUser() ? $guard->user() : null;
-            $guard->setUser($actingAs);
-        }
-
-        $done = null;
-        $error = null;
-        $cancelled = false;
-
-        /** @var array<string, string> $toolNames */
-        $toolNames = [];
-
-        $sink = function (string $event, array $data) use ($buffer, $turnId, &$done, &$error, &$toolNames): void {
-            if ($event === 'done') {
-                $done = $data;
-
-                return;
+        // ONE outer try/finally owns every cleanup from here on — the
+        // ToolProgress unbind and the guard restore run on EVERY exit
+        // (normal, cancelled, kill-switched, thrown), so a recycled
+        // Octane/queue worker can never carry this turn's binding or acting
+        // user into the next turn. The unbind is unconditional on purpose:
+        // it also sweeps up anything a crashed previous turn left behind.
+        try {
+            // The HTTP entry point already guarded this turn, but that was
+            // before it was queued — possibly long before. Re-check where
+            // the model calls actually happen; nothing has streamed yet and
+            // no provider connection is opened.
+            if ($this->killSwitch?->engaged($feature)) {
+                return TurnOutcome::failed(new StreamResult, (string) __('ai-kit::safety.killed'));
             }
 
-            if ($event === 'error') {
-                $error = (string) ($data['message'] ?? '');
-
-                return;
+            // Label every model call this turn makes so the usage rows are
+            // attributable; inherited by any pre-pass the app runs inside
+            // the stream closure as well as the streamed turn itself.
+            if ($feature !== null) {
+                Context::add((string) config('ai-kit.usage.feature_context_key', 'ai-kit.feature'), $feature);
             }
 
-            if ($event === 'tool' && is_string($data['id'] ?? null)) {
-                if (is_string($data['name'] ?? null)) {
-                    $toolNames[$data['id']] = $data['name'];
-                }
+            // Acting-user scoping: authenticate the acting user for the
+            // WHOLE fold so every model scope / policy / audit causer that
+            // reads auth()->user() is correct; the finally restores the
+            // prior guard state (Octane-safe).
+            if ($actingAs !== null) {
+                $previousUser = $guard->hasUser() ? $guard->user() : null;
+                $guard->setUser($actingAs);
+                $swapped = true;
+            }
 
-                if (isset($data['progress'])) {
-                    if (! isset($data['name']) && isset($toolNames[$data['id']])) {
-                        $data['name'] = $toolNames[$data['id']];
-                    }
+            $done = null;
+            $error = null;
+            $cancelled = false;
 
-                    $buffer->upsert($turnId, 'tool', $data);
+            /** @var array<string, string> $toolNames */
+            $toolNames = [];
+
+            $sink = function (string $event, array $data) use ($buffer, $turnId, &$done, &$error, &$toolNames): void {
+                if ($event === 'done') {
+                    $done = $data;
 
                     return;
                 }
-            }
 
-            $buffer->append($turnId, $event, $data);
-        };
+                if ($event === 'error') {
+                    $error = (string) ($data['message'] ?? '');
 
-        ToolProgress::bind($turnId, $sink, $buffer);
+                    return;
+                }
 
-        try {
+                if ($event === 'tool' && is_string($data['id'] ?? null)) {
+                    if (is_string($data['name'] ?? null)) {
+                        $toolNames[$data['id']] = $data['name'];
+                    }
+
+                    if (isset($data['progress'])) {
+                        if (! isset($data['name']) && isset($toolNames[$data['id']])) {
+                            $data['name'] = $toolNames[$data['id']];
+                        }
+
+                        $buffer->upsert($turnId, 'tool', $data);
+
+                        return;
+                    }
+                }
+
+                $buffer->append($turnId, $event, $data);
+            };
+
+            ToolProgress::bind($turnId, $sink, $buffer);
+
             $result = $mapper->runBuffered(
                 $this->untilCancelled($stream(), $buffer, $turnId, $cancelled),
                 $sink,
@@ -181,7 +189,7 @@ class TurnRunner
         } finally {
             ToolProgress::unbind();
 
-            if ($actingAs !== null) {
+            if ($swapped) {
                 $previousUser !== null ? $guard->setUser($previousUser) : Auth::forgetGuards();
             }
         }

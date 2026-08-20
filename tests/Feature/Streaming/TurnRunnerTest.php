@@ -16,7 +16,7 @@ use Saad\AiKit\Safety\KillSwitch;
 use Saad\AiKit\Streaming\StreamEventMapper;
 use Saad\AiKit\Streaming\ToolProgress;
 use Saad\AiKit\Streaming\TurnRunner;
-use Saad\AiKit\Tests\Support\LongTurnBuffer;
+use Saad\AiKit\Tests\Support\SpyTurnBuffer;
 
 function runnerDelta(string $text): TextDelta
 {
@@ -28,7 +28,7 @@ beforeEach(function () {
 
     $this->runner = $this->app->make(TurnRunner::class);
     $this->mapper = $this->app->make(StreamEventMapper::class);
-    $this->buffer = new LongTurnBuffer;
+    $this->buffer = new SpyTurnBuffer;
     $this->buffer->start('t1', ['user_id' => 7]);
 });
 
@@ -271,6 +271,45 @@ it('binds ToolProgress for the turn and unbinds it on every path', function () {
     ToolProgress::current()->report('id1', label: 'late');
 
     expect($this->buffer->get('t1')['events'])->toBe($before);
+});
+
+it('leaves ToolProgress as the no-op instance after a run that threw', function () {
+    // A leftover binding from a crashed previous turn on this worker: the
+    // runner's finally must sweep it regardless of how the run ends.
+    ToolProgress::bind('leaked', fn () => null);
+
+    $outcome = $this->runner->run(
+        turnId: 't1',
+        // Throws before the fold ever starts — the earliest possible exit.
+        stream: fn (): array => throw new RuntimeException('constructor blew up'),
+        mapper: $this->mapper,
+        buffer: $this->buffer,
+        failMessage: fn (?Throwable $e): string => 'generic',
+    );
+
+    expect($outcome->failed)->toBeTrue()
+        ->and($outcome->failure)->toBe('generic');
+
+    $bound = new ReflectionProperty(ToolProgress::class, 'bound');
+
+    expect($bound->getValue())->toBeNull();
+});
+
+it('unbinds ToolProgress on the kill-switch early-fail path too', function () {
+    ToolProgress::bind('leaked', fn () => null);
+    app(KillSwitch::class)->engage('assistant');
+
+    $this->runner->run(
+        turnId: 't1',
+        stream: fn (): array => [],
+        mapper: $this->mapper,
+        buffer: $this->buffer,
+        feature: 'assistant',
+    );
+
+    $bound = new ReflectionProperty(ToolProgress::class, 'bound');
+
+    expect($bound->getValue())->toBeNull();
 });
 
 it('routes progress frames to upsert keyed by call id, re-stamping the tool name', function () {

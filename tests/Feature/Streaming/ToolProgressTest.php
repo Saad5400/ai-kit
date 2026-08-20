@@ -3,7 +3,7 @@
 use Illuminate\Support\Carbon;
 use Laravel\Ai\Tools\Request;
 use Saad\AiKit\Streaming\ToolProgress;
-use Saad\AiKit\Tests\Support\LongTurnBuffer;
+use Saad\AiKit\Tests\Support\SpyTurnBuffer;
 
 beforeEach(function () {
     ToolProgress::unbind();
@@ -49,7 +49,7 @@ it('emits a running tool frame with progress and no name', function () {
 });
 
 it('throttles repeat reports per call id, touching the heartbeat instead', function () {
-    $buffer = new LongTurnBuffer;
+    $buffer = new SpyTurnBuffer;
     $buffer->start('t1');
 
     ToolProgress::bind('t1', $this->sink, $buffer);
@@ -187,7 +187,7 @@ it('each() stops iterating when the turn is cancelled, without throwing', functi
 });
 
 it('isCancelled is throttled, sticky, and defaults to the buffer cancel flag', function () {
-    $buffer = new LongTurnBuffer;
+    $buffer = new SpyTurnBuffer;
     $buffer->start('t1');
 
     ToolProgress::bind('t1', $this->sink, $buffer);
