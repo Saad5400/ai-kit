@@ -143,7 +143,7 @@ class ApprovalCards
             $name = (string) $name;
 
             $fields[$name] = array_key_exists($name, $spec)
-                ? Field::fromSpec($name, $spec[$name])
+                ? Field::fromSpec($name, $spec[$name], $value)
                 : Field::infer($name, $value);
         }
 
