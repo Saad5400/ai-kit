@@ -16,6 +16,12 @@
  *
  * Thinking text is NOT markdown: it is a raw model channel, often half-formed,
  * and parsing it mid-stream produces flicker.
+ *
+ * SUMMARY WHILE LIVE. A long tool reports `progress` on its chip; while the
+ * group is live, the summary line swaps its static label for the LAST running
+ * chip's progress label — so a collapsed disclosure still says "Grading
+ * submissions" instead of a generic "steps". With no label to show, the static
+ * one stays.
  */
 import { computed, ref, watch } from 'vue'
 import type { ProcessGroup } from '../core/timeline'
@@ -35,6 +41,22 @@ const props = withDefaults(
 )
 
 const tools = computed(() => props.items.filter((item) => item.type === 'tool').length)
+
+const summary = computed((): string => {
+    if (!props.live) {
+        return props.label
+    }
+
+    for (let index = props.items.length - 1; index >= 0; index--) {
+        const item = props.items[index]
+
+        if (item.type === 'tool' && item.status === 'running' && item.progress?.label) {
+            return item.progress.label
+        }
+    }
+
+    return props.label
+})
 
 const open = ref(props.live)
 const touched = ref(false)
@@ -66,14 +88,14 @@ const onToggle = (event: Event): void => {
             <svg class="ai-kit-process__chevron" viewBox="0 0 12 12" aria-hidden="true">
                 <path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
-            <span class="ai-kit-process__label" dir="auto">{{ label }}</span>
+            <span class="ai-kit-process__label" dir="auto">{{ summary }}</span>
             <span v-if="tools > 0" class="ai-kit-process__badge" dir="ltr">{{ tools }}</span>
             <span v-if="live" class="ai-kit-process__pulse" aria-hidden="true" />
         </summary>
         <div class="ai-kit-process__body">
             <template v-for="(item, index) in items" :key="index">
                 <div v-if="item.type === 'thinking'" class="ai-kit-process__thinking" dir="auto">{{ item.text }}</div>
-                <ToolChip v-else :name="item.name" :status="item.status" :successful="item.successful" />
+                <ToolChip v-else :name="item.name" :status="item.status" :successful="item.successful" :progress="item.progress" />
             </template>
         </div>
     </details>

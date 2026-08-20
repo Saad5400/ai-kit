@@ -17,6 +17,12 @@
      *
      * Thinking text is NOT markdown: it is a raw model channel, often
      * half-formed, and parsing it mid-stream produces flicker.
+     *
+     * SUMMARY WHILE LIVE. A long tool reports `progress` on its chip; while
+     * the group is live, the summary line swaps its static label for the
+     * LAST running chip's progress label — so a collapsed disclosure still
+     * says "Grading submissions" instead of a generic "steps". With no label
+     * to show, the static one stays.
      */
     import { untrack } from 'svelte'
     import type { ProcessGroup } from '../core/timeline'
@@ -34,6 +40,22 @@
     } = $props()
 
     const tools = $derived(items.filter((item) => item.type === 'tool').length)
+
+    const summary = $derived.by((): string => {
+        if (!live) {
+            return label
+        }
+
+        for (let index = items.length - 1; index >= 0; index--) {
+            const item = items[index]
+
+            if (item.type === 'tool' && item.status === 'running' && item.progress?.label) {
+                return item.progress.label
+            }
+        }
+
+        return label
+    })
 
     let open = $state(untrack(() => live))
     let touched = $state(false)
@@ -68,7 +90,7 @@
                 stroke-linejoin="round"
             />
         </svg>
-        <span class="ai-kit-process__label" dir="auto">{label}</span>
+        <span class="ai-kit-process__label" dir="auto">{summary}</span>
         {#if tools > 0}
             <span class="ai-kit-process__badge" dir="ltr">{tools}</span>
         {/if}
@@ -81,7 +103,7 @@
             {#if item.type === 'thinking'}
                 <div class="ai-kit-process__thinking" dir="auto">{item.text}</div>
             {:else}
-                <ToolChip name={item.name} status={item.status} successful={item.successful} />
+                <ToolChip name={item.name} status={item.status} successful={item.successful} progress={item.progress} />
             {/if}
         {/each}
     </div>

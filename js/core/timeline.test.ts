@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ApprovalPayload, QuestionPayload } from './events'
 import { createTimeline, groupSegments } from './timeline'
-import type { Segment } from './timeline'
+import type { Segment, ToolSegment } from './timeline'
 
 const approval = (id: string): ApprovalPayload => ({
     kind: 'approval',
@@ -94,6 +94,60 @@ describe('the segment timeline', () => {
             { type: 'text', text: 'meanwhile…' },
             { type: 'tool', id: 'c2', name: 'Fetch', status: 'running' },
         ])
+    })
+
+    it('keeps the held name when a progress frame omits it, and replaces progress wholesale', () => {
+        const timeline = createTimeline()
+
+        timeline.push('tool', { id: 'c1', name: 'GradeAll', status: 'running' })
+        timeline.push('tool', { id: 'c1', status: 'running', progress: { label: 'Grading', current: 3, total: 40 } })
+
+        expect(timeline.segments).toEqual([
+            {
+                type: 'tool',
+                id: 'c1',
+                name: 'GradeAll',
+                status: 'running',
+                progress: { label: 'Grading', current: 3, total: 40 },
+            },
+        ])
+
+        // Wholesale: the next report's missing `total` is gone, not merged in.
+        timeline.push('tool', { id: 'c1', status: 'running', progress: { percent: 60 } })
+
+        expect((timeline.segments[0] as ToolSegment).progress).toEqual({ percent: 60 })
+    })
+
+    it('keeps the held progress when a running frame carries none', () => {
+        const timeline = createTimeline()
+
+        timeline.push('tool', { id: 'c1', name: 'GradeAll', status: 'running', progress: { current: 3, total: 40 } })
+        timeline.push('tool', { id: 'c1', status: 'running' })
+
+        expect((timeline.segments[0] as ToolSegment).progress).toEqual({ current: 3, total: 40 })
+    })
+
+    it('drops progress on done — a settled chip must not keep a bar', () => {
+        const timeline = createTimeline()
+
+        timeline.push('tool', { id: 'c1', name: 'GradeAll', status: 'running' })
+        timeline.push('tool', { id: 'c1', status: 'running', progress: { current: 39, total: 40 } })
+        timeline.push('tool', { id: 'c1', status: 'done', successful: true })
+
+        expect(timeline.segments).toEqual([
+            { type: 'tool', id: 'c1', name: 'GradeAll', status: 'done', successful: true },
+        ])
+        expect('progress' in timeline.segments[0]!).toBe(false)
+    })
+
+    it('folds a card over a chip that was reporting progress — the fold rule holds', () => {
+        const segments = play([
+            ['tool', { id: 'c1', name: 'DeleteWidget', status: 'running' }],
+            ['tool', { id: 'c1', status: 'running', progress: { label: 'Checking references' } }],
+            ['approval', approval('c1')],
+        ])
+
+        expect(segments).toEqual([{ type: 'card', card: approval('c1') }])
     })
 
     it('folds an approval card into the same-id tool chip, in place', () => {
