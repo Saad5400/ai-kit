@@ -86,14 +86,27 @@ model chain):
   `pending` prop wired from tracked state. uqucc backlog: swap its app-side
   reconnect ladder onto `js/core/resume.ts` at the next bump.
 
-**Open**: the catodemy adoption PR (branch `feat/kit-0.9-cards-ux`, builder
-worktree catodemy-ui) carries the rest of rulings #21–#23 for catodemy —
-token mapping fix to `hsl(var(--…))`, Arabic card copy, Gemini default row
-in `ai_models`, resizable sidebar, desktop font scale, sent-attachment
-display fix. Owner decisions still pending: uqucc sidebar (it has none —
-full pages + dialogs) and the uqucc message-level attachments PR (gap
-confirmed 4 layers deep: no message column, agent never receives them,
-show() strips them, no download route).
+**Catodemy adoption LANDED (2026-08-23)**: PR #578 merged (`3b9f7fdd`, after
+d2's long-turns adoption #568) and auto-deploy verified live (migrations
+batch 71 ran; `gemini-lite` = `google/gemini-3.5-flash-lite` tagged
+`recommended` at 5 credits/turn, deepseek-fast demoted to `cheapest` only;
+anchor columns present; 200 in-container). It carried rulings #21–#23 for
+catodemy — token mapping to `hsl(var(--…))` (plus two target fixes: surface
+`--muted`→`--card`, never-set `-fg` tokens), Arabic card copy + labels with
+widgets restated, card props via t() (`undoableLabel` null — no undo ledger),
+resizable sidebar (384–720, `catodemy.assistant.width`), desktop font scale,
+Gemini default via an idempotent `ai:sync-models` migration (empty table
+skipped so tests stay clean), and the sent-attachment display fix
+(message-anchor columns as store uuids not FKs; owner-only streamed route,
+404-never-403, MediaStream inline-safe MIME list, unanchored historic rows
+stay visible to their uploader).
+
+**Open**: attachment retention follow-up (owner call — #562's pruner deletes
+rows AND bytes at 7 days; proposal: prune bytes only, keep row with
+`pruned_at`, disabled "expired" chip). Owner decisions still pending: uqucc
+sidebar (it has none — full pages + dialogs) and the uqucc message-level
+attachments PR (gap confirmed 4 layers deep: no message column, agent never
+receives them, show() strips them, no download route).
 
 ## State (2026-08-20, later) — long turns merged (#9–#11; shipped inside v0.9.0)
 
