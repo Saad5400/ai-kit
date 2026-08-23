@@ -132,7 +132,11 @@ it('leaves the collector intact when drain_spend is off', function () {
         ->and($collector->totalCost())->toEqualWithDelta(0.002, 0.0000001);
 });
 
-it('estimates cost from catalog prices when the provider reported none', function () {
+it('records no cost at all when the provider reported none, never estimating from catalog prices', function () {
+    // DECISIONS.md #26c: declared prices are display metadata. A turn the
+    // provider did not price is recorded unpriced — the catalog rate below is
+    // deliberately ignored rather than used to invent a figure that would
+    // never reconcile against an OpenRouter invoice.
     config()->set('ai-kit.catalog.models', [
         'test/model' => ['input_usd_per_million' => 1.0, 'output_usd_per_million' => 10.0],
     ]);
@@ -143,8 +147,10 @@ it('estimates cost from catalog prices when the provider reported none', functio
 
     $row = UsageEvent::sole();
 
-    expect($row->cost_usd)->toEqualWithDelta(2.0, 0.0000001)
-        ->and($row->cost_source)->toBe('estimated');
+    expect($row->cost_usd)->toBeNull()
+        ->and($row->cost_source)->toBeNull()
+        ->and($row->prompt_tokens)->toBe(1_000_000)
+        ->and($row->completion_tokens)->toBe(100_000);
 });
 
 it('records duration and ttft from the turn context and clears the stamps', function () {

@@ -34,10 +34,22 @@ class AiKitServiceProvider extends ServiceProvider
 
         // Deep merge (mergeConfigFrom is shallow): an app overriding a single
         // toggle must not wipe the defaults of its siblings.
+        $published = $config->get('ai-kit', []);
+
         $config->set('ai-kit', array_replace_recursive(
             require __DIR__.'/../config/ai-kit.php',
-            $config->get('ai-kit', []),
+            $published,
         ));
+
+        // The shared catalog (DECISIONS.md #26) merges BY MODEL KEY, which is
+        // what makes "add one model, keep the fleet's" work — but it also
+        // means an app cannot shrink the list, since array_replace_recursive
+        // has no way to express a removal. `replace_shipped_models` is that
+        // escape hatch: an app (or a test) that must own the entire menu sets
+        // it and gets exactly the models it declared, shipped ones dropped.
+        if (($published['catalog']['replace_shipped_models'] ?? false) === true) {
+            $config->set('ai-kit.catalog.models', $published['catalog']['models'] ?? []);
+        }
 
         foreach ($this->modules as $toggle => $provider) {
             if ($config->get("ai-kit.modules.{$toggle}") === true) {
