@@ -29,6 +29,72 @@
   ledger, preview == execution). ✅ **Retired from the kit in v0.8.0** once both consumers
   ran on `Approvals\Classified`; only that seam ships now.
 
+## State (2026-08-20, PM session) — v0.7.3→v0.9.1 tagged; uqucc fully current; catodemy UI PR in flight
+
+Four releases cut and pushed this day (all green on CI, tags on main):
+
+- **v0.7.3** — the migration-backlog patch: `runIntoBuffer` accepts
+  `array|Closure $meta` resolved AFTER the fold (failed path included);
+  `TurnBuffer::fail(..., bool $trailingDone = false)`; cancellation
+  (generator-in-front) documented + locked by test; `timeline.ts` docblock
+  fixed to the callback API; `ResumeDecisions::guarded($input, $guard)` —
+  client-shaped input validated + guarded in the REQUEST, not the job;
+  409/afterCommit docs.
+- **v0.8.0 (BREAKING)** — the transitional proposal module is DELETED
+  (Proposal*/Plan*/CachePlanStore/WriteGate*/ActionRegistry/ProposableAction/
+  ProposalFactory, the ai_proposals migration, its config keys, 2 lang
+  strings, 4 exceptions). Kept: the Classified seam, WriteExecutions, Undo,
+  WriteToolAdapter. No consumers were on it; no drop migration ships (apps
+  keep their table). 349 tests.
+- **v0.9.0** — owner rulings #21–#23 + the long-turns slice (#9–#12 below):
+  ApprovalCard/QuestionCard redesigned in BOTH frameworks (`<bdi dir="auto">`
+  everywhere mixed-direction, logical properties only — test-enforced, no
+  token colors in border/outline SHORTHANDS — longhands only, test-enforced:
+  shadcn-v3 raw HSL triplets in a shorthand invalidated the whole declaration
+  and that was the root cause of catodemy's broken cards); humanized labels,
+  readonly `*_id` collapsed into `<details>`, option chips, pending accent
+  rail, real buttons; card copy props default ARABIC;
+  `previewLines()` drops title-duplicate rows; new role tokens
+  (--ai-kit-control-border/--ai-kit-badge-bg/--ai-kit-hover/--ai-kit-progress);
+  `js/core/resizable.ts` + svelte action + vue composable + resizable.css
+  (RTL-aware drag, persisted on release, desktop media gate, keyboard
+  separator); `config('ai-kit.chat.model')` default
+  `google/gemini-3.5-flash-lite` read via `Catalog::chatModel()` (#21).
+- **v0.9.1 (security)** — `Field::fromSpec()` now inherits the INFERRED
+  widget when a spec array omits `widget`: before, `['label' => …]` on a
+  `*_id` silently produced an editable text field — "add a label" unlocked
+  the identity field the write is addressed by. Found by the uqucc adoption
+  builder; fixed same day. Explicit widgets still win.
+
+**uqucc is fully current** (both PRs merged with owner-granted merge
+permission, auto-deployed, verified live on prod incl. tinker check of the
+model chain):
+
+- **#136** (`62b16c1`) — TurnBuffer resumable turns on both surfaces
+  (student chat + admin assistant): POST still answers SSE directly (buffer
+  start → seq-1 `turn {id}` → dispatch → tail; accepted deviation from
+  catodemy's 202+GET), GET stream?cursor= resume + POST cancel (ownership via
+  buffer meta, 404 posture), `ResumeDecisions::guarded()`, tries=1 jobs with
+  kill-switch-only re-check, client reconnect ladder. Review caught two
+  prod-breakers pre-merge: stream/cancel moved OUT of `throttle:ai-chat`
+  (5/min would 429 the ladder) and a dedicated `ai-chat` queue + supervisor
+  worker (default queue would serialize turns and kill >60s ones).
+- **#137** (`2d5532d`) — kit ^0.9.0; model chain centralized in
+  `AiSettings::chatModel()` (setting row → env → `Catalog::chatModel()`),
+  settings migration rewrites the seeded row to the shared default; 29 admin
+  write actions got Arabic labels WITH widgets restated; ApprovalCard
+  `pending` prop wired from tracked state. uqucc backlog: swap its app-side
+  reconnect ladder onto `js/core/resume.ts` at the next bump.
+
+**Open**: the catodemy adoption PR (branch `feat/kit-0.9-cards-ux`, builder
+worktree catodemy-ui) carries the rest of rulings #21–#23 for catodemy —
+token mapping fix to `hsl(var(--…))`, Arabic card copy, Gemini default row
+in `ai_models`, resizable sidebar, desktop font scale, sent-attachment
+display fix. Owner decisions still pending: uqucc sidebar (it has none —
+full pages + dialogs) and the uqucc message-level attachments PR (gap
+confirmed 4 layers deep: no message column, agent never receives them,
+show() strips them, no download route).
+
 ## State (2026-08-20, later) — long turns merged (#9–#11; shipped inside v0.9.0)
 
 The long-running-turns slice (owner rulings recorded as DECISIONS.md #24: the
