@@ -193,15 +193,24 @@ return [
     | Catalog
     |--------------------------------------------------------------------------
     |
-    | The models the app routes turns to, keyed by provider-facing model id —
-    | OpenRouter's `id` (the stable alias), never its `canonical_slug` (the
-    | dated pin), which entries record separately so ops can see which build
-    | the alias resolved to. Prices are USD per million tokens (optional —
-    | metering prefers the provider-reported cost). `fallbacks` declares the
-    | failover chain for a model: the gateway sends it as OpenRouter's
-    | `models` request array, so the failover happens upstream — on downtime,
-    | rate limits, moderation AND context-length overflow — and the turn is
-    | priced by whichever model actually answered.
+    | The FLEET's shared model registry (DECISIONS.md #26), keyed by
+    | provider-facing model id — OpenRouter's `id` (the stable alias), never
+    | its `canonical_slug` (the dated pin), which entries record separately so
+    | ops can see which build the alias resolved to. This list ships in the
+    | KIT so a model decision lands in one place instead of once per app; an
+    | app that needs a different menu overrides `ai-kit.catalog.models` in its
+    | own published config, but the intent is that none has to.
+    |
+    | Prices are USD per million tokens and are DISPLAY METADATA ONLY — they
+    | tell a user what a model costs, they never price a turn. Billing reads
+    | OpenRouter's reported `usage.cost` and nothing else (DECISIONS.md #26c),
+    | so a stale row here can misinform but can never mischarge. Every rate
+    | below was read from the live models API on 2026-08-24.
+    |
+    | `fallbacks` declares the failover chain for a model: the gateway sends
+    | it as OpenRouter's `models` request array, so the failover happens
+    | upstream — on downtime, rate limits, moderation AND context-length
+    | overflow — and the turn is priced by whichever model actually answered.
     | `cheapest`/`smartest` feed the SDK's UseCheapestModel /
     | UseSmartestModel attributes.
     |
@@ -209,7 +218,7 @@ return [
     | live; 'database' serves the `table` rows that `ai-kit:sync-models`
     | materializes from this same file (the reviewed config stays the source
     | of truth — the table adds enable/disable ops control and app metadata).
-    | Entries may also declare `tasks` (routing labels like chat/mcq),
+    | Entries may also declare `tasks` (routing labels like chat/vision/mcq),
     | `tags` (of which `recommended` is enforced: exactly one recommended
     | model per declared task), `provider_max_price` ({prompt, completion}
     | caps, sent as OpenRouter's `provider.max_price` so the ceiling binds
@@ -217,24 +226,241 @@ return [
     | `canonical_slug`, `provider`/`provider_model_id`, `enabled`,
     | `sort_order` and a `meta` bag the kit never reads.
     |
+    | CAPABILITY WARNING: the DeepSeek V4 entries are TEXT-ONLY on OpenRouter
+    | — they declare no `vision` capability, which is precisely why the chat
+    | default and the vision default are two different models below. Never
+    | route an image at `chat.model`; route it at `vision.model`.
+    |
     */
 
     'catalog' => [
         'provider' => 'openrouter',
         'source' => 'config',
         'table' => 'ai_models',
-        'cheapest' => null,
-        'smartest' => null,
+
+        // The kit's config is DEEP merged into the app's, so `models` merges
+        // BY KEY: an app declaring one extra model keeps the fleet's, which is
+        // the point. That also means it cannot REMOVE a shipped model, since a
+        // recursive merge has no way to express a deletion. Set this to true
+        // to own the whole menu — the app's `models` then replace the shipped
+        // ones outright instead of merging with them.
+        'replace_shipped_models' => false,
+        'cheapest' => 'deepseek/deepseek-v4-flash',
+        'smartest' => 'deepseek/deepseek-v4-pro',
         'models' => [
-            // 'google/gemini-3.5-flash' => [
-            //     'canonical_slug' => 'google/gemini-3.5-flash-0714',
-            //     'label' => 'Gemini 3.5 Flash',
-            //     'input_usd_per_million' => 0.30,
-            //     'output_usd_per_million' => 2.50,
-            //     'context_length' => 1048576,
-            //     'capabilities' => ['tools', 'vision', 'reasoning'],
-            //     'fallbacks' => ['deepseek/deepseek-v4-flash'],
-            // ],
+
+            // ---- Workhorses: the fleet defaults ----------------------------
+
+            'deepseek/deepseek-v4-flash' => [
+                'canonical_slug' => 'deepseek/deepseek-v4-flash-20260423',
+                'label' => 'DeepSeek V4 Flash',
+                'company' => 'DeepSeek',
+                'variant' => 'fast',
+                'input_usd_per_million' => 0.0489,
+                'output_usd_per_million' => 0.0977,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => ['recommended', 'cheapest'],
+                'fallbacks' => ['deepseek/deepseek-v4-pro', 'google/gemini-2.5-flash-lite'],
+                'sort_order' => 10,
+            ],
+
+            'deepseek/deepseek-v4-pro' => [
+                'canonical_slug' => 'deepseek/deepseek-v4-pro-20260423',
+                'label' => 'DeepSeek V4 Pro',
+                'company' => 'DeepSeek',
+                'variant' => 'pro',
+                'input_usd_per_million' => 0.3969,
+                'output_usd_per_million' => 0.7938,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => [],
+                'fallbacks' => ['deepseek/deepseek-v4-flash'],
+                'sort_order' => 20,
+            ],
+
+            // ---- Eyes: the vision tier -------------------------------------
+            //
+            // Gemini 2.5 Flash Lite is the cheapest vision-capable model that
+            // still does tools + structured outputs (needed for extraction
+            // JSON). 3.1 Flash Lite is 2.5x dearer and is the quality
+            // fallback; 3.5 Flash is the escalation for hard scans.
+
+            'google/gemini-2.5-flash-lite' => [
+                'canonical_slug' => 'google/gemini-2.5-flash-lite',
+                'label' => 'Gemini 2.5 Flash Lite',
+                'company' => 'Google',
+                'variant' => 'fast',
+                'input_usd_per_million' => 0.10,
+                'output_usd_per_million' => 0.40,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['vision'],
+                'tags' => ['recommended', 'cheapest_vision'],
+                'fallbacks' => ['google/gemini-3.1-flash-lite'],
+                'sort_order' => 30,
+            ],
+
+            'google/gemini-3.1-flash-lite' => [
+                'canonical_slug' => 'google/gemini-3.1-flash-lite-20260507',
+                'label' => 'Gemini 3.1 Flash Lite',
+                'company' => 'Google',
+                'variant' => 'balanced',
+                'input_usd_per_million' => 0.25,
+                'output_usd_per_million' => 1.50,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['vision'],
+                'tags' => [],
+                'fallbacks' => ['google/gemini-3.5-flash'],
+                'sort_order' => 40,
+            ],
+
+            'google/gemini-3.5-flash' => [
+                'canonical_slug' => 'google/gemini-3.5-flash-20260519',
+                'label' => 'Gemini 3.5 Flash',
+                'company' => 'Google',
+                'variant' => 'pro',
+                'input_usd_per_million' => 1.50,
+                'output_usd_per_million' => 9.00,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['vision', 'chat'],
+                'tags' => [],
+                'fallbacks' => [],
+                'sort_order' => 50,
+            ],
+
+            // ---- Premium: the user-selectable tier -------------------------
+            //
+            // catodemy/s-grade expose these in the model picker. Only
+            // reasoning + tool capable models belong here (an agent without
+            // reasoning picks tools poorly). They publish rates above the
+            // cheap-pool cap, so they deliberately carry no
+            // `provider_max_price` — a cap there would exclude every provider
+            // and break routing.
+
+            'qwen/qwen3.7-plus' => [
+                'canonical_slug' => 'qwen/qwen3.7-plus-20260602',
+                'label' => 'Qwen3.7 Plus',
+                'company' => 'Qwen',
+                'variant' => 'balanced',
+                'input_usd_per_million' => 0.32,
+                'output_usd_per_million' => 1.28,
+                'context_length' => 1000000,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat'],
+                'tags' => [],
+                'fallbacks' => [],
+                'sort_order' => 60,
+            ],
+
+            'openai/gpt-5.4-mini' => [
+                'canonical_slug' => 'openai/gpt-5.4-mini-20260317',
+                'label' => 'GPT-5.4 Mini',
+                'company' => 'OpenAI',
+                'variant' => 'balanced',
+                'input_usd_per_million' => 0.75,
+                'output_usd_per_million' => 4.50,
+                'context_length' => 400000,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat'],
+                'tags' => [],
+                'fallbacks' => [],
+                'sort_order' => 70,
+            ],
+
+            'z-ai/glm-5.2' => [
+                'canonical_slug' => 'z-ai/glm-5.2-20260616',
+                'label' => 'GLM-5.2',
+                'company' => 'Z.ai',
+                'variant' => 'balanced',
+                'input_usd_per_million' => 0.966,
+                'output_usd_per_million' => 3.036,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat'],
+                'tags' => [],
+                'fallbacks' => [],
+                'sort_order' => 80,
+            ],
+
+            'x-ai/grok-4.3' => [
+                'canonical_slug' => 'x-ai/grok-4.3-20260430',
+                'label' => 'Grok 4.3',
+                'company' => 'xAI',
+                'variant' => 'pro',
+                'input_usd_per_million' => 1.25,
+                'output_usd_per_million' => 2.50,
+                'context_length' => 1000000,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat'],
+                'tags' => [],
+                'fallbacks' => [],
+                'sort_order' => 90,
+            ],
+
+            'qwen/qwen3.7-max' => [
+                'canonical_slug' => 'qwen/qwen3.7-max-20260520',
+                'label' => 'Qwen3.7 Max',
+                'company' => 'Qwen',
+                'variant' => 'pro',
+                'input_usd_per_million' => 1.475,
+                'output_usd_per_million' => 4.425,
+                'context_length' => 1000000,
+                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat'],
+                'tags' => [],
+                'fallbacks' => [],
+                'sort_order' => 100,
+            ],
+
+            'anthropic/claude-sonnet-5' => [
+                'canonical_slug' => 'anthropic/claude-sonnet-5-20260630',
+                'label' => 'Claude Sonnet 5',
+                'company' => 'Anthropic',
+                'variant' => 'pro',
+                'input_usd_per_million' => 2.00,
+                'output_usd_per_million' => 10.00,
+                'context_length' => 1000000,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat'],
+                'tags' => [],
+                'fallbacks' => [],
+                'sort_order' => 110,
+            ],
+
+            'openai/gpt-5.4' => [
+                'canonical_slug' => 'openai/gpt-5.4-20260305',
+                'label' => 'GPT-5.4',
+                'company' => 'OpenAI',
+                'variant' => 'pro',
+                'input_usd_per_million' => 2.50,
+                'output_usd_per_million' => 15.00,
+                'context_length' => 1050000,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat'],
+                'tags' => [],
+                'fallbacks' => [],
+                'sort_order' => 120,
+            ],
+
+            'google/gemini-3.1-pro-preview' => [
+                'canonical_slug' => 'google/gemini-3.1-pro-preview-20260219',
+                'label' => 'Gemini 3.1 Pro',
+                'company' => 'Google',
+                'variant' => 'pro',
+                'input_usd_per_million' => 2.00,
+                'output_usd_per_million' => 12.00,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'vision'],
+                'tags' => [],
+                'fallbacks' => [],
+                'sort_order' => 130,
+            ],
         ],
     ],
 
@@ -243,24 +469,55 @@ return [
     | Chat
     |--------------------------------------------------------------------------
     |
-    | The shared DEFAULT chat model for the fleet (DECISIONS.md #21). Every
-    | app inherits this slug unless it overrides it — through
-    | AI_KIT_CHAT_MODEL, through its own published config, or through an
-    | app-level setting that wins over config (uqucc's `AiSettings->chat_model`
-    | row does, and has to be migrated at adoption).
+    | The shared DEFAULT chat model for the fleet (DECISIONS.md #26, which
+    | supersedes #21). Every app inherits this slug and this effort; an app
+    | overrides only through AI_KIT_CHAT_MODEL or its own published config —
+    | NOT through a database row. uqucc's `AiSettings->chat_model` row was the
+    | reason a config change could look applied and change nothing, and #26
+    | deletes it.
     |
-    | The slug is PINNED by owner ruling, not chosen here: Google Gemini
-    | Flash Lite, the latest lite generation at ruling time (tools +
-    | reasoning + structured outputs + multimodal, 1M context). Cheaper prior
-    | generations (`google/gemini-3.1-flash-lite`,
-    | `google/gemini-2.5-flash-lite`) are the fallback candidates if cost or
-    | behaviour disappoints. Read it through `Catalog::chatModel()`; a model
-    | the catalog also declares picks up that entry's fallbacks and price cap.
+    | The slug is PINNED by owner ruling: `deepseek/deepseek-v4-flash`. It is
+    | the fleet's main chat brain — reasoning + tools + structured outputs,
+    | 1M context, and roughly 6x cheaper in and 25x cheaper out than the
+    | Gemini Flash Lite it replaces. Ruling #20's objection (no usable "low"
+    | effort, "high" crawls) was re-measured on 2026-08-24 and no longer
+    | holds: low/medium/high all answer in 4-6 s on the current build.
+    |
+    | `reasoning_effort` is 'medium' — the owner's "mid reasoning" call. It
+    | is shared because thinking quality is what makes the assistant usable
+    | for real students, not a per-app taste. Effort barely moves latency on
+    | this model, so there is no speed argument for dropping to 'low'.
+    |
+    | This model is TEXT-ONLY. Anything with an image goes to `vision.model`.
     |
     */
 
     'chat' => [
-        'model' => env('AI_KIT_CHAT_MODEL', 'google/gemini-3.5-flash-lite'),
+        'model' => env('AI_KIT_CHAT_MODEL', 'deepseek/deepseek-v4-flash'),
+        'reasoning_effort' => env('AI_KIT_CHAT_REASONING_EFFORT', 'medium'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Vision
+    |--------------------------------------------------------------------------
+    |
+    | The shared DEFAULT vision model for the fleet (DECISIONS.md #26b) — the
+    | "eyes only" pass that turns an image (a poster, a screenshot, a scanned
+    | transcript) into text or structured JSON. It is a SEPARATE decision from
+    | chat on purpose: the chat default is text-only, and vision work is
+    | bursty, cheap-per-call and quality-sensitive in Arabic.
+    |
+    | Pinned to `google/gemini-2.5-flash-lite` by owner ruling on cost: at
+    | $0.10/$0.40 per M it is the cheapest vision-capable model that still
+    | carries tools + structured outputs, 2.5x cheaper than the
+    | `google/gemini-3.1-flash-lite` that previously held the slot and which
+    | remains its declared fallback.
+    |
+    */
+
+    'vision' => [
+        'model' => env('AI_KIT_VISION_MODEL', 'google/gemini-2.5-flash-lite'),
     ],
 
     /*

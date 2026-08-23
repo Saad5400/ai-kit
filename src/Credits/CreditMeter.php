@@ -35,27 +35,30 @@ class CreditMeter
     ) {}
 
     /**
+     * Cost has exactly ONE source: what OpenRouter reported for the
+     * generation (DECISIONS.md #26c). The former `$estimatedCostUsd`
+     * price-table fallback is gone — an unreported cost is now waived as
+     * `no_cost` rather than guessed at, because charging a student real
+     * credits against a hand-maintained rate table we cannot reconcile is
+     * worse than occasionally serving a turn for free.
+     *
      * @param  mixed  $payer  passed through to the app's CreditDebitor untouched
-     * @param  float|null  $providerCostUsd  the provider-reported exact cost, preferred
-     * @param  float|null  $estimatedCostUsd  fallback estimate from declared prices
+     * @param  float|null  $providerCostUsd  the provider-reported exact cost
      * @param  array<string, mixed>  $meta  merged into the debit's meta
      */
     public function chargeTurn(
         mixed $payer,
         string $turnId,
         ?float $providerCostUsd,
-        ?float $estimatedCostUsd = null,
         ?string $costSource = null,
         bool $usedTools = true,
         bool $hasAttachments = false,
         bool $planOnly = false,
         array $meta = [],
     ): ChargeResult {
-        // Prefer the provider-reported cost; a present-but-null source
-        // defaults rather than dropping the charge over a missing string.
-        [$cost, $source] = $providerCostUsd !== null && $providerCostUsd > 0
-            ? [$providerCostUsd, $costSource ?? 'provider_usage']
-            : [$estimatedCostUsd, 'estimated'];
+        // A present-but-null source defaults rather than dropping the charge
+        // over a missing string.
+        [$cost, $source] = [$providerCostUsd, $costSource ?? 'provider_usage'];
 
         if ($cost === null || $cost <= 0) {
             return ChargeResult::waived('no_cost');

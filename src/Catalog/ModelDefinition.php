@@ -7,9 +7,9 @@ use Laravel\Ai\Responses\Data\Usage;
 /**
  * One model the app may route turns to. `id` is the provider-facing model
  * string (e.g. "google/gemini-3.5-flash" on OpenRouter) and the ONLY field
- * routing keys on. Prices are USD per one million tokens and may be null when
- * unknown — metering then relies on the provider-reported cost instead of
- * estimating. `fallbacks` lists model ids to fail over to, in declared order,
+ * routing keys on. Prices are USD per one million tokens, may be null when
+ * unknown, and are DISPLAY METADATA ONLY: metering always uses the
+ * provider-reported cost (DECISIONS.md #26c), never these. `fallbacks` lists model ids to fail over to, in declared order,
  * when this model is rate limited, overloaded, moderated, or over its context
  * window; they ride into the request as OpenRouter's `models` array, so the
  * failover happens upstream. Chains are explicit, never transitive: a
@@ -98,11 +98,20 @@ final class ModelDefinition
     }
 
     /**
-     * Estimate the USD cost of the given usage from declared prices, or null
-     * when either price is missing. OpenRouter counts reasoning tokens inside
-     * completion_tokens, so only prompt and completion enter the estimate.
+     * A DISPLAY-ONLY cost estimate from the declared prices — "this turn cost
+     * you about $0.002" — or null when either price is missing.
+     *
+     * NEVER bill from this (DECISIONS.md #26c). The declared prices are
+     * documentation that drifts the moment a provider re-rates a model;
+     * OpenRouter reports the real `usage.cost` on every generation and that
+     * is the only figure allowed to move credits. The deliberately awkward
+     * name is the guard rail: it used to be `estimatedCostUsd()` and it was
+     * silently wired into the billing path.
+     *
+     * OpenRouter counts reasoning tokens inside completion_tokens, so only
+     * prompt and completion enter the estimate.
      */
-    public function estimatedCostUsd(Usage $usage): ?float
+    public function displayCostEstimateUsd(Usage $usage): ?float
     {
         if ($this->inputUsdPerMillion === null || $this->outputUsdPerMillion === null) {
             return null;

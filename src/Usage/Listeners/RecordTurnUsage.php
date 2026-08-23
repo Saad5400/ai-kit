@@ -6,7 +6,6 @@ use Illuminate\Support\Facades\Context;
 use Laravel\Ai\Events\AgentPrompted;
 use Laravel\Ai\Events\AgentStreamed;
 use Laravel\Ai\Models\Conversation;
-use Saad\AiKit\Catalog\CatalogSource;
 use Saad\AiKit\Gateway\SpendCollector;
 use Saad\AiKit\Support\TurnContext;
 use Saad\AiKit\Usage\Events\TurnUsageRecorded;
@@ -14,17 +13,23 @@ use Saad\AiKit\Usage\TraceLogger;
 use Saad\AiKit\Usage\UsageEvent;
 
 /**
- * Writes the canonical usage row when a turn completes, sourcing the exact
- * provider cost from the spend collector and falling back to a catalog
- * price estimate. Metering must never break a turn: failures are reported
- * and swallowed.
+ * Writes the canonical usage row when a turn completes.
+ *
+ * Cost comes from ONE place: the exact `usage.cost` OpenRouter reports for
+ * the generation, captured by the spend collector. There is no price-table
+ * fallback (DECISIONS.md #26c) — the provider already tells us what the turn
+ * cost, and a hand-maintained per-million table can only ever drift away from
+ * that truth and then quietly bill the difference. A turn whose cost the
+ * provider did not report records `cost_usd` NULL with no `cost_source`, and
+ * downstream billing waives it rather than guessing.
+ *
+ * Metering must never break a turn: failures are reported and swallowed.
  */
 class RecordTurnUsage
 {
     public function __construct(
         protected SpendCollector $spend,
         protected TraceLogger $trace,
-        protected ?CatalogSource $catalog = null,
     ) {}
 
     public function handle(AgentPrompted $event): void
@@ -43,11 +48,6 @@ class RecordTurnUsage
         [$durationMs, $ttftMs] = TurnContext::consume($event->invocationId);
 
         $costSource = $cost !== null ? 'provider' : null;
-
-        if ($cost === null && ($definition = $this->catalog?->find($model)) !== null) {
-            $cost = $definition->estimatedCostUsd($usage);
-            $costSource = $cost !== null ? 'estimated' : null;
-        }
 
         $usageEvent = UsageEvent::create([
             'invocation_id' => $event->invocationId,

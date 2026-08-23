@@ -53,15 +53,15 @@ it('builds model definitions from config', function () {
         ->and($catalog->find('unknown/model'))->toBeNull();
 });
 
-it('estimates cost from declared prices and returns null when prices are missing', function () {
+it('estimates a display-only cost from declared prices and returns null when prices are missing', function () {
     $priced = new ModelDefinition('m', inputUsdPerMillion: 1.0, outputUsdPerMillion: 10.0);
     $unpriced = new ModelDefinition('m', inputUsdPerMillion: 1.0);
 
     // Reasoning tokens are already inside completion_tokens on OpenRouter.
     $usage = new Usage(promptTokens: 500_000, completionTokens: 100_000, reasoningTokens: 90_000);
 
-    expect($priced->estimatedCostUsd($usage))->toEqualWithDelta(1.5, 0.0000001)
-        ->and($unpriced->estimatedCostUsd($usage))->toBeNull();
+    expect($priced->displayCostEstimateUsd($usage))->toEqualWithDelta(1.5, 0.0000001)
+        ->and($unpriced->displayCostEstimateUsd($usage))->toBeNull();
 });
 
 it('turns a declared chain into the OpenRouter models array, itself first', function () {
@@ -123,6 +123,12 @@ it('resolves a model by its canonical slug as well as its routing id', function 
 it('feeds cheapest and smartest declarations into the provider config', function () {
     catalogConfig([], ['cheapest' => 'cheap/model', 'smartest' => 'smart/model']);
 
+    // The shipped catalog now declares both, and the app's first boot already
+    // wrote them through — the provider deliberately never overwrites a value
+    // that is already set, so clear them to observe this catalog's own boot.
+    config()->set('ai.providers.openrouter.models.text.cheapest', null);
+    config()->set('ai.providers.openrouter.models.text.smartest', null);
+
     rebootCatalog();
 
     expect(config('ai.providers.openrouter.models.text.cheapest'))->toBe('cheap/model')
@@ -130,14 +136,78 @@ it('feeds cheapest and smartest declarations into the provider config', function
 });
 
 it('serves the fleet default chat model, and lets an app override it', function () {
-    // DECISIONS.md #21: the kit carries the shared default; apps inherit it
+    // DECISIONS.md #26: the kit carries the shared default; apps inherit it
     // unless they say otherwise, so the published config's own value is what
     // a fresh app gets.
     $catalog = new Catalog(app(CatalogSource::class));
 
-    expect($catalog->chatModel())->toBe('google/gemini-3.5-flash-lite');
+    expect($catalog->chatModel())->toBe('deepseek/deepseek-v4-flash');
 
     config()->set('ai-kit.chat.model', 'google/gemini-3.1-flash-lite');
 
     expect($catalog->chatModel())->toBe('google/gemini-3.1-flash-lite');
+});
+
+/*
+ * The shipped catalog is the fleet's shared registry (DECISIONS.md #26).
+ * These guard the defaults themselves, not the machinery around them: the
+ * whole point of #26 is that apps stop carrying their own copies, so a
+ * regression here is a regression in every app at once.
+ */
+
+it('ships the ruled shared chat and vision defaults', function () {
+    $catalog = app(Catalog::class);
+
+    expect($catalog->chatModel())->toBe('deepseek/deepseek-v4-flash')
+        ->and($catalog->chatReasoningEffort())->toBe('medium')
+        ->and($catalog->visionModel())->toBe('google/gemini-2.5-flash-lite');
+});
+
+it('keeps the chat default text-capable and the vision default vision-capable', function () {
+    $catalog = app(Catalog::class);
+
+    $chat = $catalog->find($catalog->chatModel());
+    $vision = $catalog->find($catalog->visionModel());
+
+    // The chat default is text-only on OpenRouter; routing an image at it
+    // fails rather than degrades, which is why the two are separate keys.
+    expect($chat)->not->toBeNull()
+        ->and($chat->supports('vision'))->toBeFalse()
+        ->and($chat->supports('tools'))->toBeTrue()
+        ->and($chat->supports('reasoning'))->toBeTrue()
+        ->and($vision)->not->toBeNull()
+        ->and($vision->supports('vision'))->toBeTrue();
+});
+
+it('recommends exactly one shipped model per declared task', function () {
+    $catalog = app(Catalog::class);
+
+    $tasks = $catalog->models()
+        ->flatMap(fn (ModelDefinition $model): array => $model->tasks)
+        ->unique();
+
+    expect($tasks)->not->toBeEmpty();
+
+    foreach ($tasks as $task) {
+        $recommended = $catalog->forTask($task)
+            ->filter(fn (ModelDefinition $model): bool => $model->isRecommended());
+
+        expect($recommended->count())
+            ->toBe(1, "task '{$task}' must have exactly one recommended model");
+    }
+
+    expect($catalog->recommendedFor('chat')->id)->toBe('deepseek/deepseek-v4-flash')
+        ->and($catalog->recommendedFor('vision')->id)->toBe('google/gemini-2.5-flash-lite');
+});
+
+it('declares a fallback chain that resolves inside the shipped catalog', function () {
+    $catalog = app(Catalog::class);
+    $ids = $catalog->models()->map(fn (ModelDefinition $model): string => $model->id)->all();
+
+    foreach ($catalog->models() as $model) {
+        foreach ($model->fallbacks as $fallback) {
+            expect(in_array($fallback, $ids, true))
+                ->toBeTrue("{$model->id} falls back to undeclared {$fallback}");
+        }
+    }
 });

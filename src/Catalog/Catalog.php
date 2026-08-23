@@ -43,19 +43,46 @@ class Catalog
     }
 
     /**
-     * The fleet's default chat model id (DECISIONS.md #21) — what an app
+     * The fleet's default chat model id (DECISIONS.md #26) — what an app
      * dispatches a chat turn to when nothing more specific applies.
      *
-     * Resolution stays the app's: an app-level setting (uqucc keeps one in the
-     * database) wins over config, and config wins over nothing. This is the
-     * floor of that chain, shared so a model decision lands in one place
-     * instead of three, and it is deliberately a SLUG rather than a
-     * {@see ModelDefinition} — an app may prompt a model its catalog never
-     * declared, and `find()` is right there for the entry when it exists.
+     * Config is the WHOLE chain now. #26 retired the app-level database
+     * override that used to sit above this (uqucc's `AiSettings->chat_model`):
+     * a row that silently beat config meant a config change could look applied
+     * and change nothing, which is exactly how the fleet spent days answering
+     * students on the wrong model. An app that genuinely needs a different
+     * model sets AI_KIT_CHAT_MODEL or overrides the key in its own config.
+     *
+     * Deliberately a SLUG rather than a {@see ModelDefinition} — an app may
+     * prompt a model its catalog never declared, and `find()` is right there
+     * for the entry when it exists.
      */
     public function chatModel(): string
     {
-        return (string) config('ai-kit.chat.model', 'google/gemini-3.5-flash-lite');
+        return (string) config('ai-kit.chat.model', 'deepseek/deepseek-v4-flash');
+    }
+
+    /**
+     * The reasoning effort the fleet's chat turns ask for (DECISIONS.md #26).
+     * Shared rather than per-app: how hard the assistant thinks is what makes
+     * it usable for real students, not a per-app preference.
+     */
+    public function chatReasoningEffort(): string
+    {
+        return (string) config('ai-kit.chat.reasoning_effort', 'medium');
+    }
+
+    /**
+     * The fleet's default VISION model id (DECISIONS.md #26b) — the model an
+     * app sends images to.
+     *
+     * Separate from {@see chatModel()} by necessity, not taste: the pinned
+     * chat model is text-only on OpenRouter, so routing an image at it fails
+     * rather than degrades.
+     */
+    public function visionModel(): string
+    {
+        return (string) config('ai-kit.vision.model', 'google/gemini-2.5-flash-lite');
     }
 
     /**

@@ -14,6 +14,10 @@ abstract class DatabaseCatalogTestCase extends TestCase
         parent::resolveApplicationConfiguration($app);
 
         $app['config']->set('ai-kit.catalog.source', 'database');
+
+        // This suite asserts exact row counts and sync tallies, so it owns the
+        // whole menu rather than merging with the fleet's shipped catalog.
+        $app['config']->set('ai-kit.catalog.replace_shipped_models', true);
         $app['config']->set('ai-kit.catalog.models', [
             'test/flash' => [
                 'canonical_slug' => 'test/flash-0731',

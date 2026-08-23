@@ -101,7 +101,10 @@ recommendation at decision time.
     model ids stay per-app config, never hard-coded in the kit.
     *Superseded in part by #21 (2026-08-20): the kit now carries the shared
     DEFAULT model id; per-app overrides remain config.*
-21. **Shared default chat model — RULED 2026-08-20 (Saad)**: the kit ships a
+21. **Shared default chat model — RULED 2026-08-20 (Saad)** *(SUPERSEDED by #26 on
+    2026-08-24: the shared default is now `deepseek/deepseek-v4-flash`, Gemini Flash Lite
+    is demoted to the vision-only slot, and the uqucc DB override this entry tolerated is
+    deleted.)*: the kit ships a
     shared default chat model in its config; apps inherit it unless they
     explicitly override. All three apps default to **Google Gemini Flash
     Lite** — slug pinned `google/gemini-3.5-flash-lite` (latest lite
@@ -153,6 +156,37 @@ recommendation at decision time.
     rehydrated. (c) uqucc's layout stays as-is — full pages + copilot
     dialogs, NO sidebar conversion; ruling #23's resizable sidebar applies
     only to apps that already host the assistant in a sidebar.
+
+26. **Shared chat + vision models, and provider-only cost — RULED 2026-08-24 (Saad)**,
+    superseding #21 and closing #20. Trigger: uqucc had been answering real students on
+    Gemini Flash Lite, which Saad judged "just too stupid for real students"; a config
+    hotfix to DeepSeek appeared to land and changed nothing, because uqucc's
+    `AiSettings->chat_model` database row silently beat config.
+    (a) **Chat**: the fleet default is **`deepseek/deepseek-v4-flash`** at
+    `reasoning_effort: medium` ("deepseek mid reasoning"), shipped in the kit's
+    `ai-kit.chat.*`. #20's objection was re-measured on the current build and no longer
+    holds — low/medium/high all answer in 4–6 s, so effort is a quality dial, not a
+    latency one. Apps override through `AI_KIT_CHAT_MODEL` or their own published config
+    and **through nothing else**: the uqucc `AiSettings` model rows (`chat_model`,
+    `vision_model`, `embedding_model`) and their `/manage` fields are DELETED, because a
+    layer that can silently beat config is how this incident happened.
+    (b) **Vision**: a SEPARATE shared default, `ai-kit.vision.model` =
+    **`google/gemini-2.5-flash-lite`**, pinned on cost — the cheapest vision-capable
+    model that still does tools + structured outputs ($0.10/$0.40 per M, 2.5× cheaper
+    than the `google/gemini-3.1-flash-lite` it replaces, which stays its fallback). The
+    split is forced, not stylistic: the chat default is **text-only** on OpenRouter, so
+    an image routed at it fails outright. Gemini is for eyes, DeepSeek is for talking.
+    (c) **Cost is whatever OpenRouter says it is.** Hand-maintained per-million price
+    tables are DISPLAY METADATA ONLY and may never price a turn: the estimate fallback is
+    gone from `RecordTurnUsage` and `CreditMeter`, an unreported cost records NULL and
+    waives rather than guessing, and `ModelDefinition::estimatedCostUsd()` is renamed
+    `displayCostEstimateUsd()` so the billing path cannot re-acquire it by accident.
+    (d) **The catalog is shared too**: the kit ships the fleet's model registry in
+    `ai-kit.catalog.models` (workhorses, vision tier, and the premium user-selectable
+    tier catodemy/s-grade expose). Because kit config deep-merges, apps inherit it and
+    may add to it by key; an app that must own the whole menu sets
+    `catalog.replace_shipped_models`. Future model changes happen HERE and reach the apps
+    through a version bump, never by editing three configs.
 
 ## Deviation ledger
 

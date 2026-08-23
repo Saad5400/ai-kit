@@ -29,22 +29,23 @@ it('charges a tool-using turn under debit:turn:{id} with cost meta', function ()
     ]);
 });
 
-it('prefers provider cost, falling back to the estimate as estimated', function () {
+it('bills the provider-reported cost and waives an unreported one rather than estimating', function () {
     [$meter, $debitor] = meter();
 
-    $fromProvider = $meter->chargeTurn('user:1', 'turn-1', providerCostUsd: 0.01, estimatedCostUsd: 0.5);
-    $fromEstimate = $meter->chargeTurn('user:1', 'turn-2', providerCostUsd: null, estimatedCostUsd: 0.01);
+    $reported = $meter->chargeTurn('user:1', 'turn-1', providerCostUsd: 0.01);
+    $unreported = $meter->chargeTurn('user:1', 'turn-2', providerCostUsd: null);
 
-    expect($fromProvider->costUsd)->toBe(0.01)
-        ->and($fromEstimate->costSource)->toBe('estimated')
-        ->and($fromEstimate->costUsd)->toBe(0.01)
-        ->and($debitor->debits)->toHaveCount(2);
+    expect($reported->costUsd)->toBe(0.01)
+        ->and($reported->costSource)->toBe('provider_usage')
+        ->and($unreported->isWaived())->toBeTrue()
+        ->and($unreported->waiveReason)->toBe('no_cost')
+        ->and($debitor->debits)->toHaveCount(1);
 });
 
 it('waives when no cost resolves at all', function () {
     [$meter, $debitor] = meter();
 
-    $result = $meter->chargeTurn('user:1', 'turn-1', providerCostUsd: null, estimatedCostUsd: null);
+    $result = $meter->chargeTurn('user:1', 'turn-1', providerCostUsd: null);
 
     expect($result->isWaived())->toBeTrue()
         ->and($result->waiveReason)->toBe('no_cost');
