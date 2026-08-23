@@ -182,11 +182,18 @@ recommendation at decision time.
     waives rather than guessing, and `ModelDefinition::estimatedCostUsd()` is renamed
     `displayCostEstimateUsd()` so the billing path cannot re-acquire it by accident.
     (d) **The catalog is shared too**: the kit ships the fleet's model registry in
-    `ai-kit.catalog.models` (workhorses, vision tier, and the premium user-selectable
-    tier catodemy/s-grade expose). Because kit config deep-merges, apps inherit it and
-    may add to it by key; an app that must own the whole menu sets
-    `catalog.replace_shipped_models`. Future model changes happen HERE and reach the apps
-    through a version bump, never by editing three configs.
+    `ai-kit.catalog.models` — the 12 chat-tier models catodemy/s-grade expose in their
+    picker plus the two-model vision tier. Entries carry APP-FACING fields the kit never
+    interprets (`key`, `company`, `variant`, `tier`, `effort`,
+    `cache_read_usd_per_million`), preserved into `ModelDefinition::$extra` so catodemy
+    builds its `ai_models` rows from the shared list instead of its own copy. `key` is a
+    stable app-side identifier — user selections and `assistant.default_model_key`
+    reference it, so renaming one is a data migration. The `recommended` tag moves off
+    `gemini-lite` onto `deepseek-fast` in the same stroke: catodemy was recommending the
+    same Flash Lite that made uqucc's replies too weak. Because kit config deep-merges,
+    apps inherit the list and may add to it by key; an app that must own the whole menu
+    sets `catalog.replace_shipped_models`. Future model changes happen HERE and reach the
+    apps through a version bump, never by editing three configs.
 
 ## Deviation ledger
 

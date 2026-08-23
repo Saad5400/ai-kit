@@ -242,3 +242,23 @@ it('carries company and variant through the shipped catalog', function () {
     expect($chat->extra['company'])->toBe('DeepSeek')
         ->and($chat->extra['variant'])->toBe('fast');
 });
+
+it('gives every shipped model a unique, stable app key', function () {
+    // Consuming apps store `key` against user selections and defaults
+    // (catodemy's `assistant.default_model_key`), so a missing or duplicated
+    // one silently breaks a picker rather than failing loudly here.
+    $keys = app(Catalog::class)->models()
+        ->map(fn (ModelDefinition $model): ?string => $model->extra['key'] ?? null)
+        ->all();
+
+    expect($keys)->not->toContain(null)
+        ->and(array_unique($keys))->toHaveCount(count($keys));
+});
+
+it('prices every shipped model for display, including the cached-read rate', function () {
+    foreach (app(Catalog::class)->models() as $model) {
+        expect($model->inputUsdPerMillion)->toBeGreaterThan(0)
+            ->and($model->outputUsdPerMillion)->toBeGreaterThan(0)
+            ->and($model->extra['cache_read_usd_per_million'] ?? null)->not->toBeNull();
+    }
+});
