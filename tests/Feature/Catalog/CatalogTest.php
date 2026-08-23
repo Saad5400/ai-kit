@@ -211,3 +211,34 @@ it('declares a fallback chain that resolves inside the shipped catalog', functio
         }
     }
 });
+
+it('preserves app-facing catalog keys the kit does not model itself', function () {
+    // The shared catalog carries fields only the consuming app understands
+    // (company, variant, tier, effort). Dropping them would be a silent
+    // failure: the config reads correctly and the value never arrives.
+    catalogConfig([
+        'test/model' => [
+            'label' => 'Test',
+            'company' => 'DeepSeek',
+            'variant' => 'fast',
+            'effort' => 'medium',
+            'extra' => ['already' => 'explicit'],
+        ],
+    ], ['replace_shipped_models' => true]);
+
+    $model = app(CatalogSource::class)->find('test/model');
+
+    expect($model->label)->toBe('Test')
+        ->and($model->extra['company'])->toBe('DeepSeek')
+        ->and($model->extra['variant'])->toBe('fast')
+        ->and($model->extra['effort'])->toBe('medium')
+        ->and($model->extra['already'])->toBe('explicit')
+        ->and($model->extra)->not->toHaveKey('label');
+});
+
+it('carries company and variant through the shipped catalog', function () {
+    $chat = app(Catalog::class)->find('deepseek/deepseek-v4-flash');
+
+    expect($chat->extra['company'])->toBe('DeepSeek')
+        ->and($chat->extra['variant'])->toBe('fast');
+});

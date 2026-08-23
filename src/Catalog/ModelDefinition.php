@@ -34,6 +34,18 @@ use Laravel\Ai\Responses\Data\Usage;
 final class ModelDefinition
 {
     /**
+     * The keys {@see fromArray} maps onto real properties. Everything else in
+     * a catalog entry lands in `extra`.
+     *
+     * @var list<string>
+     */
+    private const MODELLED_KEYS = [
+        'canonical_slug', 'label', 'input_usd_per_million', 'output_usd_per_million',
+        'context_length', 'capabilities', 'tasks', 'tags', 'fallbacks',
+        'provider_max_price', 'extra',
+    ];
+
+    /**
      * @param  list<string>  $capabilities
      * @param  list<string>  $tasks
      * @param  list<string>  $tags
@@ -73,7 +85,15 @@ final class ModelDefinition
             tags: array_values($data['tags'] ?? []),
             fallbacks: array_values($data['fallbacks'] ?? []),
             providerMaxPrice: $data['provider_max_price'] ?? null,
-            extra: $data['extra'] ?? [],
+            // Anything the kit does not model itself is preserved rather than
+            // dropped: the shared catalog carries app-facing fields (company,
+            // variant, tier, effort, display names) that only the consuming app
+            // understands, and a definition that silently loses them is a
+            // footgun — the config looks right and the value never arrives.
+            extra: array_merge(
+                array_diff_key($data, array_flip(self::MODELLED_KEYS)),
+                $data['extra'] ?? [],
+            ),
         );
     }
 
