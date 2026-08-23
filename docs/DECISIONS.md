@@ -142,6 +142,18 @@ recommendation at decision time.
     + `upsert()`, mapper coalescing + `ToolProgress` + `TurnRunner`, and the
     `tool.progress` wire field + chip progress bar + `resume.ts` client-side.
 
+25. **Chat attachments are durable history — RULED 2026-08-23 (Saad)**:
+    (a) catodemy's attachment retention prunes the BYTES only (7-day window
+    unchanged, disk protected); the row survives with a `pruned_at` stamp and
+    the chat renders a disabled "expired" chip with real copy — a thread must
+    never silently lose a file it visibly carried. (b) uqucc gets the same
+    sent-message attachment treatment catodemy shipped in its #578:
+    message-level attribution, attachments in the thread contract, an
+    owner-only download route (404 posture), client rendering live +
+    rehydrated. (c) uqucc's layout stays as-is — full pages + copilot
+    dialogs, NO sidebar conversion; ruling #23's resizable sidebar applies
+    only to apps that already host the assistant in a sidebar.
+
 ## Deviation ledger
 
 | Shipped (v0.3.x / PR #127–#128) | Owner ruling 2026-08-17 | Resolution |
