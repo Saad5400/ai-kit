@@ -195,6 +195,39 @@ recommendation at decision time.
     sets `catalog.replace_shipped_models`. Future model changes happen HERE and reach the
     apps through a version bump, never by editing three configs.
 
+27. **On-demand attachment reads + the prompt envelope — RULED 2026-08-25 (Saad)**,
+    extending #25. Trigger: a catodemy prod user reopened the browser and saw
+    their own chat bubble carrying the FULL extracted text of the slide deck
+    they had attached — and the admin ledger and every replayed model turn
+    carried the same wall, because the extraction was baked into the stored
+    user message (the prompt IS the stored message).
+    (a) **No auto-extraction.** A turn persists its files and hands the model
+    an INVENTORY (ids + names only); content is fetched on demand through an
+    app-side `read_attachment` tool whose description carries the usage
+    policy: read only when the request requires the content — translating a
+    file or filing it into a bank uses the original bytes and needs no read.
+    The tool's extraction internals are the kit's `Attachments` module
+    (`ExtractionRouter`/`ExtractionCache`), so scanned PDFs and images route
+    to vision and repeat reads of identical bytes never re-parse. The kit
+    still never makes the vision call — the app owns its vision agent and its
+    metering (#26b picks the model).
+    (b) **`Conversations\UserPromptEnvelope` (kit v0.10.1)** is the ONE wrap +
+    ONE display strip for context-carrying turns: `wrap()` = kit header, app
+    context blocks, sentinel, the user's words last; `displayText()` inverts
+    it, cutting at the LAST sentinel but only for content that BEGINS with a
+    recognized header (the kit's own, or app-named legacy openers), so organic
+    text containing "User message:" is never truncated. Every reader of
+    user-role rows pairs it with `ConversationContent::reveal()` — legacy
+    envelopes already stored in prod threads clean up at display time with no
+    data migration.
+    (c) **Sheet open-state is ephemeral**: the assistant panel's open flag
+    belongs to the current tab's live SPA session — never persisted, so a full
+    load, new tab, or later visit starts closed; the conversation id (and #25's
+    durable attachments) still survive restarts.
+    Catodemy adopted all three the same day; s-grade and uqucc pick them up on
+    their next kit bump — the inventory builder and the tool's tenancy stay
+    app glue by design.
+
 ## Deviation ledger
 
 | Shipped (v0.3.x / PR #127–#128) | Owner ruling 2026-08-17 | Resolution |
