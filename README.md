@@ -166,6 +166,22 @@ return $agent->continue($decisions);      // guarded arguments only
 
 Resuming on a queue? A closure cannot travel in a job payload, so guard in the request and dispatch the plain result — `ResumeDecisions::guarded($input, $cards->editGuard($pending))` returns the same client-shaped decisions with every edit reconciled, having round-tripped them through `fromClient()` so an unreadable shape throws in the request rather than in the job. The job then resumes with a bare `fromClient($guarded)`.
 
+### A card without a form
+
+Not every surface can render a form. `ApprovalCards::text($approval, $locale)` returns the same card as plain text — one fact per line: the title, the tool's human label (dropped when it only repeats the title), a warning line when the call is destructive, `• Label: value` per visible argument, the tool's preview lines, then the reason:
+
+```
+إنشاء فصل «المصفوفات»
+الأداة: Upsert Chapter
+• المسار: الأساسيات
+• مجاني: لا
+السبب: يُنشئ محتوى في مقرر منشور.
+```
+
+It is the same server-derived payload `card()` builds, so a text surface inherits the same guarantee — the classification, the title and the preview come from the tool instance, never from the model. Hidden fields, readonly identity fields (`track_id`), arguments the model left out and a preview line that only repeats the title are all left out, mirroring what the web card does with them; values are flattened to one line and capped at 160 characters. An `AskUser` pause renders as the question and its suggested answers.
+
+**Plain text means plain text**: no HTML, no Markdown, no escaping. The transport that adds markup escapes it — Telegram's HTML parse mode included. `$locale` switches the whole rendering (the kit's copy and the app copy the tool resolves) and switches back, so a queue worker running under `en` can still render an Arabic card.
+
 `AskUser` participates: its `answer` is the one editable field, so the model's own `question` and `options` are restored from the pause rather than taken from the client. Its schema takes optional `options` (2–4 suggested answers, sanitized and capped server-side) and the tool description tells the model to send them only when the answer space is enumerable.
 
 ## Frontend layer
