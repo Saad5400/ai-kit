@@ -120,7 +120,8 @@ describe('LanguageMatches', function () use ($done) {
         $v = (new LanguageMatches)->grade(BenchFixtures::run([$done('ورقة بخيارات A–D، وماسح OMR، ومنصة S-Grade؟ كل شيء جاهز للطباعة الآن.')]));
 
         expect($v->status)->toBe('pass')
-            ->and(TextScrub::gluedScripts('خيارات A، و OMR؟ لكن Letني خطأ'))->toBe(['Letني']);
+            ->and(TextScrub::gluedScripts('خيارات A، و OMR؟ لكن Letني خطأ'))->toBe(['Letني'])
+            ->and(TextScrub::gluedScripts('أضفت وCLOs وربطتها بPython (النموذج وB) لكن الcourse خطأ'))->toBe(['الcourse']);
     });
 
     it('passes when a paused turn has no prose', function () {

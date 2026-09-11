@@ -3,6 +3,12 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.12.2
+
+- Bench: `LanguageMatches` accepts one-letter Arabic proclitics glued to a Latin token («وCLOs», «بPython»)
+  and defaults to a 50% script-ratio threshold, so replies that legitimately quote English material
+  (a Java rubric, tutorial slugs) are not failed for their language.
+
 ## 0.12.1
 
 - Bench: `LanguageMatches` no longer flags Arabic punctuation after a Latin token («A،», «OMR؟») as a

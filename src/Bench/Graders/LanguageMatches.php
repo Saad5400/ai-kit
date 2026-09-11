@@ -17,7 +17,7 @@ final class LanguageMatches extends AbstractGrader
     /**
      * @param  string|null  $language  override the scenario's expectedLanguage ('ar'|'en')
      */
-    public function __construct(private ?string $language = null, private float $threshold = 0.7, private bool $lastOnly = true) {}
+    public function __construct(private ?string $language = null, private float $threshold = 0.5, private bool $lastOnly = true) {}
 
     public function grade(ScenarioRun $run): Verdict
     {
