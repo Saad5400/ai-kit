@@ -19,6 +19,7 @@ class GatewayFactory
         array $config = [],
         ?ModelCircuitBreaker $breaker = null,
         ?ModelRouting $routing = null,
+        array $chat = [],
     ): ReasoningOpenRouterGateway {
         return new ReasoningOpenRouterGateway(
             app('events'),
@@ -26,6 +27,7 @@ class GatewayFactory
             array_replace_recursive(config('ai-kit.gateway'), $config),
             $breaker,
             $routing,
+            array_replace_recursive(config('ai-kit.chat', []), $chat),
         );
     }
 

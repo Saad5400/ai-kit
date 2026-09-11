@@ -592,11 +592,43 @@ return [
     |
     | This model is TEXT-ONLY. Anything with an image goes to `vision.model`.
     |
+    | `max_steps` is the recommended step budget for a chat agent — read it
+    | through `Saad\AiKit\Agents\StepBudget::default()` from the agent's
+    | `maxSteps()`. A step is one model invocation; the LAST step is always
+    | sent without tools plus the answer-now nudge (`gateway.final_step`), so
+    | the budget is "tool rounds + 1" and a turn can never end on an
+    | unexecuted tool call. 12 leaves ~11 tool rounds, above what any
+    | observed teacher request needed while still bounding a runaway loop.
+    |
+    | `wrap_up` is the step guard's guaranteed final answer (StepGuard):
+    | `on_exhaustion` appends a tool-less answer-now completion when the
+    | final step STILL ended in tool calls (withholding off); `on_blank_final`
+    | does the same when a step that followed tool results (or a stripped
+    | markup leak) came back with empty text — the "it narrated, then went
+    | silent" thread. Either runs INSIDE the same step, so the persisted
+    | assistant message carries the answer and the wrap-up's cost is recorded
+    | like any other invocation. `instruction` is the nudge sent to the model
+    | — null uses `gateway.final_step.message`; a literal string or a lang
+    | key overrides it; `WrapUpInstruction::using()` is the closure seam.
+    |
+    | `reasoning_on_tool_steps` — when false, the `reasoning` request field
+    | is dropped on steps that follow tool results, for benchmarking the
+    | "reasoning off for agentic turns" advice on the DeepSeek card. The
+    | default keeps today's behaviour (ruling #26a: effort is not dialled
+    | down by the kit).
+    |
     */
 
     'chat' => [
         'model' => env('AI_KIT_CHAT_MODEL', 'deepseek/deepseek-v4-flash'),
         'reasoning_effort' => env('AI_KIT_CHAT_REASONING_EFFORT', 'medium'),
+        'max_steps' => (int) env('AI_KIT_CHAT_MAX_STEPS', 12),
+        'reasoning_on_tool_steps' => true,
+        'wrap_up' => [
+            'on_exhaustion' => true,
+            'on_blank_final' => true,
+            'instruction' => null,
+        ],
     ],
 
     /*

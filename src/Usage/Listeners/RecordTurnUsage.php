@@ -47,6 +47,11 @@ class RecordTurnUsage
         [$cost, $generationIds] = $this->collectSpend();
         [$durationMs, $ttftMs] = TurnContext::consume($event->invocationId);
 
+        // What the gateway's step guard observed this turn — a wrap-up
+        // completion and why, a stripped markup leak, a salvaged or retried
+        // step — so the bench can count the turns that needed rescuing.
+        $flags = TurnContext::consumeFlags();
+
         $costSource = $cost !== null ? 'provider' : null;
 
         $usageEvent = UsageEvent::create([
@@ -70,6 +75,7 @@ class RecordTurnUsage
             'duration_ms' => $durationMs,
             'ttft_ms' => $ttftMs,
             'status' => $response->hasPendingApprovals() ? 'paused' : 'ok',
+            'context' => $flags !== [] ? $flags : null,
             'created_at' => now(),
         ]);
 
