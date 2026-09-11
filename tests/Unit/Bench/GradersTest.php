@@ -20,6 +20,7 @@ use Saad\AiKit\Bench\Graders\ToolCallsAtMost;
 use Saad\AiKit\Bench\Graders\ToolErrorsAtMost;
 use Saad\AiKit\Bench\Graders\ToolsCalled;
 use Saad\AiKit\Bench\Graders\WallUnder;
+use Saad\AiKit\Bench\Support\TextScrub;
 use Saad\AiKit\Bench\Support\ToolName;
 use Saad\AiKit\Bench\Verdict;
 use Saad\AiKit\Testing\FakeTurnDriver;
@@ -113,6 +114,13 @@ describe('LanguageMatches', function () use ($done) {
 
         expect($v->status)->toBe('fail')
             ->and($v->evidence['glued'])->toContain('Letني');
+    });
+
+    it('does not treat Arabic punctuation after a Latin token as a glued script', function () use ($done) {
+        $v = (new LanguageMatches)->grade(BenchFixtures::run([$done('ورقة بخيارات A–D، وماسح OMR، ومنصة S-Grade؟ كل شيء جاهز للطباعة الآن.')]));
+
+        expect($v->status)->toBe('pass')
+            ->and(TextScrub::gluedScripts('خيارات A، و OMR؟ لكن Letني خطأ'))->toBe(['Letني']);
     });
 
     it('passes when a paused turn has no prose', function () {

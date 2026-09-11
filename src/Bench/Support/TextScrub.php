@@ -37,7 +37,9 @@ final class TextScrub
      */
     public static function gluedScripts(string $text): array
     {
-        preg_match_all('/\S*(?:\p{Latin}\p{Arabic}|\p{Arabic}\p{Latin})\S*/u', $text, $matches);
+        // Letters only on both sides: an Arabic comma or question mark after a
+        // Latin token («A،», «OMR؟») is ordinary punctuation, not a slip.
+        preg_match_all('/\S*(?:(?=\p{L})\p{Latin}(?=\p{L})\p{Arabic}|(?=\p{L})\p{Arabic}(?=\p{L})\p{Latin})\S*/u', $text, $matches);
 
         return array_values(array_unique($matches[0]));
     }

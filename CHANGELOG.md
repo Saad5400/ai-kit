@@ -3,6 +3,11 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.12.1
+
+- Bench: `LanguageMatches` no longer flags Arabic punctuation after a Latin token («A،», «OMR؟») as a
+  mixed-script slip — only letter-to-letter gluing («Letني») fails.
+
 ## 0.12.0
 
 - **Bench module** (`ai-kit.modules.bench`, off by default): `Saad\AiKit\Bench` — the
