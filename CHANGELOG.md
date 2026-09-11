@@ -3,6 +3,12 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.12.4
+
+- Conversations: `ReplyLanguage::detect()/hint()` — the dominant script of the user's message and the
+  one-line envelope hint that keeps a small model answering in that language instead of drifting to
+  the language of its tool results.
+
 ## 0.12.3
 
 - Approvals: a bare rejection on an approval card now carries a model-facing result
