@@ -3,6 +3,11 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.12.5
+
+- Conversations: `ReplyLanguage` judges the message by the majority script (55%), so a record name in the
+  other script («… مقرر Java Programming …») no longer hides the language.
+
 ## 0.12.4
 
 - Conversations: `ReplyLanguage::detect()/hint()` — the dominant script of the user's message and the

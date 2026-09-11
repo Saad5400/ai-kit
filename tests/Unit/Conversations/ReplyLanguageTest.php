@@ -9,7 +9,7 @@ it('detects the dominant script of a message', function (string $text, ?string $
     'arabic with a latin name' => ['سوي اختبار في مقرر Java Programming من ١٠ اسئلة', 'ar'],
     'english' => ['make a math quiz in the current course with 5 basic question', 'en'],
     'english with an arabic name' => ['add 10 questions to رياضيات ١٠١', 'en'],
-    'mixed' => ['create اختبار quiz رياضيات', null],
+    'mixed' => ['create اختبار', null],
     'one letter' => ['a', null],
     'url only' => ['https://example.com/app/courses/8', null],
 ]);

@@ -20,7 +20,7 @@ final class ReplyLanguage
     public const MIN_LETTERS = 3;
 
     /** The share of letters one script needs to count as the message's language. */
-    public const DOMINANCE = 0.7;
+    public const DOMINANCE = 0.55;
 
     /**
      * 'ar' or 'en' when one script clearly dominates the letters, else null.
