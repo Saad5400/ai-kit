@@ -1,9 +1,7 @@
 <?php
 
-use Illuminate\Auth\GenericUser;
 use Saad\AiKit\Bench\BenchRunner;
 use Saad\AiKit\Bench\DecisionPolicy;
-use Saad\AiKit\Bench\Grader;
 use Saad\AiKit\Bench\RunOptions;
 use Saad\AiKit\Bench\Scenario;
 use Saad\AiKit\Bench\ScenarioRun;
@@ -11,46 +9,7 @@ use Saad\AiKit\Bench\Turn;
 use Saad\AiKit\Bench\TurnRecord;
 use Saad\AiKit\Bench\Verdict;
 use Saad\AiKit\Testing\FakeTurnDriver;
-
-function benchActor(): GenericUser
-{
-    return new GenericUser(['id' => 7, 'name' => 'Teacher']);
-}
-
-function benchScenario(array $turns, array $graders = [], array $extra = []): Scenario
-{
-    return new Scenario(
-        name: $extra['name'] ?? 'test.scenario',
-        title: 'سيناريو اختبار',
-        turns: $turns,
-        graders: $graders,
-        tags: $extra['tags'] ?? ['test'],
-        seed: $extra['seed'] ?? fn () => ['course_id' => 42],
-        actor: array_key_exists('actor', $extra) ? $extra['actor'] : fn ($ctx) => benchActor(),
-        teardown: $extra['teardown'] ?? null,
-        expectedLanguage: $extra['expectedLanguage'] ?? 'ar',
-        maxCostUsd: $extra['maxCostUsd'] ?? null,
-        maxWallMs: $extra['maxWallMs'] ?? null,
-    );
-}
-
-function verdictGrader(string $name, Closure $fn): Grader
-{
-    return new class($name, $fn) implements Grader
-    {
-        public function __construct(private string $name, private Closure $fn) {}
-
-        public function name(): string
-        {
-            return $this->name;
-        }
-
-        public function grade(ScenarioRun $run): Verdict
-        {
-            return ($this->fn)($run);
-        }
-    };
-}
+use Saad\AiKit\Tests\Support\BenchFixtures;
 
 it('runs multi-turn scenarios continuing the conversation id and hands graders the context', function () {
     $driver = new FakeTurnDriver([
@@ -59,9 +18,9 @@ it('runs multi-turn scenarios continuing the conversation id and hands graders t
     ]);
 
     $seen = null;
-    $scenario = benchScenario(
+    $scenario = BenchFixtures::scenario(
         [new Turn('أنشئ مقرر'), new Turn('أضف ثلاث شعب')],
-        [verdictGrader('ctx', function (ScenarioRun $run) use (&$seen) {
+        [BenchFixtures::grader('ctx', function (ScenarioRun $run) use (&$seen) {
             $seen = $run->context;
 
             return Verdict::pass('ctx');
@@ -94,7 +53,7 @@ it('auto-resumes approval cards with approveAll and rejectAll', function () {
             FakeTurnDriver::done('تم'),
         ]);
 
-        $run = (new BenchRunner($driver))->run([benchScenario([new Turn('احذف', onPause: $policy)])], new RunOptions)->runs[0];
+        $run = (new BenchRunner($driver))->run([BenchFixtures::scenario([new Turn('احذف', onPause: $policy)])], new RunOptions)->runs[0];
 
         expect($run->turns)->toHaveCount(2)
             ->and($run->turns[0]->isPaused())->toBeTrue()
@@ -114,7 +73,7 @@ it('answers question cards in order then falls back, approving approvals along t
     ]);
 
     $policy = DecisionPolicy::answer(['الفصل الأول', '٢٠٢٦']);
-    $run = (new BenchRunner($driver))->run([benchScenario([new Turn('أنشئ شعبة', onPause: $policy)])], new RunOptions)->runs[0];
+    $run = (new BenchRunner($driver))->run([BenchFixtures::scenario([new Turn('أنشئ شعبة', onPause: $policy)])], new RunOptions)->runs[0];
 
     $decides = $driver->callsTo('decide');
     expect($decides)->toHaveCount(3)
@@ -130,7 +89,7 @@ it('leaves the turn paused under DecisionPolicy::none and skips later turns', fu
         FakeTurnDriver::paused([['id' => 'a1', 'kind' => 'approval']]),
     ]);
 
-    $run = (new BenchRunner($driver))->run([benchScenario([
+    $run = (new BenchRunner($driver))->run([BenchFixtures::scenario([
         new Turn('احذف المقرر', onPause: DecisionPolicy::none()),
         new Turn('never sent'),
     ])], new RunOptions)->runs[0];
@@ -153,7 +112,7 @@ it('uses the custom policy closure and caps resume rounds at maxRounds', functio
         return ['q' => ['answer' => 'custom-'.$seen]];
     })->withMaxRounds(2);
 
-    $run = (new BenchRunner($driver))->run([benchScenario([new Turn('loop', onPause: $policy)])], new RunOptions)->runs[0];
+    $run = (new BenchRunner($driver))->run([BenchFixtures::scenario([new Turn('loop', onPause: $policy)])], new RunOptions)->runs[0];
 
     expect($seen)->toBe(2)
         ->and($driver->callsTo('decide'))->toHaveCount(2)
@@ -166,8 +125,8 @@ it('stops the bench when the total budget is exceeded and records the reason', f
     $driver = (new FakeTurnDriver)->respondWith(fn () => FakeTurnDriver::done('ok', [], 0.30));
 
     $report = (new BenchRunner($driver))->run([
-        benchScenario([new Turn('a'), new Turn('b')], extra: ['name' => 's.one']),
-        benchScenario([new Turn('c')], extra: ['name' => 's.two']),
+        BenchFixtures::scenario([new Turn('a'), new Turn('b')], extra: ['name' => 's.one']),
+        BenchFixtures::scenario([new Turn('c')], extra: ['name' => 's.two']),
     ], new RunOptions(maxTotalCostUsd: 0.50));
 
     expect($report->runs)->toHaveCount(1)
@@ -181,8 +140,8 @@ it('does not stop on budget when stopOnBudget is off', function () {
     $driver = (new FakeTurnDriver)->respondWith(fn () => FakeTurnDriver::done('ok', [], 0.30));
 
     $report = (new BenchRunner($driver))->run([
-        benchScenario([new Turn('a')], extra: ['name' => 's.one']),
-        benchScenario([new Turn('c')], extra: ['name' => 's.two']),
+        BenchFixtures::scenario([new Turn('a')], extra: ['name' => 's.one']),
+        BenchFixtures::scenario([new Turn('c')], extra: ['name' => 's.two']),
     ], new RunOptions(maxTotalCostUsd: 0.10, stopOnBudget: false));
 
     expect($report->runs)->toHaveCount(2)
@@ -194,13 +153,13 @@ it('isolates a driver crash into the run failure and keeps benching', function (
     $torn = [];
 
     $report = (new BenchRunner($driver))->run([
-        benchScenario([new Turn('a')], extra: ['name' => 's.ok', 'teardown' => function ($ctx) use (&$torn) {
+        BenchFixtures::scenario([new Turn('a')], extra: ['name' => 's.ok', 'teardown' => function ($ctx) use (&$torn) {
             $torn[] = 'ok';
         }]),
-        benchScenario([new Turn('b')], extra: ['name' => 's.crash', 'teardown' => function ($ctx) use (&$torn) {
+        BenchFixtures::scenario([new Turn('b')], extra: ['name' => 's.crash', 'teardown' => function ($ctx) use (&$torn) {
             $torn[] = 'crash';
         }]),
-        benchScenario([new Turn('c')], extra: ['name' => 's.no-actor', 'actor' => null]),
+        BenchFixtures::scenario([new Turn('c')], extra: ['name' => 's.no-actor', 'actor' => null]),
     ], new RunOptions);
 
     expect($report->runs)->toHaveCount(3)
@@ -214,10 +173,10 @@ it('isolates a driver crash into the run failure and keeps benching', function (
 it('turns a grader exception into a failed verdict and runs turn-scoped graders after each turn', function () {
     $driver = new FakeTurnDriver([FakeTurnDriver::done('one'), FakeTurnDriver::done('two')]);
 
-    $turnGrader = verdictGrader('turn.sees', fn (ScenarioRun $run) => Verdict::pass('turn.sees', (string) count($run->turns)));
-    $throwing = verdictGrader('boom', fn () => throw new LogicException('kaboom'));
+    $turnGrader = BenchFixtures::grader('turn.sees', fn (ScenarioRun $run) => Verdict::pass('turn.sees', (string) count($run->turns)));
+    $throwing = BenchFixtures::grader('boom', fn () => throw new LogicException('kaboom'));
 
-    $run = (new BenchRunner($driver))->run([benchScenario(
+    $run = (new BenchRunner($driver))->run([BenchFixtures::scenario(
         [new Turn('a', graders: [$turnGrader]), new Turn('b', graders: [$turnGrader])],
         [$throwing],
     )], new RunOptions)->runs[0];
@@ -235,7 +194,7 @@ it('turns a grader exception into a failed verdict and runs turn-scoped graders 
 it('stops after an errored turn and adds built-in cost and wall verdicts', function () {
     $driver = new FakeTurnDriver([FakeTurnDriver::errored('provider down')]);
 
-    $run = (new BenchRunner($driver))->run([benchScenario(
+    $run = (new BenchRunner($driver))->run([BenchFixtures::scenario(
         [new Turn('a'), new Turn('b')],
         extra: ['maxCostUsd' => 0.01, 'maxWallMs' => 1],
     )], new RunOptions)->runs[0];
@@ -251,7 +210,7 @@ it('repeats attempts and calls the lifecycle hooks in order', function () {
     $driver = (new FakeTurnDriver)->respondWith(fn () => FakeTurnDriver::done('ok'));
     $log = [];
 
-    $report = (new BenchRunner($driver))->run([benchScenario([new Turn('a')])], new RunOptions(
+    $report = (new BenchRunner($driver))->run([BenchFixtures::scenario([new Turn('a')])], new RunOptions(
         attempts: 3,
         beforeScenario: function (Scenario $s, int $attempt) use (&$log) {
             $log[] = "before:$attempt";
