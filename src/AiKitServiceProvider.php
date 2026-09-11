@@ -26,6 +26,7 @@ class AiKitServiceProvider extends ServiceProvider
         'safety' => Safety\SafetyServiceProvider::class,
         'rag' => Rag\RagServiceProvider::class,
         'credits' => Credits\CreditsServiceProvider::class,
+        'bench' => Bench\BenchServiceProvider::class,
     ];
 
     public function register(): void

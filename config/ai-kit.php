@@ -25,6 +25,7 @@ return [
         'safety' => true,
         'rag' => false,
         'credits' => false,
+        'bench' => false,
     ],
 
     /*
@@ -716,6 +717,56 @@ return [
             ? (int) env('AI_KIT_MAX_CONCURRENT_TURNS')
             : 3,
         'turn_ttl_seconds' => (int) env('AI_KIT_TURN_TTL_SECONDS', 600),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Bench
+    |--------------------------------------------------------------------------
+    |
+    | The scenario benchmark harness (`ai-kit:bench`). The app binds its own
+    | `Saad\AiKit\Bench\TurnDriver` and lists its ScenarioProvider classes
+    | here. Cost in reports is whatever the app's usage rows reported for
+    | the turn — never a static-table estimate (DECISIONS.md #26c). The
+    | narration patterns feed the NoNarration grader (apps extend the
+    | lists); `tool_error_markers` feed ToolErrorsAtMost. The LLM judge is
+    | off unless enabled — it spends real money.
+    |
+    */
+
+    'bench' => [
+        'providers' => [
+            // App\Ai\Bench\StructureScenarios::class,
+        ],
+        'output_dir' => env('AI_KIT_BENCH_OUTPUT_DIR', 'ai-kit/bench'),
+        'default_attempts' => 1,
+        'narration_patterns' => [
+            'ar' => ['دعني', 'دعوني', 'سأقوم', 'سأبدأ', 'لنبدأ', 'أولاً، دعني', 'أولا، دعني', 'خليني', 'سوف أقوم', 'سأتحقق أولاً'],
+            'en' => ['Let me', 'I\'ll start by', 'I will start by', 'First, I', 'I will now', 'I\'m going to', 'I am going to', 'Now I\'ll', 'Now I will'],
+        ],
+        'narration_fails' => false,
+        'tool_error_markers' => ['error', 'not permitted', 'failed', 'unauthorized', 'forbidden', 'exception', 'خطأ', 'غير مسموح', 'فشل'],
+        'placeholder_patterns' => [
+            '/\{[a-z_]*(url|link|id|name|href)[a-z_]*\}/iu',
+            '/\[(link|url|رابط)\]/iu',
+            '/https?:\/\/host\//i',
+            '/https?:\/\/(www\.)?example\.(com|org|net)/i',
+            '/<(id|url|link|name|activity_id|course_id)>/i',
+            '/\{\{[^}]+\}\}/u',
+        ],
+        'provider_markup_patterns' => [
+            '<｜DSML｜', '<|DSML|>', '<｜tool▁calls▁begin｜>', '<｜tool▁call▁begin｜>', '<｜tool▁sep｜>',
+            '<｜begin▁of▁sentence｜>', '<｜end▁of▁sentence｜>', '<｜User｜>', '<｜Assistant｜>',
+            '<tool_call>', '</tool_call>', '<|im_start|>', '<|im_end|>', '<think>', '</think>',
+            '<|start_header_id|>', '<|eot_id|>', '[TOOL_CALLS]', '<function_calls>', '</function_calls>',
+        ],
+        'step_exhaustion_markers' => ['maximum number of steps'],
+        'judge' => [
+            'enabled' => env('AI_KIT_BENCH_JUDGE_ENABLED', false),
+            'model' => env('AI_KIT_BENCH_JUDGE_MODEL'),
+            'provider' => env('AI_KIT_BENCH_JUDGE_PROVIDER', 'openrouter'),
+            'pass_at' => 4,
+        ],
     ],
 
 ];
