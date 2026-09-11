@@ -21,6 +21,7 @@ Toggled per app via `config/ai-kit.php` → `modules.*`:
 | `safety` | on | Central kill switch, `BudgetGuard`, concurrency caps, degraded mode |
 | `rag` | off | Hybrid retriever (pgvector + RRF), embedder/chunker |
 | `credits` | off | Generalized wallets, `CreditCalculator`, idempotent meter base |
+| `bench` | off | Scenario benchmark for tool-calling assistants: `TurnDriver` contract, `BenchRunner`, graders (+ optional LLM judge), pass@k JSON/Markdown report, `ai-kit:bench` — see [docs/BENCH.md](docs/BENCH.md) |
 
 `Saad\AiKit\Testing` ships fakes + exported contract test suites for apps (dev-only, not a toggle).
 
