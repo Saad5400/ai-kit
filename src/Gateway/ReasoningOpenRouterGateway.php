@@ -428,7 +428,37 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             $this->spend->recordCost($cost, streamed: false);
         }
 
-        return parent::parseTextResponse($data, $provider, $structured);
+        $step = parent::parseTextResponse($data, $provider, $structured);
+
+        // Same leak treatment as the streamed path: markup never reaches the
+        // caller's text, and what was stripped rides along for salvage.
+        $filter = $this->markupLeakFilter();
+        $text = $filter->push($step->text).$filter->flush();
+
+        return (new InspectedStepResponse(
+            text: $text,
+            toolCalls: $step->toolCalls,
+            finishReason: $step->finishReason,
+            usage: $step->usage,
+            meta: $step->meta,
+            structured: $step->structured,
+            continuationToken: $step->continuationToken,
+            providerContentBlocks: $step->providerContentBlocks,
+            pendingApprovals: $step->pendingApprovals,
+        ))->inspected(
+            $filter->leaked(),
+            $filter->removed(),
+            is_string($data['provider'] ?? null) ? $data['provider'] : null,
+        )->withRawResponse($step->raw);
+    }
+
+    /**
+     * A fresh sanitizer per step: it holds text between deltas, so it can
+     * never be shared across steps or turns.
+     */
+    protected function markupLeakFilter(): MarkupLeakFilter
+    {
+        return MarkupLeakFilter::fromConfig($this->config['markup_leak'] ?? []);
     }
 
     /**
@@ -455,16 +485,24 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         $usage = null;
         $finishReason = null;
 
-        // Fork state: reasoning re-emission + spend capture.
+        // Fork state: reasoning re-emission + spend capture + leak guard.
         $reasoningId = '';
         $inReasoning = false;
         $generationId = '';
         $openRouterCost = null;
+        $providerName = null;
+        $leakFilter = $this->markupLeakFilter();
 
         foreach ($this->parseServerSentEvents($streamBody) as $data) {
             // Every chunk carries the generation id; keep the latest.
             if (isset($data['id']) && is_string($data['id']) && $data['id'] !== '') {
                 $generationId = $data['id'];
+            }
+
+            // OpenRouter names the upstream it routed to on every chunk; a
+            // retry after a markup leak excludes that provider.
+            if (isset($data['provider']) && is_string($data['provider']) && $data['provider'] !== '') {
+                $providerName = $data['provider'];
             }
 
             if (isset($data['error'])) {
@@ -558,7 +596,15 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
                 ))->withInvocationId($invocationId);
             }
 
-            if (isset($delta['content']) && $delta['content'] !== '') {
+            // Content runs through the leak filter first: a marker and
+            // everything after it is swallowed (kept for salvage), a tail
+            // that might begin a marker is held for the next chunk, and a
+            // step whose text is nothing but markup never opens a text block.
+            $visible = isset($delta['content']) && $delta['content'] !== ''
+                ? $leakFilter->push($delta['content'])
+                : '';
+
+            if ($visible !== '') {
                 if (! $textStartEmitted) {
                     $textStartEmitted = true;
 
@@ -571,12 +617,12 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
                     ))->withInvocationId($invocationId);
                 }
 
-                $currentText .= $delta['content'];
+                $currentText .= $visible;
 
                 yield (new TextDelta(
                     $this->generateEventId(),
                     $messageId,
-                    $delta['content'],
+                    $visible,
                     time(),
                 ))->withInvocationId($invocationId);
             }
@@ -638,6 +684,31 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             ))->withInvocationId($invocationId);
         }
 
+        // Release a tail the filter was still holding (a `<` that never
+        // became a marker), then close the text block.
+        $tail = $leakFilter->flush();
+
+        if ($tail !== '') {
+            if (! $textStartEmitted) {
+                $textStartEmitted = true;
+
+                yield (new TextStart(
+                    $this->generateEventId(),
+                    $messageId,
+                    time(),
+                ))->withInvocationId($invocationId);
+            }
+
+            $currentText .= $tail;
+
+            yield (new TextDelta(
+                $this->generateEventId(),
+                $messageId,
+                $tail,
+                time(),
+            ))->withInvocationId($invocationId);
+        }
+
         if ($textStartEmitted) {
             yield (new TextEnd(
                 $this->generateEventId(),
@@ -675,13 +746,13 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             $this->spend->recordCost($openRouterCost, streamed: true);
         }
 
-        return new StepResponse(
+        return (new InspectedStepResponse(
             text: $currentText,
             toolCalls: $toolCalls,
             finishReason: $this->extractFinishReason(['finish_reason' => $finishReason ?? '']),
             usage: $usage ?? new Usage(0, 0),
             meta: new Meta($provider->name(), $streamModel),
-        );
+        ))->inspected($leakFilter->leaked(), $leakFilter->removed(), $providerName);
     }
 
     /**

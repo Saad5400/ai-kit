@@ -1,5 +1,7 @@
 <?php
 
+use Saad\AiKit\Gateway\MarkupLeakFilter;
+
 return [
 
     /*
@@ -38,6 +40,22 @@ return [
     | is sent to the model when tools are withheld on the last step; it is
     | model-facing text, so it ships bilingual rather than localized.
     |
+    | `markup_leak` guards the text channel against a provider that failed to
+    | parse the model's own tool-call grammar and streamed it as content
+    | (DeepSeek's `<｜DSML｜invoke …>` blocks on some OpenRouter upstreams).
+    | Text from the first `patterns` marker to the end of the step never
+    | reaches the client or the stored message. When the step parsed no
+    | structured tool call either, the gateway first tries to `salvage` the
+    | call out of the stripped block (intact DSML `invoke` blocks naming an
+    | offered tool run as if the provider had parsed them), else it
+    | re-requests the step ONCE (`retry`), excluding the upstream that
+    | leaked via OpenRouter's `provider.ignore` when the response named it
+    | (`ignore_provider`). What still comes back blank falls through to the
+    | `chat.wrap_up` guard. `require_parameters` sends OpenRouter's
+    | `provider.require_parameters` on steps that carry tools, so only
+    | upstreams that actually support tool calling serve them — the cheapest
+    | way to avoid the leak in the first place.
+    |
     */
 
     'gateway' => [
@@ -53,6 +71,14 @@ return [
             'message' => 'انتهت خطوات استخدام الأدوات. قدّم الآن إجابتك النهائية للمستخدم نصاً بناءً على ما توصلت إليه، وإن لم تجد المعلومة فقل ذلك صراحةً. '
                 .'Tool steps are over — write your complete final answer as plain text now; if the information was not found, say so plainly.',
         ],
+        'markup_leak' => [
+            'enabled' => true,
+            'salvage' => true,
+            'retry' => true,
+            'ignore_provider' => true,
+            'patterns' => MarkupLeakFilter::DEFAULT_PATTERNS,
+        ],
+        'require_parameters' => true,
 
         // Statuses that convert to ProviderOverloadedException after retries
         // are exhausted — the trigger for laravel/ai's own provider failover.
