@@ -220,19 +220,49 @@ export function createTimeline(segments: Segment[] = []): Timeline {
     }
 }
 
-/** A turn's thinking and tool calls, collapsed into one disclosure. */
+/**
+ * A turn's thinking, tool calls and the narration between them, collapsed
+ * into one disclosure. A `text` item here is narration — words the model
+ * wrote BEFORE it went on to call a tool ("let me look up your courses
+ * first") — never the reply; see {@link groupSegments}.
+ */
 export type ProcessGroup = {
     type: 'process'
-    items: Array<ThinkingSegment | ToolSegment>
+    items: Array<ThinkingSegment | ToolSegment | TextSegment>
 }
 
 export type SegmentGroup = TextSegment | CardSegment | ProcessGroup
 
+export type GroupOptions = {
+    /**
+     * Where text the model wrote before a later tool call goes.
+     *
+     * `'process'` (default): it is narration about the work — a step in the
+     * process — and joins the disclosure, so the reply bubble holds only what
+     * the model said once it was done. `'text'`: every text segment stays a
+     * top-level bubble in its original position (the pre-v0.11 rendering).
+     */
+    narration?: 'process' | 'text'
+}
+
 /**
  * Collapse the timeline into render groups: consecutive `thinking` and `tool`
  * segments become ONE `process` group — a single "steps" disclosure rather
- * than a disclosure per thought — while `text` and `card` segments stay
+ * than a disclosure per thought — while `card` segments and the REPLY stay
  * top-level in their original positions.
+ *
+ * NARRATION IS PROCESS. A model working with tools talks while it works:
+ * "لنبحث أولاً عن مقرراتك" and then a tool call, a result, and the answer.
+ * Rendered as two reply bubbles, that turn reads as an assistant that
+ * announced a search and then answered — or, when the turn went wrong, as an
+ * assistant that announced a search and stopped. The narration was a step
+ * in the process, so text that is FOLLOWED by a tool call anywhere later in
+ * the turn joins the process group (opening one if none is open), and only
+ * text with no tool call after it is the reply. The rule is over the whole
+ * timeline, so while a turn streams a text segment is a reply until the
+ * tool call that follows it arrives, then moves into the disclosure — the
+ * one visible reflow, and the correct one. `options.narration: 'text'`
+ * restores the old rendering.
  *
  * Cards are deliberately NOT swallowed into a process group: an approval card
  * is a decision surface the user has to reach, not a progress detail to hide
@@ -256,14 +286,29 @@ export type SegmentGroup = TextSegment | CardSegment | ProcessGroup
  * Pure — call it from a Vue `computed` / Svelte `$derived` over
  * `timeline.segments`.
  */
-export function groupSegments(segments: readonly Segment[]): SegmentGroup[] {
+export function groupSegments(segments: readonly Segment[], options: GroupOptions = {}): SegmentGroup[] {
     const groups: SegmentGroup[] = []
+    const narrationInProcess = (options.narration ?? 'process') === 'process'
 
-    for (const segment of segments) {
-        if (segment.type === 'text' || segment.type === 'card') {
+    // Index of the last tool segment: text before it is narration.
+    let lastTool = -1
+
+    if (narrationInProcess) {
+        for (let index = segments.length - 1; index >= 0; index--) {
+            if (segments[index].type === 'tool') {
+                lastTool = index
+                break
+            }
+        }
+    }
+
+    segments.forEach((segment, index) => {
+        const isNarration = segment.type === 'text' && index < lastTool
+
+        if (segment.type === 'card' || (segment.type === 'text' && !isNarration)) {
             groups.push(segment)
 
-            continue
+            return
         }
 
         const last = groups[groups.length - 1]
@@ -271,11 +316,11 @@ export function groupSegments(segments: readonly Segment[]): SegmentGroup[] {
         if (last?.type === 'process') {
             last.items.push(segment)
 
-            continue
+            return
         }
 
         groups.push({ type: 'process', items: [segment] })
-    }
+    })
 
     return groups
 }

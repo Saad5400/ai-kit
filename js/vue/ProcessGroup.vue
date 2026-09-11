@@ -5,9 +5,12 @@
  *
  * This replaces `ThinkingDisclosure` for the timeline model — a per-thought
  * disclosure fragments a turn that thought three times, and a chip row detached
- * from the thinking loses which thought preceded which call. Answer text never
- * appears in here: `groupSegments()` keeps `text` segments top-level, so a
- * settled answer is never hidden behind a summary.
+ * from the thinking loses which thought preceded which call. The REPLY never
+ * appears in here: `groupSegments()` keeps the text that follows the last tool
+ * call top-level, so a settled answer is never hidden behind a summary. What
+ * does appear is the model's narration — text it wrote before going on to call
+ * a tool ("let me look up your courses first") — rendered as a quiet line
+ * between the thinking and the chips, in item order.
  *
  * OPEN STATE. The parent decides `live`: pass `true` only while the turn is
  * streaming AND this is the last group. The disclosure then opens while live and
@@ -95,6 +98,7 @@ const onToggle = (event: Event): void => {
         <div class="ai-kit-process__body">
             <template v-for="(item, index) in items" :key="index">
                 <div v-if="item.type === 'thinking'" class="ai-kit-process__thinking" dir="auto">{{ item.text }}</div>
+                <div v-else-if="item.type === 'text'" class="ai-kit-process__narration" dir="auto">{{ item.text }}</div>
                 <ToolChip v-else :name="item.name" :status="item.status" :successful="item.successful" :progress="item.progress" />
             </template>
         </div>
@@ -102,6 +106,16 @@ const onToggle = (event: Event): void => {
 </template>
 
 <style scoped>
+/* Narration: the model's own words before a tool call — quieter than the
+   reply, but still prose, so it keeps the reply's font rather than the
+   thinking channel's smaller muted one. */
+.ai-kit-process__narration {
+    color: var(--ai-kit-process-narration, inherit);
+    opacity: 0.85;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 .ai-kit-process {
     color: var(--ai-kit-muted, color-mix(in oklab, currentColor 65%, transparent));
     font-size: var(--ai-kit-thinking-size, 0.8125rem);
