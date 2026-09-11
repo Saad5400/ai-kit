@@ -121,13 +121,13 @@ final class ResumeDecisions
     private static function decision(string $id, mixed $raw, ?Closure $guard): Decision
     {
         if (is_bool($raw)) {
-            return $raw ? Decision::approve() : Decision::reject();
+            return $raw ? Decision::approve() : self::rejected(null);
         }
 
         if (is_string($raw)) {
             return match ($raw) {
                 'approve' => Decision::approve(),
-                'reject' => Decision::reject(),
+                'reject' => self::rejected(null),
                 default => throw new InvalidArgumentException("Unknown approval decision [{$raw}] for tool call [{$id}]."),
             };
         }
@@ -135,7 +135,7 @@ final class ResumeDecisions
         if (is_array($raw)) {
             return match ($raw['action'] ?? null) {
                 'approve' => Decision::approve(),
-                'reject' => Decision::reject(isset($raw['reason']) ? (string) $raw['reason'] : null),
+                'reject' => self::rejected(isset($raw['reason']) ? (string) $raw['reason'] : null),
                 'edit' => self::edited($id, $raw['arguments'] ?? null, $guard),
                 default => throw new InvalidArgumentException("Unknown approval decision for tool call [{$id}]."),
             };
@@ -148,6 +148,24 @@ final class ResumeDecisions
      * @param  array<string, mixed>|null  $arguments
      * @param  (Closure(string, array<string, mixed>): array<string, mixed>)|null  $guard
      */
+    /**
+     * A rejection ALWAYS carries a result string. laravel/ai treats a bare
+     * rejection (null result) as "do not call the model again" and ends the
+     * turn right after the denied tool result — the user then sees the card
+     * flip and nothing else (a real S-Grade thread: «لم يُطبَّق» never came).
+     * With a reason attached the loop continues and the model gets to say, in
+     * the user's language, that the action was not applied and what it can do
+     * instead. The wording is the tool result the MODEL reads, not UI copy.
+     */
+    private static function rejected(?string $reason): Decision
+    {
+        $reason = trim((string) $reason);
+
+        return Decision::reject($reason !== ''
+            ? $reason
+            : (string) __('ai-kit::approvals.rejected_result'));
+    }
+
     private static function edited(string $id, ?array $arguments, ?Closure $guard): Decision
     {
         if (! is_array($arguments) || $arguments === []) {

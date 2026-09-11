@@ -3,6 +3,12 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.12.3
+
+- Approvals: a bare rejection on an approval card now carries a model-facing result
+  (`ai-kit::approvals.rejected_result`), so the loop continues and the model tells the user the action
+  was not applied — previously laravel/ai ended the turn silently after the denied tool result.
+
 ## 0.12.2
 
 - Bench: `LanguageMatches` accepts one-letter Arabic proclitics glued to a Latin token («وCLOs», «بPython»)

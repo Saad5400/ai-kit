@@ -96,3 +96,16 @@ it('throws on an id that is not pending, and on a shape the resume could not rea
         ->and(fn () => ResumeDecisions::guarded(['call-1' => 'maybe'], $guard))
         ->toThrow(InvalidArgumentException::class);
 });
+
+it('gives a bare rejection a result so the loop still lets the model reply', function () {
+    $decisions = ResumeDecisions::fromClient(['call-1' => false, 'call-2' => 'reject', 'call-3' => ['action' => 'reject']]);
+
+    foreach (['call-1', 'call-2', 'call-3'] as $id) {
+        $decision = $decisions->get($id);
+
+        expect($decision->isRejected())->toBeTrue()
+            ->and($decision->result)->toContain('NOT applied');
+    }
+
+    expect(ResumeDecisions::fromClient(['call-4' => ['action' => 'reject', 'reason' => 'wrong record']])->get('call-4')->result)->toBe('wrong record');
+});
