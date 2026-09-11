@@ -1,5 +1,7 @@
 <?php
 
+use Saad\AiKit\Gateway\MarkupLeakFilter;
+
 return [
 
     /*
@@ -39,6 +41,22 @@ return [
     | is sent to the model when tools are withheld on the last step; it is
     | model-facing text, so it ships bilingual rather than localized.
     |
+    | `markup_leak` guards the text channel against a provider that failed to
+    | parse the model's own tool-call grammar and streamed it as content
+    | (DeepSeek's `<｜DSML｜invoke …>` blocks on some OpenRouter upstreams).
+    | Text from the first `patterns` marker to the end of the step never
+    | reaches the client or the stored message. When the step parsed no
+    | structured tool call either, the gateway first tries to `salvage` the
+    | call out of the stripped block (intact DSML `invoke` blocks naming an
+    | offered tool run as if the provider had parsed them), else it
+    | re-requests the step ONCE (`retry`), excluding the upstream that
+    | leaked via OpenRouter's `provider.ignore` when the response named it
+    | (`ignore_provider`). What still comes back blank falls through to the
+    | `chat.wrap_up` guard. `require_parameters` sends OpenRouter's
+    | `provider.require_parameters` on steps that carry tools, so only
+    | upstreams that actually support tool calling serve them — the cheapest
+    | way to avoid the leak in the first place.
+    |
     */
 
     'gateway' => [
@@ -54,6 +72,14 @@ return [
             'message' => 'انتهت خطوات استخدام الأدوات. قدّم الآن إجابتك النهائية للمستخدم نصاً بناءً على ما توصلت إليه، وإن لم تجد المعلومة فقل ذلك صراحةً. '
                 .'Tool steps are over — write your complete final answer as plain text now; if the information was not found, say so plainly.',
         ],
+        'markup_leak' => [
+            'enabled' => true,
+            'salvage' => true,
+            'retry' => true,
+            'ignore_provider' => true,
+            'patterns' => MarkupLeakFilter::DEFAULT_PATTERNS,
+        ],
+        'require_parameters' => true,
 
         // Statuses that convert to ProviderOverloadedException after retries
         // are exhausted — the trigger for laravel/ai's own provider failover.
@@ -567,11 +593,43 @@ return [
     |
     | This model is TEXT-ONLY. Anything with an image goes to `vision.model`.
     |
+    | `max_steps` is the recommended step budget for a chat agent — read it
+    | through `Saad\AiKit\Agents\StepBudget::default()` from the agent's
+    | `maxSteps()`. A step is one model invocation; the LAST step is always
+    | sent without tools plus the answer-now nudge (`gateway.final_step`), so
+    | the budget is "tool rounds + 1" and a turn can never end on an
+    | unexecuted tool call. 12 leaves ~11 tool rounds, above what any
+    | observed teacher request needed while still bounding a runaway loop.
+    |
+    | `wrap_up` is the step guard's guaranteed final answer (StepGuard):
+    | `on_exhaustion` appends a tool-less answer-now completion when the
+    | final step STILL ended in tool calls (withholding off); `on_blank_final`
+    | does the same when a step that followed tool results (or a stripped
+    | markup leak) came back with empty text — the "it narrated, then went
+    | silent" thread. Either runs INSIDE the same step, so the persisted
+    | assistant message carries the answer and the wrap-up's cost is recorded
+    | like any other invocation. `instruction` is the nudge sent to the model
+    | — null uses `gateway.final_step.message`; a literal string or a lang
+    | key overrides it; `WrapUpInstruction::using()` is the closure seam.
+    |
+    | `reasoning_on_tool_steps` — when false, the `reasoning` request field
+    | is dropped on steps that follow tool results, for benchmarking the
+    | "reasoning off for agentic turns" advice on the DeepSeek card. The
+    | default keeps today's behaviour (ruling #26a: effort is not dialled
+    | down by the kit).
+    |
     */
 
     'chat' => [
         'model' => env('AI_KIT_CHAT_MODEL', 'deepseek/deepseek-v4-flash'),
         'reasoning_effort' => env('AI_KIT_CHAT_REASONING_EFFORT', 'medium'),
+        'max_steps' => (int) env('AI_KIT_CHAT_MAX_STEPS', 12),
+        'reasoning_on_tool_steps' => true,
+        'wrap_up' => [
+            'on_exhaustion' => true,
+            'on_blank_final' => true,
+            'instruction' => null,
+        ],
     ],
 
     /*

@@ -1,7 +1,16 @@
 <?php
 
+use Laravel\Ai\Contracts\Agent;
+use Laravel\Ai\Contracts\HasProviderOptions;
+use Laravel\Ai\Enums\Lab;
 use Laravel\Ai\Gateway\StepContext;
+use Laravel\Ai\Gateway\TextGenerationOptions;
+use Laravel\Ai\Messages\AssistantMessage;
+use Laravel\Ai\Messages\ToolResultMessage;
 use Laravel\Ai\Messages\UserMessage;
+use Laravel\Ai\Promptable;
+use Laravel\Ai\Responses\Data\ToolCall;
+use Laravel\Ai\Responses\Data\ToolResult;
 use Saad\AiKit\Catalog\ConfigCatalogSource;
 use Saad\AiKit\Catalog\ModelRouting;
 use Saad\AiKit\Tests\Support\GatewayFactory;
@@ -88,6 +97,64 @@ it('sends a declared price cap as OpenRouter provider routing', function () {
 
 it('leaves the body bare when no catalog is wired in', function () {
     expect(stepBody([], false, []))->not->toHaveKeys(['models', 'provider']);
+});
+
+it('asks OpenRouter for upstreams that support every parameter on tool steps only', function () {
+    $withTools = stepBody([], finalStep: false, tools: [GatewayFactory::fakeTool()]);
+    $withoutTools = stepBody([], finalStep: false, tools: []);
+    $finalStep = stepBody([], finalStep: true, tools: [GatewayFactory::fakeTool()]);
+    $disabled = stepBody(['require_parameters' => false], finalStep: false, tools: [GatewayFactory::fakeTool()]);
+
+    expect($withTools['provider'])->toBe(['require_parameters' => true])
+        ->and($withoutTools)->not->toHaveKey('provider')
+        ->and($finalStep)->not->toHaveKey('provider')
+        ->and($disabled)->not->toHaveKey('provider');
+});
+
+it('merges require_parameters with the catalog price cap rather than replacing it', function () {
+    $body = stepBody([], false, [GatewayFactory::fakeTool()], routingFor(['provider_max_price' => ['prompt' => 0.5]]));
+
+    expect($body['provider'])->toEqual(['require_parameters' => true, 'max_price' => ['prompt' => 0.5]]);
+});
+
+it('can drop reasoning on the steps that follow tool results', function () {
+    $agent = new class implements Agent, HasProviderOptions
+    {
+        use Promptable;
+
+        public function instructions(): string
+        {
+            return 'x';
+        }
+
+        public function providerOptions(Lab|string $provider): array
+        {
+            return ['reasoning' => ['effort' => 'medium']];
+        }
+    };
+
+    $afterTool = [
+        new UserMessage('q'),
+        new AssistantMessage('', collect([new ToolCall('c1', 'lookup', [], 'c1')])),
+        new ToolResultMessage(collect([new ToolResult('c1', 'lookup', [], 'ok', 'c1')])),
+    ];
+
+    $build = fn (array $chat, array $messages): array => GatewayFactory::buildStepBody(
+        GatewayFactory::gateway(chat: $chat),
+        GatewayFactory::provider(),
+        'test/model',
+        null,
+        $messages,
+        [],
+        null,
+        new TextGenerationOptions(agent: $agent),
+        new StepContext(stepNumber: 1),
+    );
+
+    expect($build([], $afterTool))->toHaveKey('reasoning')
+        ->and($build(['reasoning_on_tool_steps' => false], $afterTool))->not->toHaveKey('reasoning')
+        // The first step keeps reasoning whatever the seam says.
+        ->and($build(['reasoning_on_tool_steps' => false], [new UserMessage('q')]))->toHaveKey('reasoning');
 });
 
 it('never overrides routing the caller already put on the body', function () {

@@ -41,6 +41,8 @@ class GatewayServiceProvider extends ServiceProvider
             // The catalog module is optional; without it there are no chains
             // or price caps to declare and the body stays bare.
             $app->bound(ModelRouting::class) ? $app->make(ModelRouting::class) : null,
+            // The step guard's wrap-up knobs live with the chat defaults.
+            $app['config']->get('ai-kit.chat', []),
         ));
 
         if ($this->app['config']->get('ai-kit.gateway.register_openrouter_driver', true)) {

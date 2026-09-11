@@ -18,6 +18,8 @@ class TurnContext
 
     public const TTFT_KEY = 'ai-kit.turn.ttft_ms';
 
+    public const FLAGS_KEY = 'ai-kit.turn.flags';
+
     public static function startedAtKey(string $invocationId): string
     {
         return "ai-kit.turn.{$invocationId}.started_at_ms";
@@ -70,6 +72,56 @@ class TurnContext
             $startedAt !== null ? max(0, static::nowMs() - $startedAt) : null,
             $ttft,
         ];
+    }
+
+    /**
+     * Record a fact about the turn the gateway's step guard observed —
+     * `wrap_up` (why an extra answer-now completion ran), `markup_leak`,
+     * `markup_salvaged`, `markup_retried` — for the usage row's `context`
+     * column. A value already set for a key is kept: the first cause wins,
+     * and a turn is flagged once however many steps repeated the symptom.
+     */
+    public static function flag(string $key, mixed $value): void
+    {
+        $flags = Context::get(static::FLAGS_KEY, []);
+
+        if (! is_array($flags)) {
+            $flags = [];
+        }
+
+        if (array_key_exists($key, $flags)) {
+            return;
+        }
+
+        $flags[$key] = $value;
+
+        Context::add(static::FLAGS_KEY, $flags);
+    }
+
+    /**
+     * The flags recorded so far, without clearing them.
+     *
+     * @return array<string, mixed>
+     */
+    public static function flags(): array
+    {
+        $flags = Context::get(static::FLAGS_KEY, []);
+
+        return is_array($flags) ? $flags : [];
+    }
+
+    /**
+     * Read the turn's flags and clear them — the usage listener's half.
+     *
+     * @return array<string, mixed>
+     */
+    public static function consumeFlags(): array
+    {
+        $flags = static::flags();
+
+        Context::forget(static::FLAGS_KEY);
+
+        return $flags;
     }
 
     public static function nowMs(): int

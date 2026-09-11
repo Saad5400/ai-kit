@@ -223,15 +223,88 @@ describe('grouping segments for render', () => {
             ]),
         )
 
-        expect(groups.map((group) => group.type)).toEqual(['text', 'process', 'text'])
-        expect(groups[1]).toMatchObject({
+        // 'Checking.' precedes a tool call, so it is narration and joins the process.
+        expect(groups.map((group) => group.type)).toEqual(['process', 'text'])
+        expect(groups[0]).toMatchObject({
             items: [
+                { type: 'text', text: 'Checking.' },
                 { type: 'thinking', text: 'hmm' },
                 { type: 'tool', id: 'c1' },
                 { type: 'thinking', text: 'more' },
                 { type: 'tool', id: 'c2' },
             ],
         })
+        expect(groups[1]).toEqual({ type: 'text', text: 'Answer.' })
+    })
+
+    it('files narration between tool calls into the process too — only text after the last tool is the reply', () => {
+        const groups = groupSegments(
+            play([
+                ['delta', { text: 'لنبحث أولاً عن مقرراتك.' }],
+                ['tool', { id: 'c1', name: 'ListRecords', status: 'done', successful: true }],
+                ['delta', { text: 'Now the grades.' }],
+                ['tool', { id: 'c2', name: 'QueryAnalytics', status: 'done', successful: true }],
+                ['delta', { text: 'You have two courses.' }],
+            ]),
+        )
+
+        expect(groups).toEqual([
+            {
+                type: 'process',
+                items: [
+                    { type: 'text', text: 'لنبحث أولاً عن مقرراتك.' },
+                    { type: 'tool', id: 'c1', name: 'ListRecords', status: 'done', successful: true },
+                    { type: 'text', text: 'Now the grades.' },
+                    { type: 'tool', id: 'c2', name: 'QueryAnalytics', status: 'done', successful: true },
+                ],
+            },
+            { type: 'text', text: 'You have two courses.' },
+        ])
+    })
+
+    it('shows a turn that narrated and then went silent as process only — no orphan reply bubble', () => {
+        const groups = groupSegments(
+            play([
+                ['delta', { text: 'لنبحث أولاً عن مقرراتك.' }],
+                ['tool', { id: 'c1', name: 'ListRecords', status: 'running' }],
+            ]),
+        )
+
+        expect(groups.map((group) => group.type)).toEqual(['process'])
+    })
+
+    it('reclassifies streamed text the moment the tool call that follows it arrives', () => {
+        const timeline = createTimeline()
+
+        timeline.push('delta', { text: 'Let me check.' })
+        expect(groupSegments(timeline.segments).map((group) => group.type)).toEqual(['text'])
+
+        timeline.push('tool', { id: 'c1', name: 'Lookup', status: 'running' })
+        expect(groupSegments(timeline.segments).map((group) => group.type)).toEqual(['process'])
+    })
+
+    it('leaves text before a card, with no tool after it, as a reply', () => {
+        const groups = groupSegments(
+            play([
+                ['delta', { text: 'I am about to delete it — confirm?' }],
+                ['approval', approval('a1')],
+            ]),
+        )
+
+        expect(groups.map((group) => group.type)).toEqual(['text', 'card'])
+    })
+
+    it('restores the pre-v0.11 rendering with narration: "text"', () => {
+        const groups = groupSegments(
+            play([
+                ['delta', { text: 'Checking.' }],
+                ['tool', { id: 'c1', name: 'A', status: 'done', successful: true }],
+                ['delta', { text: 'Answer.' }],
+            ]),
+            { narration: 'text' },
+        )
+
+        expect(groups.map((group) => group.type)).toEqual(['text', 'process', 'text'])
     })
 
     it('keeps text segments separate — order is the whole point', () => {

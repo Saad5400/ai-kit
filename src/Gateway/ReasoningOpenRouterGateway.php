@@ -9,7 +9,9 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Log;
 use Laravel\Ai\Contracts\Providers\TextProvider;
+use Laravel\Ai\Contracts\Tool;
 use Laravel\Ai\Exceptions\AiException;
 use Laravel\Ai\Exceptions\FailoverableException;
 use Laravel\Ai\Files\Audio;
@@ -20,6 +22,7 @@ use Laravel\Ai\Gateway\StepResponse;
 use Laravel\Ai\Gateway\TextGenerationOptions;
 use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Providers\Provider;
+use Laravel\Ai\Responses\Data\FinishReason;
 use Laravel\Ai\Responses\Data\Meta;
 use Laravel\Ai\Responses\Data\ToolCall;
 use Laravel\Ai\Responses\Data\UrlCitation;
@@ -35,6 +38,7 @@ use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\TextEnd;
 use Laravel\Ai\Streaming\Events\TextStart;
 use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
+use Laravel\Ai\Tools\ToolNameResolver;
 use Saad\AiKit\Catalog\ModelRouting;
 use Saad\AiKit\Support\TurnContext;
 use Throwable;
@@ -67,7 +71,19 @@ use Throwable;
 class ReasoningOpenRouterGateway extends OpenRouterGateway
 {
     /**
+     * Upstream providers the NEXT request built must exclude — set by the
+     * markup-leak retry right before it re-runs a step and consumed by the
+     * first body built after it, so a long-lived gateway instance (the
+     * provider caches it per worker) never carries the exclusion into an
+     * unrelated request.
+     *
+     * @var list<string>
+     */
+    protected array $ignoreProvidersOnce = [];
+
+    /**
      * @param  array<string, mixed>  $config  The ai-kit.gateway config section.
+     * @param  array<string, mixed>  $chat  The ai-kit.chat config section (wrap-up + tool-step knobs).
      */
     public function __construct(
         Dispatcher $events,
@@ -75,6 +91,7 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         protected array $config = [],
         protected ?ModelCircuitBreaker $breaker = null,
         protected ?ModelRouting $routing = null,
+        protected array $chat = [],
     ) {
         parent::__construct($events);
     }
@@ -96,7 +113,7 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         $this->breaker?->guard($provider->name(), $model);
 
         try {
-            $response = parent::generateTextStep(
+            $response = $this->guardedTextStep(
                 $provider, $model, $instructions, $messages, $tools, $schema, $options, $timeout, $stepContext,
             );
         } catch (Throwable $exception) {
@@ -131,9 +148,313 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     ): Generator {
         $this->breaker?->guard($provider->name(), $model);
 
-        return $this->recordingStream($provider->name(), $model, parent::generateStreamStep(
+        return $this->recordingStream($provider->name(), $model, $this->guardedStream(
             $invocationId, $provider, $model, $instructions, $messages, $tools, $schema, $options, $timeout, $stepContext,
         ));
+    }
+
+    /**
+     * One non-streamed step under the step guard — the same pipeline as
+     * {@see guardedStream()} without events: strip → salvage → retry →
+     * wrap-up. Nothing of a leaked first attempt has reached anyone here, so
+     * a retry REPLACES it instead of being appended.
+     */
+    protected function guardedTextStep(
+        TextProvider $provider,
+        string $model,
+        ?string $instructions,
+        array $messages,
+        array $tools,
+        ?array $schema,
+        ?TextGenerationOptions $options,
+        ?int $timeout,
+        StepContext $stepContext,
+    ): StepResponse {
+        $step = parent::generateTextStep(
+            $provider, $model, $instructions, $messages, $tools, $schema, $options, $timeout, $stepContext,
+        );
+
+        $offeredTools = $this->offeredTools($tools, $stepContext);
+
+        if ($this->leakedWithoutToolCalls($step)) {
+            $this->flagLeak($step, $provider, $model, $stepContext);
+
+            $salvaged = $this->salvage($step, $tools, $offeredTools);
+
+            if ($salvaged !== null) {
+                $step = $salvaged;
+            } elseif ($this->shouldRetryLeak()) {
+                $this->excludeLeakingProviderOnce($step);
+
+                $step = StepGuard::mergeRetry($step, parent::generateTextStep(
+                    $provider, $model, $instructions, $messages, $tools, $schema, $options, $timeout, $stepContext,
+                ), keepFirstText: false);
+            }
+        }
+
+        $reason = $this->wrapUpReason($step, $messages, $stepContext, $offeredTools);
+
+        if ($reason === null) {
+            return $step;
+        }
+
+        $this->flagWrapUp($reason, $provider, $model, $stepContext);
+
+        return StepGuard::merge($step, parent::generateTextStep(
+            $provider,
+            $model,
+            $instructions,
+            StepGuard::wrapUpMessages($messages, $step, $this->wrapUpInstruction($reason)),
+            [],
+            $schema,
+            $options,
+            $timeout,
+            StepGuard::wrapUpContext($stepContext),
+        ));
+    }
+
+    /**
+     * One streamed step under the step guard. The parent's events pass
+     * through untouched; what the guard adds is yielded INTO THE SAME
+     * STEP, so the SDK loop, the mapper and the persisted assistant message
+     * (the SDK combines every TextDelta it saw) all take the rescue as part
+     * of this step's output. In order:
+     *
+     *  1. A step whose text carried tool-call markup but parsed no structured
+     *     tool call is a provider failure. If the stripped block holds an
+     *     intact DSML invoke of an OFFERED tool, it is salvaged — the tool
+     *     call is yielded and the step returns as if the provider had parsed
+     *     it. Otherwise the step is re-requested once, excluding the upstream
+     *     that leaked; the retry's events follow the first attempt's clean
+     *     narration in the same stream.
+     *  2. A step that still needs a final answer ({@see StepGuard::wrapUpReason})
+     *     gets one tool-less completion appended, on the same history plus
+     *     the answer-now instruction, and is merged into a single response.
+     *
+     * A parent that ended on an `Error` event returns null; the guard steps
+     * aside (the loop and the mapper already handle that path).
+     *
+     * @return Generator<int, StreamEvent, mixed, StepResponse|null>
+     */
+    protected function guardedStream(
+        string $invocationId,
+        TextProvider $provider,
+        string $model,
+        ?string $instructions,
+        array $messages,
+        array $tools,
+        ?array $schema,
+        ?TextGenerationOptions $options,
+        ?int $timeout,
+        StepContext $stepContext,
+    ): Generator {
+        $step = yield from parent::generateStreamStep(
+            $invocationId, $provider, $model, $instructions, $messages, $tools, $schema, $options, $timeout, $stepContext,
+        );
+
+        if (! $step instanceof StepResponse) {
+            return $step;
+        }
+
+        $offeredTools = $this->offeredTools($tools, $stepContext);
+
+        if ($this->leakedWithoutToolCalls($step)) {
+            $this->flagLeak($step, $provider, $model, $stepContext);
+
+            $salvaged = $this->salvage($step, $tools, $offeredTools);
+
+            if ($salvaged !== null) {
+                foreach ($salvaged->toolCalls as $toolCall) {
+                    yield (new ToolCallEvent($this->generateEventId(), $toolCall, time()))->withInvocationId($invocationId);
+                }
+
+                $step = $salvaged;
+            } elseif ($this->shouldRetryLeak()) {
+                $this->excludeLeakingProviderOnce($step);
+
+                $retry = yield from parent::generateStreamStep(
+                    $invocationId, $provider, $model, $instructions, $messages, $tools, $schema, $options, $timeout, $stepContext,
+                );
+
+                if (! $retry instanceof StepResponse) {
+                    return $retry;
+                }
+
+                $step = StepGuard::mergeRetry($step, $retry, keepFirstText: true);
+            }
+        }
+
+        $reason = $this->wrapUpReason($step, $messages, $stepContext, $offeredTools);
+
+        if ($reason === null) {
+            return $step;
+        }
+
+        $this->flagWrapUp($reason, $provider, $model, $stepContext);
+
+        // The wire text must equal the merged step text the SDK persists, so
+        // the paragraph break between narration and answer is yielded too.
+        $separator = StepGuard::separator($step);
+
+        if ($separator !== '') {
+            yield (new TextDelta($this->generateEventId(), $this->generateEventId(), $separator, time()))->withInvocationId($invocationId);
+        }
+
+        $wrapUp = yield from parent::generateStreamStep(
+            $invocationId,
+            $provider,
+            $model,
+            $instructions,
+            StepGuard::wrapUpMessages($messages, $step, $this->wrapUpInstruction($reason)),
+            [],
+            $schema,
+            $options,
+            $timeout,
+            StepGuard::wrapUpContext($stepContext),
+        );
+
+        return $wrapUp instanceof StepResponse ? StepGuard::merge($step, $wrapUp) : $step;
+    }
+
+    /**
+     * Whether the model could have called a tool on this step: tools exist
+     * and were not withheld by the final-step rule.
+     *
+     * @param  array<int, mixed>  $tools
+     */
+    protected function offeredTools(array $tools, StepContext $stepContext): bool
+    {
+        if ($tools === []) {
+            return false;
+        }
+
+        $withhold = (bool) ($this->config['final_step']['withhold_tools'] ?? true);
+
+        return ! ($withhold && $stepContext->isFinalStep);
+    }
+
+    protected function leakedWithoutToolCalls(StepResponse $step): bool
+    {
+        return $step instanceof InspectedStepResponse
+            && $step->markupLeaked
+            && $step->toolCalls === []
+            && ($this->config['markup_leak']['enabled'] ?? true) !== false;
+    }
+
+    protected function shouldRetryLeak(): bool
+    {
+        return (bool) ($this->config['markup_leak']['retry'] ?? true);
+    }
+
+    /**
+     * Turn an intact DSML invoke block into the step's tool calls, keeping
+     * only calls that name a tool the step actually offered — a name the
+     * loop cannot resolve would throw NoSuchToolException mid-turn.
+     *
+     * @param  array<int, mixed>  $tools
+     */
+    protected function salvage(StepResponse $step, array $tools, bool $offeredTools): ?StepResponse
+    {
+        if (! $offeredTools || ! ($this->config['markup_leak']['salvage'] ?? true) || ! $step instanceof InspectedStepResponse) {
+            return null;
+        }
+
+        $calls = DsmlToolCallParser::parse($step->leakedMarkup);
+
+        if ($calls === null) {
+            return null;
+        }
+
+        $offered = [];
+
+        foreach ($tools as $tool) {
+            if ($tool instanceof Tool) {
+                $offered[] = ToolNameResolver::resolve($tool);
+            }
+        }
+
+        $calls = array_values(array_filter($calls, fn (ToolCall $call): bool => in_array($call->name, $offered, true)));
+
+        if ($calls === []) {
+            return null;
+        }
+
+        TurnContext::flag('markup_salvaged', true);
+
+        return (new InspectedStepResponse(
+            text: $step->text,
+            toolCalls: $calls,
+            finishReason: FinishReason::ToolCalls,
+            usage: $step->usage,
+            meta: $step->meta,
+            structured: $step->structured,
+            continuationToken: $step->continuationToken,
+            providerContentBlocks: $step->providerContentBlocks,
+        ))->inspected(true, $step->leakedMarkup, $step->providerName)->withRawResponse($step->raw);
+    }
+
+    /**
+     * Arm the next request body to exclude the upstream that leaked, when
+     * the response named one and the config allows it.
+     */
+    protected function excludeLeakingProviderOnce(StepResponse $step): void
+    {
+        TurnContext::flag('markup_retried', true);
+
+        if (! ($this->config['markup_leak']['ignore_provider'] ?? true)) {
+            return;
+        }
+
+        if ($step instanceof InspectedStepResponse && $step->providerName !== null) {
+            $this->ignoreProvidersOnce = [$step->providerName];
+        }
+    }
+
+    /**
+     * @param  array<int, mixed>  $messages
+     */
+    protected function wrapUpReason(StepResponse $step, array $messages, StepContext $stepContext, bool $offeredTools): ?string
+    {
+        return StepGuard::wrapUpReason(
+            $step,
+            $messages,
+            $stepContext,
+            $offeredTools,
+            $this->chat['wrap_up'] ?? [],
+            leaked: $step instanceof InspectedStepResponse && $step->markupLeaked,
+        );
+    }
+
+    protected function wrapUpInstruction(string $reason): string
+    {
+        return WrapUpInstruction::resolve($reason, $this->chat, $this->config);
+    }
+
+    protected function flagLeak(StepResponse $step, TextProvider $provider, string $model, StepContext $stepContext): void
+    {
+        TurnContext::flag('markup_leak', true);
+
+        Log::warning('ai-kit: provider tool-call markup leaked into the text channel', [
+            'provider' => $provider->name(),
+            'upstream' => $step instanceof InspectedStepResponse ? $step->providerName : null,
+            'model' => $model,
+            'step' => $stepContext->stepNumber,
+            'final_step' => $stepContext->isFinalStep,
+            'markup_bytes' => $step instanceof InspectedStepResponse ? strlen($step->leakedMarkup) : 0,
+        ]);
+    }
+
+    protected function flagWrapUp(string $reason, TextProvider $provider, string $model, StepContext $stepContext): void
+    {
+        TurnContext::flag('wrap_up', $reason);
+
+        Log::info('ai-kit: step guard appended a wrap-up completion', [
+            'reason' => $reason,
+            'provider' => $provider->name(),
+            'model' => $model,
+            'step' => $stepContext->stepNumber,
+            'final_step' => $stepContext->isFinalStep,
+        ]);
     }
 
     /**
@@ -264,6 +585,18 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             unset($body['tools'], $body['tool_choice']);
         }
 
+        // Only upstreams that support every requested parameter may serve a
+        // tool step — an upstream without the model's tool-call parser is
+        // where the markup leak comes from. Tool-less steps stay unrestricted.
+        if (isset($body['tools']) && ($this->config['require_parameters'] ?? false)) {
+            $body['provider'] = array_merge($body['provider'] ?? [], ['require_parameters' => true]);
+        }
+
+        // Benchmark seam: drop reasoning on the steps that follow tool results.
+        if (($this->chat['reasoning_on_tool_steps'] ?? true) === false && StepGuard::followsToolActivity($messages)) {
+            unset($body['reasoning']);
+        }
+
         return $this->withServerSideRouting($body, $model);
     }
 
@@ -288,6 +621,17 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
 
         if (isset($fields['provider'])) {
             $body['provider'] = array_merge($fields['provider'], $body['provider'] ?? []);
+        }
+
+        // Consumed by exactly one body: the markup-leak retry armed it for
+        // the request being built right now and for nothing after it.
+        $ignore = $this->ignoreProvidersOnce;
+        $this->ignoreProvidersOnce = [];
+
+        if ($ignore !== []) {
+            $body['provider'] = array_merge($body['provider'] ?? [], [
+                'ignore' => array_values(array_unique([...($body['provider']['ignore'] ?? []), ...$ignore])),
+            ]);
         }
 
         return $body;
@@ -428,7 +772,37 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             $this->spend->recordCost($cost, streamed: false);
         }
 
-        return parent::parseTextResponse($data, $provider, $structured);
+        $step = parent::parseTextResponse($data, $provider, $structured);
+
+        // Same leak treatment as the streamed path: markup never reaches the
+        // caller's text, and what was stripped rides along for salvage.
+        $filter = $this->markupLeakFilter();
+        $text = $filter->push($step->text).$filter->flush();
+
+        return (new InspectedStepResponse(
+            text: $text,
+            toolCalls: $step->toolCalls,
+            finishReason: $step->finishReason,
+            usage: $step->usage,
+            meta: $step->meta,
+            structured: $step->structured,
+            continuationToken: $step->continuationToken,
+            providerContentBlocks: $step->providerContentBlocks,
+            pendingApprovals: $step->pendingApprovals,
+        ))->inspected(
+            $filter->leaked(),
+            $filter->removed(),
+            is_string($data['provider'] ?? null) ? $data['provider'] : null,
+        )->withRawResponse($step->raw);
+    }
+
+    /**
+     * A fresh sanitizer per step: it holds text between deltas, so it can
+     * never be shared across steps or turns.
+     */
+    protected function markupLeakFilter(): MarkupLeakFilter
+    {
+        return MarkupLeakFilter::fromConfig($this->config['markup_leak'] ?? []);
     }
 
     /**
@@ -455,16 +829,24 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         $usage = null;
         $finishReason = null;
 
-        // Fork state: reasoning re-emission + spend capture.
+        // Fork state: reasoning re-emission + spend capture + leak guard.
         $reasoningId = '';
         $inReasoning = false;
         $generationId = '';
         $openRouterCost = null;
+        $providerName = null;
+        $leakFilter = $this->markupLeakFilter();
 
         foreach ($this->parseServerSentEvents($streamBody) as $data) {
             // Every chunk carries the generation id; keep the latest.
             if (isset($data['id']) && is_string($data['id']) && $data['id'] !== '') {
                 $generationId = $data['id'];
+            }
+
+            // OpenRouter names the upstream it routed to on every chunk; a
+            // retry after a markup leak excludes that provider.
+            if (isset($data['provider']) && is_string($data['provider']) && $data['provider'] !== '') {
+                $providerName = $data['provider'];
             }
 
             if (isset($data['error'])) {
@@ -558,7 +940,15 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
                 ))->withInvocationId($invocationId);
             }
 
-            if (isset($delta['content']) && $delta['content'] !== '') {
+            // Content runs through the leak filter first: a marker and
+            // everything after it is swallowed (kept for salvage), a tail
+            // that might begin a marker is held for the next chunk, and a
+            // step whose text is nothing but markup never opens a text block.
+            $visible = isset($delta['content']) && $delta['content'] !== ''
+                ? $leakFilter->push($delta['content'])
+                : '';
+
+            if ($visible !== '') {
                 if (! $textStartEmitted) {
                     $textStartEmitted = true;
 
@@ -571,12 +961,12 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
                     ))->withInvocationId($invocationId);
                 }
 
-                $currentText .= $delta['content'];
+                $currentText .= $visible;
 
                 yield (new TextDelta(
                     $this->generateEventId(),
                     $messageId,
-                    $delta['content'],
+                    $visible,
                     time(),
                 ))->withInvocationId($invocationId);
             }
@@ -638,6 +1028,31 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             ))->withInvocationId($invocationId);
         }
 
+        // Release a tail the filter was still holding (a `<` that never
+        // became a marker), then close the text block.
+        $tail = $leakFilter->flush();
+
+        if ($tail !== '') {
+            if (! $textStartEmitted) {
+                $textStartEmitted = true;
+
+                yield (new TextStart(
+                    $this->generateEventId(),
+                    $messageId,
+                    time(),
+                ))->withInvocationId($invocationId);
+            }
+
+            $currentText .= $tail;
+
+            yield (new TextDelta(
+                $this->generateEventId(),
+                $messageId,
+                $tail,
+                time(),
+            ))->withInvocationId($invocationId);
+        }
+
         if ($textStartEmitted) {
             yield (new TextEnd(
                 $this->generateEventId(),
@@ -675,13 +1090,13 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             $this->spend->recordCost($openRouterCost, streamed: true);
         }
 
-        return new StepResponse(
+        return (new InspectedStepResponse(
             text: $currentText,
             toolCalls: $toolCalls,
             finishReason: $this->extractFinishReason(['finish_reason' => $finishReason ?? '']),
             usage: $usage ?? new Usage(0, 0),
             meta: new Meta($provider->name(), $streamModel),
-        );
+        ))->inspected($leakFilter->leaked(), $leakFilter->removed(), $providerName);
     }
 
     /**
