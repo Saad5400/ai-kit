@@ -3,6 +3,32 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.13.0
+
+Model unification (DECISIONS.md #28). One menu, four shared lanes, real names.
+
+- Catalog: refreshed to every vendor's current build and re-priced off the live OpenRouter
+  models API (2026-09-13) — `deepseek-v4-flash-0731`, `glm-5.3-flash` (new), `qwen3.8-flash`,
+  `gpt-5.6-luna`, `gemini-3.5-flash-lite`, `deepseek-v4-pro-0813`, `gemini-3.8-flash`,
+  `glm-5.3`, `grok-4.6`, `qwen3.8-max-0902`, `claude-sonnet-5`, `gemini-3.1-pro-preview`,
+  `gpt-5.6-terra`, plus `gemini-3.1-flash-lite` on the vision/documents tier.
+  `key`s are unchanged, so stored user selections keep resolving; `gemini-2.5-flash-lite`
+  leaves the catalog (run the app's sync with `--prune`).
+- `chat.model` → `deepseek/deepseek-v4-flash-0731`: cheaper ($0.04/$0.08 vs $0.0476/$0.0952
+  per M), bigger context (1.31M) and 2-4x the measured token rate at equal-or-better answers.
+- `vision.model` → `google/gemini-3.1-flash-lite` (+ new `vision.fallback_model`): 98%
+  character fidelity on a degraded Arabic lecture scan against 83% for `gemini-2.5-flash-lite`,
+  and faster. The one lane that costs more than before, deliberately.
+- NEW `documents.model` / `documents.fallback_model`: the native file + audio lane (scanned-PDF
+  reads, ASR, whole-document summary and translation). Same pair as vision.
+- NEW `authoring.model` → `deepseek/deepseek-v4-pro-0813`: admin-triggered, review-gated
+  drafting, at a third of the retired `deepseek-v4-pro` rate.
+- `Catalog`: `visionFallbackModel()`, `documentsModel()`, `documentsFallbackModel()`,
+  `authoringModel()`. `catalog.cheapest`/`smartest` re-pinned to the new floor and ceiling.
+- Every catalog entry now ships a `label` — the provider's real model name, which is what a
+  picker renders — and a `sort_order` that agrees with its price. Tests hold both, and hold
+  every shared lane to a model the catalog declares.
+
 ## 0.12.5
 
 - Conversations: `ReplyLanguage` judges the message by the majority script (55%), so a record name in the

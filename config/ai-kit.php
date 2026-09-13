@@ -232,7 +232,21 @@ return [
     | tell a user what a model costs, they never price a turn. Billing reads
     | OpenRouter's reported `usage.cost` and nothing else (DECISIONS.md #26c),
     | so a stale row here can misinform but can never mischarge. Every rate
-    | below was read from the live models API on 2026-08-24.
+    | below was read from the live models API on 2026-09-13.
+    |
+    | `label` is the model's REAL NAME as the provider publishes it ("DeepSeek
+    | V4 Flash 0731", "Gemini 3.5 Flash Lite") and it is what every picker in
+    | the fleet renders (DECISIONS.md #28b). The older "{company} · {variant}"
+    | composition — "DeepSeek · سريع" — is retired: it invented a label the
+    | user could not look up, could not compare against anything they had read
+    | elsewhere, and could not tell apart from the next DeepSeek row. `company`
+    | and `variant` survive as METADATA (the brand mark beside the name, the
+    | tier grouping), never as the name itself.
+    |
+    | ORDER is by price, cheapest first, and `sort_order` encodes it: a picker
+    | renders the list in this order and shows each row's cost as a MULTIPLE OF
+    | THE DEFAULT (×1, ×3, ×26 …), never a raw $/Mtok a student cannot act on.
+    | Keep `sort_order` in step with the rates when you touch a row.
     |
     | `fallbacks` declares the failover chain for a model: the gateway sends
     | it as OpenRouter's `models` request array, so the failover happens
@@ -265,7 +279,18 @@ return [
     | CAPABILITY WARNING: the DeepSeek V4 entries are TEXT-ONLY on OpenRouter
     | — they declare no `vision` capability, which is precisely why the chat
     | default and the vision default are two different models below. Never
-    | route an image at `chat.model`; route it at `vision.model`.
+    | route an image at `chat.model`; route it at `vision.model`, and route a
+    | PDF or an audio file at `documents.model`.
+    |
+    | DATED IDS: most entries route on an undated alias, but DeepSeek, Qwen and
+    | Google publish some builds only under a dated id
+    | (`deepseek-v4-flash-0731`, `qwen3.8-max-0902`). Those are the vendor's own
+    | product ids on OpenRouter — a DIFFERENT model from the undated
+    | `deepseek/deepseek-v4-flash`, which still resolves to the April build —
+    | not the `canonical_slug` pin this file warns against elsewhere. Pin them
+    | deliberately; the `~vendor/...-latest` auto-redirect aliases are NOT used,
+    | because the fleet's default must never change build, quality or price
+    | without a review.
     |
     */
 
@@ -281,13 +306,93 @@ return [
         // to own the whole menu — the app's `models` then replace the shipped
         // ones outright instead of merging with them.
         'replace_shipped_models' => false,
-        'cheapest' => 'deepseek/deepseek-v4-flash',
-        'smartest' => 'deepseek/deepseek-v4-pro',
+        'cheapest' => 'deepseek/deepseek-v4-flash-0731',
+        'smartest' => 'openai/gpt-5.6-terra',
         'models' => [
+
+            'deepseek/deepseek-v4-flash-0731' => [
+                'key' => 'deepseek-fast',
+                'canonical_slug' => 'deepseek/deepseek-v4-flash-20260731',
+                'label' => 'DeepSeek V4 Flash 0731',
+                'company' => 'DeepSeek',
+                'variant' => 'fast',
+                'tier' => 'fast',
+                'effort' => 'medium',
+                'input_usd_per_million' => 0.04,
+                'output_usd_per_million' => 0.08,
+                'cache_read_usd_per_million' => 0.008,
+                'context_length' => 1310720,
+                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => ['recommended', 'cheapest'],
+                'fallbacks' => ['z-ai/glm-5.3-flash', 'deepseek/deepseek-v4-pro-0813'],
+                'provider_max_price' => ['prompt' => 0.10, 'completion' => 0.20],
+                'sort_order' => 10,
+            ],
+
+            'z-ai/glm-5.3-flash' => [
+                'key' => 'glm-fast',
+                'canonical_slug' => 'z-ai/glm-5.3-flash-20260826',
+                'label' => 'GLM 5.3 Flash',
+                'company' => 'Z.ai',
+                'variant' => 'fast',
+                'tier' => 'fast',
+                'effort' => 'medium',
+                'input_usd_per_million' => 0.075,
+                'output_usd_per_million' => 0.25,
+                'cache_read_usd_per_million' => 0.015,
+                'context_length' => 1310720,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => [],
+                'fallbacks' => ['deepseek/deepseek-v4-flash-0731'],
+                'provider_max_price' => null,
+                'sort_order' => 20,
+            ],
+
+            'qwen/qwen3.8-flash' => [
+                'key' => 'qwen-fast',
+                'canonical_slug' => 'qwen/qwen3.8-flash-20260826',
+                'label' => 'Qwen3.8 Flash',
+                'company' => 'Qwen',
+                'variant' => 'fast',
+                'tier' => 'fast',
+                'effort' => 'medium',
+                'input_usd_per_million' => 0.15,
+                'output_usd_per_million' => 0.47,
+                'cache_read_usd_per_million' => 0.016,
+                'context_length' => 1000000,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => [],
+                'fallbacks' => [],
+                'provider_max_price' => null,
+                'sort_order' => 30,
+            ],
+
+            'openai/gpt-5.6-luna' => [
+                'key' => 'gpt-fast',
+                'canonical_slug' => 'openai/gpt-5.6-luna-20260709',
+                'label' => 'GPT-5.6 Luna',
+                'company' => 'OpenAI',
+                'variant' => 'fast',
+                'tier' => 'fast',
+                'effort' => 'medium',
+                'input_usd_per_million' => 0.2,
+                'output_usd_per_million' => 1.2,
+                'cache_read_usd_per_million' => 0.02,
+                'context_length' => 1050000,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => [],
+                'fallbacks' => [],
+                'provider_max_price' => null,
+                'sort_order' => 40,
+            ],
 
             'google/gemini-3.5-flash-lite' => [
                 'key' => 'gemini-lite',
-                'canonical_slug' => 'google/gemini-3.5-flash-lite',
+                'canonical_slug' => 'google/gemini-3.5-flash-lite-20260721',
                 'label' => 'Gemini 3.5 Flash Lite',
                 'company' => 'Google',
                 'variant' => 'fast',
@@ -298,146 +403,53 @@ return [
                 'cache_read_usd_per_million' => 0.03,
                 'context_length' => 1048576,
                 'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
-                'tasks' => ['chat', 'mcq', 'summary'],
+                // Also carries `vision`/`document`: it is the declared FALLBACK of
+                // the vision + documents default below, so it must be a catalog
+                // entry those tasks can resolve.
+                'tasks' => ['chat', 'mcq', 'summary', 'vision', 'document'],
                 'tags' => [],
-                'fallbacks' => ['deepseek/deepseek-v4-flash'],
-                'provider_max_price' => null,
-                'sort_order' => 5,
-            ],
-
-            'deepseek/deepseek-v4-flash' => [
-                'key' => 'deepseek-fast',
-                'canonical_slug' => 'deepseek/deepseek-v4-flash-20260423',
-                'label' => 'DeepSeek V4 Flash',
-                'company' => 'DeepSeek',
-                'variant' => 'fast',
-                'tier' => 'fast',
-                'effort' => 'medium',
-                'input_usd_per_million' => 0.0489,
-                'output_usd_per_million' => 0.0977,
-                'cache_read_usd_per_million' => 0.004,
-                'context_length' => 1048576,
-                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
-                'tasks' => ['chat', 'mcq', 'summary'],
-                'tags' => ['recommended', 'cheapest'],
-                'fallbacks' => ['deepseek/deepseek-v4-pro', 'google/gemini-3.5-flash-lite'],
-                'provider_max_price' => ['prompt' => 0.10, 'completion' => 0.20],
-                'sort_order' => 10,
-            ],
-
-            'deepseek/deepseek-v4-pro' => [
-                'key' => 'deepseek-pro',
-                'canonical_slug' => 'deepseek/deepseek-v4-pro-20260423',
-                'label' => 'DeepSeek V4 Pro',
-                'company' => 'DeepSeek',
-                'variant' => 'pro',
-                'tier' => 'smart',
-                'effort' => 'medium',
-                'input_usd_per_million' => 0.3969,
-                'output_usd_per_million' => 0.7938,
-                'cache_read_usd_per_million' => 0.004,
-                'context_length' => 1048576,
-                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
-                'tasks' => ['chat', 'mcq', 'summary'],
-                'tags' => [],
-                'fallbacks' => ['deepseek/deepseek-v4-flash'],
-                'provider_max_price' => null,
-                'sort_order' => 20,
-            ],
-
-            'qwen/qwen3.7-plus' => [
-                'key' => 'qwen-fast',
-                'canonical_slug' => 'qwen/qwen3.7-plus-20260602',
-                'label' => 'Qwen3.7 Plus',
-                'company' => 'Qwen',
-                'variant' => 'fast',
-                'tier' => 'fast',
-                'effort' => 'medium',
-                'input_usd_per_million' => 0.32,
-                'output_usd_per_million' => 1.28,
-                'cache_read_usd_per_million' => 0.064,
-                'context_length' => 1000000,
-                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
-                'tasks' => ['chat', 'mcq', 'summary'],
-                'tags' => [],
-                'fallbacks' => [],
-                'provider_max_price' => null,
-                'sort_order' => 30,
-            ],
-
-            'openai/gpt-5.4-mini' => [
-                'key' => 'gpt-fast',
-                'canonical_slug' => 'openai/gpt-5.4-mini-20260317',
-                'label' => 'GPT-5.4 Mini',
-                'company' => 'OpenAI',
-                'variant' => 'balanced',
-                'tier' => 'fast',
-                'effort' => 'medium',
-                'input_usd_per_million' => 0.75,
-                'output_usd_per_million' => 4.5,
-                'cache_read_usd_per_million' => 0.075,
-                'context_length' => 400000,
-                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
-                'tasks' => ['chat', 'mcq', 'summary'],
-                'tags' => [],
-                'fallbacks' => [],
-                'provider_max_price' => null,
-                'sort_order' => 40,
-            ],
-
-            'z-ai/glm-5.2' => [
-                'key' => 'glm-balanced',
-                'canonical_slug' => 'z-ai/glm-5.2-20260616',
-                'label' => 'GLM-5.2',
-                'company' => 'Z.ai',
-                'variant' => 'balanced',
-                'tier' => 'balanced',
-                'effort' => 'medium',
-                'input_usd_per_million' => 0.966,
-                'output_usd_per_million' => 3.036,
-                'cache_read_usd_per_million' => 0.18,
-                'context_length' => 1048576,
-                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
-                'tasks' => ['chat', 'mcq', 'summary'],
-                'tags' => [],
-                'fallbacks' => [],
+                'fallbacks' => ['google/gemini-3.1-flash-lite'],
                 'provider_max_price' => null,
                 'sort_order' => 50,
             ],
 
-            'x-ai/grok-4.3' => [
-                'key' => 'grok-balanced',
-                'canonical_slug' => 'x-ai/grok-4.3-20260430',
-                'label' => 'Grok 4.3',
-                'company' => 'xAI',
-                'variant' => 'balanced',
-                'tier' => 'balanced',
+            'deepseek/deepseek-v4-pro-0813' => [
+                'key' => 'deepseek-pro',
+                'canonical_slug' => 'deepseek/deepseek-v4-pro-20260813',
+                'label' => 'DeepSeek V4 Pro 0813',
+                'company' => 'DeepSeek',
+                'variant' => 'pro',
+                'tier' => 'smart',
                 'effort' => 'medium',
-                'input_usd_per_million' => 1.25,
-                'output_usd_per_million' => 2.5,
-                'cache_read_usd_per_million' => 0.2,
-                'context_length' => 1000000,
-                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'input_usd_per_million' => 0.57948,
+                'output_usd_per_million' => 1.73844,
+                'cache_read_usd_per_million' => 0.019316,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
+                // Also the fleet's `authoring` model (see the Authoring block),
+                // which resolves through config like chat/vision/documents do —
+                // no `authoring` task label, so the one-recommended-per-task
+                // invariant stays about the menus users actually pick from.
                 'tasks' => ['chat', 'mcq', 'summary'],
                 'tags' => [],
-                'fallbacks' => [],
+                'fallbacks' => ['deepseek/deepseek-v4-flash-0731'],
                 'provider_max_price' => null,
                 'sort_order' => 60,
             ],
 
-            'qwen/qwen3.7-max' => [
-                'key' => 'qwen-pro',
-                'canonical_slug' => 'qwen/qwen3.7-max-20260520',
-                'label' => 'Qwen3.7 Max',
-                'company' => 'Qwen',
-                'variant' => 'pro',
-                'tier' => 'smart',
+            'google/gemini-3.8-flash' => [
+                'key' => 'gemini-fast',
+                'canonical_slug' => 'google/gemini-3.8-flash-20260902',
+                'label' => 'Gemini 3.8 Flash',
+                'company' => 'Google',
+                'variant' => 'balanced',
+                'tier' => 'balanced',
                 'effort' => 'medium',
-                'input_usd_per_million' => 1.475,
-                'output_usd_per_million' => 4.425,
-                'cache_read_usd_per_million' => 0.25,
-                'context_length' => 1000000,
-                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
+                'input_usd_per_million' => 0.75,
+                'output_usd_per_million' => 3.75,
+                'cache_read_usd_per_million' => 0.075,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
                 'tasks' => ['chat', 'mcq', 'summary'],
                 'tags' => [],
                 'fallbacks' => [],
@@ -445,24 +457,64 @@ return [
                 'sort_order' => 70,
             ],
 
-            'google/gemini-3.5-flash' => [
-                'key' => 'gemini-fast',
-                'canonical_slug' => 'google/gemini-3.5-flash-20260519',
-                'label' => 'Gemini 3.5 Flash',
-                'company' => 'Google',
-                'variant' => 'fast',
-                'tier' => 'fast',
+            'z-ai/glm-5.3' => [
+                'key' => 'glm-balanced',
+                'canonical_slug' => 'z-ai/glm-5.3-20260816',
+                'label' => 'GLM 5.3',
+                'company' => 'Z.ai',
+                'variant' => 'balanced',
+                'tier' => 'balanced',
                 'effort' => 'medium',
-                'input_usd_per_million' => 1.5,
-                'output_usd_per_million' => 9.0,
-                'cache_read_usd_per_million' => 0.15,
-                'context_length' => 1048576,
-                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'input_usd_per_million' => 1.092,
+                'output_usd_per_million' => 3.432,
+                'cache_read_usd_per_million' => 0.2028,
+                'context_length' => 1310720,
+                'capabilities' => ['tools', 'reasoning', 'structured_outputs'],
                 'tasks' => ['chat', 'mcq', 'summary'],
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
                 'sort_order' => 80,
+            ],
+
+            'x-ai/grok-4.6' => [
+                'key' => 'grok-balanced',
+                'canonical_slug' => 'x-ai/grok-4.6-20260810',
+                'label' => 'Grok 4.6',
+                'company' => 'xAI',
+                'variant' => 'balanced',
+                'tier' => 'balanced',
+                'effort' => 'medium',
+                'input_usd_per_million' => 2.0,
+                'output_usd_per_million' => 6.0,
+                'cache_read_usd_per_million' => 0.5,
+                'context_length' => 500000,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => [],
+                'fallbacks' => [],
+                'provider_max_price' => null,
+                'sort_order' => 90,
+            ],
+
+            'qwen/qwen3.8-max-0902' => [
+                'key' => 'qwen-pro',
+                'canonical_slug' => 'qwen/qwen3.8-max-20260902',
+                'label' => 'Qwen3.8 Max',
+                'company' => 'Qwen',
+                'variant' => 'pro',
+                'tier' => 'smart',
+                'effort' => 'medium',
+                'input_usd_per_million' => 2.0,
+                'output_usd_per_million' => 6.0,
+                'cache_read_usd_per_million' => 0.25,
+                'context_length' => 1000000,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => [],
+                'fallbacks' => [],
+                'provider_max_price' => null,
+                'sort_order' => 100,
             ],
 
             'anthropic/claude-sonnet-5' => [
@@ -482,7 +534,7 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 90,
+                'sort_order' => 110,
             ],
 
             'google/gemini-3.1-pro-preview' => [
@@ -502,67 +554,50 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 100,
+                'sort_order' => 120,
             ],
 
-            'openai/gpt-5.4' => [
+            'openai/gpt-5.6-terra' => [
                 'key' => 'gpt-pro',
-                'canonical_slug' => 'openai/gpt-5.4-20260305',
-                'label' => 'GPT-5.4',
+                'canonical_slug' => 'openai/gpt-5.6-terra-20260709',
+                'label' => 'GPT-5.6 Terra',
                 'company' => 'OpenAI',
                 'variant' => 'pro',
                 'tier' => 'smart',
                 'effort' => 'medium',
-                'input_usd_per_million' => 2.5,
-                'output_usd_per_million' => 15.0,
-                'cache_read_usd_per_million' => 0.25,
+                'input_usd_per_million' => 2.0,
+                'output_usd_per_million' => 12.0,
+                'cache_read_usd_per_million' => 0.2,
                 'context_length' => 1050000,
                 'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
                 'tasks' => ['chat', 'mcq', 'summary'],
                 'tags' => ['smartest'],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 110,
+                'sort_order' => 130,
             ],
 
-            'google/gemini-2.5-flash-lite' => [
+            'google/gemini-3.1-flash-lite' => [
                 'key' => 'gemini-vision',
-                'canonical_slug' => 'google/gemini-2.5-flash-lite',
-                'label' => 'Gemini 2.5 Flash Lite',
+                'canonical_slug' => 'google/gemini-3.1-flash-lite-20260507',
+                'label' => 'Gemini 3.1 Flash Lite',
                 'company' => 'Google',
                 'variant' => 'fast',
                 'tier' => 'fast',
                 'effort' => 'low',
-                'input_usd_per_million' => 0.1,
-                'output_usd_per_million' => 0.4,
-                'cache_read_usd_per_million' => 0.025,
-                'context_length' => 1048576,
-                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
-                'tasks' => ['vision'],
-                'tags' => ['recommended', 'cheapest_vision'],
-                'fallbacks' => ['google/gemini-3.1-flash-lite'],
-                'provider_max_price' => null,
-                'sort_order' => 200,
-            ],
-
-            'google/gemini-3.1-flash-lite' => [
-                'key' => 'gemini-vision-balanced',
-                'canonical_slug' => 'google/gemini-3.1-flash-lite-20260507',
-                'label' => 'Gemini 3.1 Flash Lite',
-                'company' => 'Google',
-                'variant' => 'balanced',
-                'tier' => 'balanced',
-                'effort' => 'low',
                 'input_usd_per_million' => 0.25,
                 'output_usd_per_million' => 1.5,
-                'cache_read_usd_per_million' => 0.0625,
+                'cache_read_usd_per_million' => 0.025,
                 'context_length' => 1048576,
-                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
-                'tasks' => ['vision'],
-                'tags' => [],
-                'fallbacks' => ['google/gemini-3.5-flash'],
+                'capabilities' => ['tools', 'vision', 'audio', 'file', 'reasoning', 'structured_outputs'],
+                // NOT offered for `chat`: this is the eyes/ears lane, chosen on
+                // transcription fidelity rather than conversation quality, and
+                // it must not appear in the user-facing picker.
+                'tasks' => ['vision', 'document'],
+                'tags' => ['recommended', 'cheapest_vision'],
+                'fallbacks' => ['google/gemini-3.5-flash-lite'],
                 'provider_max_price' => null,
-                'sort_order' => 210,
+                'sort_order' => 200,
             ],
         ],
     ],
@@ -579,12 +614,27 @@ return [
     | reason a config change could look applied and change nothing, and #26
     | deletes it.
     |
-    | The slug is PINNED by owner ruling: `deepseek/deepseek-v4-flash`. It is
-    | the fleet's main chat brain — reasoning + tools + structured outputs,
-    | 1M context, and roughly 6x cheaper in and 25x cheaper out than the
-    | Gemini Flash Lite it replaces. Ruling #20's objection (no usable "low"
-    | effort, "high" crawls) was re-measured on 2026-08-24 and no longer
-    | holds: low/medium/high all answer in 4-6 s on the current build.
+    | The slug is PINNED by owner ruling: `deepseek/deepseek-v4-flash-0731`
+    | (DECISIONS.md #28). It is the fleet's main chat brain — reasoning + tools
+    | + structured outputs, 1.31M context, and the cheapest capable agentic
+    | model on OpenRouter at $0.04/$0.08 per M.
+    |
+    | It REPLACES `deepseek/deepseek-v4-flash` (the April "0423" build the
+    | undated alias still resolves to) and it wins on every axis the owner set
+    | for a default swap — same-or-cheaper, same-or-faster, same-or-smarter:
+    |
+    |                          $/M in   $/M out   ctx      measured tok/s
+    |   v4-flash (0423)         0.0476   0.0952   1.05M     49-105   <- was
+    |   v4-flash-0731           0.0400   0.0800   1.31M    147-240   <- now
+    |
+    | Measured 2026-09-13 over three representative turns (an Arabic tool-call
+    | request, an Arabic multi-step calculation, a strict-JSON summary), twice
+    | each: 0731 answered in the same or less wall-clock every time at 2-4x the
+    | token rate, with correct answers throughout and cleaner structure. It is
+    | DeepSeek's re-post-trained V4 Flash revision, explicitly tuned for
+    | "coding, reasoning, and agent workflows" — which is what this assistant
+    | is. Ruling #20's objection (no usable "low" effort, "high" crawls) was
+    | re-measured on 2026-08-24 and no longer holds.
     |
     | `reasoning_effort` is 'medium' — the owner's "mid reasoning" call. It
     | is shared because thinking quality is what makes the assistant usable
@@ -621,7 +671,7 @@ return [
     */
 
     'chat' => [
-        'model' => env('AI_KIT_CHAT_MODEL', 'deepseek/deepseek-v4-flash'),
+        'model' => env('AI_KIT_CHAT_MODEL', 'deepseek/deepseek-v4-flash-0731'),
         'reasoning_effort' => env('AI_KIT_CHAT_REASONING_EFFORT', 'medium'),
         'max_steps' => (int) env('AI_KIT_CHAT_MAX_STEPS', 12),
         'reasoning_on_tool_steps' => true,
@@ -643,16 +693,98 @@ return [
     | chat on purpose: the chat default is text-only, and vision work is
     | bursty, cheap-per-call and quality-sensitive in Arabic.
     |
-    | Pinned to `google/gemini-2.5-flash-lite` by owner ruling on cost: at
-    | $0.10/$0.40 per M it is the cheapest vision-capable model that still
-    | carries tools + structured outputs, 2.5x cheaper than the
-    | `google/gemini-3.1-flash-lite` that previously held the slot and which
-    | remains its declared fallback.
+    | Pinned to `google/gemini-3.1-flash-lite` (DECISIONS.md #28a), which is
+    | ALSO the `documents` model below — one pair of eyes for the whole fleet.
+    | This supersedes the 2026-08-24 cost ruling that put
+    | `google/gemini-2.5-flash-lite` here: that choice was made on price alone
+    | and the accuracy it bought is not good enough for Arabic course material.
+    |
+    | Measured 2026-09-13 on a degraded Arabic lecture scan (rotated, blurred,
+    | noisy; Arabic-Indic numerals, mixed AR/EN math, a deadline and a grade
+    | the downstream summary must not get wrong), three reps each — character
+    | similarity against ground truth / load-bearing facts recovered / latency:
+    |
+    |   gemini-3.1-flash-lite   98.0 98.3 98.1 %   10/10 every rep   2.3-3.2 s  <- now
+    |   gemini-2.5-flash        92.1 93.7 94.6 %    9-10/10          3.9-4.4 s
+    |   qwen3.8-flash           93.8 87.8 90.1 %   10/10             4.8-8.3 s
+    |   gemini-2.5-flash-lite   83.0 83.0 83.2 %    9/10             3.2-4.5 s  <- was
+    |   gemini-3.5-flash-lite   98.2 71.8 74.8 %    9-10/10          5.1-7.1 s
+    |   gemini-3.8-flash        70.1 %  (ran away to the token cap)  19.3 s
+    |   glm-5.3-flash            0.0 %  (looped to the token cap)    29.1 s
+    |
+    | The winner is the most accurate AND the fastest AND cheaper than the
+    | `google/gemini-2.5-flash` two apps were pinning privately. It costs 2.5x
+    | the retired 2.5-flash-lite rate, which is the one place this release
+    | spends more: a vision pass is a handful of pages, and 83% on a scan is
+    | not a saving — it is a wrong grade in a student's summary.
+    |
+    | `fallback_model` is the sturdier `google/gemini-3.5-flash-lite`, retried
+    | when the primary errors or returns unusable output twice in a row. It
+    | scores as well as the primary at its best and materially worse at its
+    | worst, which is exactly the right shape for a second attempt.
     |
     */
 
     'vision' => [
-        'model' => env('AI_KIT_VISION_MODEL', 'google/gemini-2.5-flash-lite'),
+        'model' => env('AI_KIT_VISION_MODEL', 'google/gemini-3.1-flash-lite'),
+        'fallback_model' => env('AI_KIT_VISION_FALLBACK_MODEL', 'google/gemini-3.5-flash-lite'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Documents (native file + audio)
+    |--------------------------------------------------------------------------
+    |
+    | The fleet's lane for work the provider reads FROM A FILE rather than from
+    | text we extracted first: a scanned PDF read natively (no per-page OCR
+    | fee), a lecture recording transcribed to captions, a long document
+    | summarized or translated whole. It is a THIRD decision beside chat and
+    | vision because it has a hard capability floor the other two do not —
+    | the model must accept `file` and `audio` input, which on OpenRouter today
+    | means the Gemini family and little else.
+    |
+    | Same pair as `vision` and for the same measured reason: this is the ears
+    | and eyes lane, and the pair was already catodemy's (`ai.model` /
+    | `ai.fallback_model`) before this ruling — the release moves that choice
+    | into the kit instead of leaving three apps to pin their own. s-grade's
+    | private `google/gemini-2.5-flash` document pin resolves here now, which
+    | makes its scanned-PDF path cheaper AND more accurate.
+    |
+    | `fallback_model` is what a caller retries onto when the primary errors OR
+    | returns unusable output twice in a row — so a transient miss costs a
+    | retry, not the job. On AUDIO the fallback is the cheaper of the two, so an
+    | ASR retry never costs more than the attempt it replaces.
+    |
+    */
+
+    'documents' => [
+        'model' => env('AI_KIT_DOCUMENTS_MODEL', 'google/gemini-3.1-flash-lite'),
+        'fallback_model' => env('AI_KIT_DOCUMENTS_FALLBACK_MODEL', 'google/gemini-3.5-flash-lite'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Authoring
+    |--------------------------------------------------------------------------
+    |
+    | The heavyweight lane for admin-triggered, review-gated drafting: writing
+    | a page from a source document, proposing revisions, drafting a course
+    | report's prose from real grade data. Rare, high-value, never on a
+    | student's latency budget — so it buys reasoning depth the chat default
+    | does not need to.
+    |
+    | Pinned to `deepseek/deepseek-v4-pro-0813`, the GA build of DeepSeek V4
+    | Pro. It supersedes `deepseek/deepseek-v4-pro` (the April build the
+    | undated alias resolves to) on price alone: $0.579/$1.738 against
+    | $1.60/$3.20 per M for an older revision — the same family, newer, at
+    | roughly a third of the rate. uqucc had already found this and pinned it
+    | privately; s-grade was drafting narratives on `google/gemini-2.5-flash`.
+    | Both resolve here now.
+    |
+    */
+
+    'authoring' => [
+        'model' => env('AI_KIT_AUTHORING_MODEL', 'deepseek/deepseek-v4-pro-0813'),
     ],
 
     /*

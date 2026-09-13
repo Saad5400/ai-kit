@@ -141,7 +141,7 @@ it('serves the fleet default chat model, and lets an app override it', function 
     // a fresh app gets.
     $catalog = new Catalog(app(CatalogSource::class));
 
-    expect($catalog->chatModel())->toBe('deepseek/deepseek-v4-flash');
+    expect($catalog->chatModel())->toBe('deepseek/deepseek-v4-flash-0731');
 
     config()->set('ai-kit.chat.model', 'google/gemini-3.1-flash-lite');
 
@@ -155,12 +155,58 @@ it('serves the fleet default chat model, and lets an app override it', function 
  * regression here is a regression in every app at once.
  */
 
-it('ships the ruled shared chat and vision defaults', function () {
+it('ships the ruled shared chat, vision, documents and authoring defaults', function () {
     $catalog = app(Catalog::class);
 
-    expect($catalog->chatModel())->toBe('deepseek/deepseek-v4-flash')
+    expect($catalog->chatModel())->toBe('deepseek/deepseek-v4-flash-0731')
         ->and($catalog->chatReasoningEffort())->toBe('medium')
-        ->and($catalog->visionModel())->toBe('google/gemini-2.5-flash-lite');
+        ->and($catalog->visionModel())->toBe('google/gemini-3.1-flash-lite')
+        ->and($catalog->visionFallbackModel())->toBe('google/gemini-3.5-flash-lite')
+        ->and($catalog->documentsModel())->toBe('google/gemini-3.1-flash-lite')
+        ->and($catalog->documentsFallbackModel())->toBe('google/gemini-3.5-flash-lite')
+        ->and($catalog->authoringModel())->toBe('deepseek/deepseek-v4-pro-0813');
+});
+
+/*
+ * DECISIONS.md #28a: every lane the fleet shares resolves to a model the
+ * shipped catalog also DECLARES, so a lane inherits that entry's fallbacks and
+ * price cap instead of routing at a slug nothing here describes. A lane that
+ * drifts off the catalog is the failure this guards.
+ */
+it('resolves every shared lane to a declared catalog entry', function () {
+    $catalog = app(Catalog::class);
+
+    $lanes = [
+        'chat' => $catalog->chatModel(),
+        'vision' => $catalog->visionModel(),
+        'vision fallback' => $catalog->visionFallbackModel(),
+        'documents' => $catalog->documentsModel(),
+        'documents fallback' => $catalog->documentsFallbackModel(),
+        'authoring' => $catalog->authoringModel(),
+    ];
+
+    foreach ($lanes as $lane => $id) {
+        expect($catalog->find($id))->not->toBeNull("the {$lane} lane routes at an undeclared model: {$id}");
+    }
+});
+
+/*
+ * The picker renders `label` and orders by `sort_order` (DECISIONS.md #28b),
+ * so a row missing either is a row the user sees as a bare slug or in the
+ * wrong place. `sort_order` must agree with price, because "sorted by price"
+ * is the contract the ×-multiplier is read against.
+ */
+it('labels every shipped model and orders the chat menu by price', function () {
+    $chat = app(Catalog::class)->forTask('chat')->values();
+
+    foreach (app(Catalog::class)->models() as $model) {
+        expect($model->label)->not->toBeNull("model {$model->id} ships no label")
+            ->and($model->extra['sort_order'] ?? null)->not->toBeNull("model {$model->id} ships no sort_order");
+    }
+
+    $blended = $chat->map(fn (ModelDefinition $model): float => ($model->inputUsdPerMillion * 0.75) + ($model->outputUsdPerMillion * 0.25));
+
+    expect($blended->all())->toBe($blended->sort()->values()->all());
 });
 
 it('keeps the chat default text-capable and the vision default vision-capable', function () {
@@ -196,8 +242,8 @@ it('recommends exactly one shipped model per declared task', function () {
             ->toBe(1, "task '{$task}' must have exactly one recommended model");
     }
 
-    expect($catalog->recommendedFor('chat')->id)->toBe('deepseek/deepseek-v4-flash')
-        ->and($catalog->recommendedFor('vision')->id)->toBe('google/gemini-2.5-flash-lite');
+    expect($catalog->recommendedFor('chat')->id)->toBe('deepseek/deepseek-v4-flash-0731')
+        ->and($catalog->recommendedFor('vision')->id)->toBe('google/gemini-3.1-flash-lite');
 });
 
 it('declares a fallback chain that resolves inside the shipped catalog', function () {
@@ -237,7 +283,7 @@ it('preserves app-facing catalog keys the kit does not model itself', function (
 });
 
 it('carries company and variant through the shipped catalog', function () {
-    $chat = app(Catalog::class)->find('deepseek/deepseek-v4-flash');
+    $chat = app(Catalog::class)->find('deepseek/deepseek-v4-flash-0731');
 
     expect($chat->extra['company'])->toBe('DeepSeek')
         ->and($chat->extra['variant'])->toBe('fast');

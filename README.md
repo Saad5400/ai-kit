@@ -25,17 +25,36 @@ Toggled per app via `config/ai-kit.php` → `modules.*`:
 
 `Saad\AiKit\Testing` ships fakes + exported contract test suites for apps (dev-only, not a toggle).
 
-## Default chat model
+## Shared model lanes
 
-The kit carries the fleet's **shared default chat model** ([`docs/DECISIONS.md`](docs/DECISIONS.md) #21) — apps inherit it and override only if they mean to:
+The kit carries the fleet's **model decisions** ([`docs/DECISIONS.md`](docs/DECISIONS.md) #28) — apps inherit them and no app names a slug of its own:
 
 ```php
-'chat' => [
-    'model' => env('AI_KIT_CHAT_MODEL', 'google/gemini-3.5-flash-lite'),
-],
+'chat'      => ['model' => env('AI_KIT_CHAT_MODEL', 'deepseek/deepseek-v4-flash-0731')],
+'vision'    => ['model' => 'google/gemini-3.1-flash-lite', 'fallback_model' => 'google/gemini-3.5-flash-lite'],
+'documents' => ['model' => 'google/gemini-3.1-flash-lite', 'fallback_model' => 'google/gemini-3.5-flash-lite'],
+'authoring' => ['model' => 'deepseek/deepseek-v4-pro-0813'],
 ```
 
-Read it through `Catalog::chatModel()`. The slug is pinned by owner ruling, not by taste: Gemini Flash Lite (tools + reasoning + structured outputs + multimodal, 1M context), with `google/gemini-3.1-flash-lite` / `google/gemini-2.5-flash-lite` as the cheaper fallback candidates. Resolution order stays the app's — an app-level setting that already wins over config keeps winning (uqucc's `AiSettings->chat_model` row must be migrated at adoption); this key is the floor of that chain so the decision lives in one place instead of three. A slug the app's catalog also declares picks up that entry's `fallbacks` and price cap for free.
+| Lane | Read through | What routes here |
+|---|---|---|
+| `chat` | `Catalog::chatModel()` + `chatReasoningEffort()` | Every assistant turn. The floor of the app's chain — a user's catalog pick still wins. |
+| `vision` | `Catalog::visionModel()` / `visionFallbackModel()` | The eyes-only pass: an image → text or structured JSON. |
+| `documents` | `Catalog::documentsModel()` / `documentsFallbackModel()` | Anything the provider reads FROM A FILE: native scanned-PDF reads, ASR, whole-document summary/translation. Hard capability floor — must accept `file` and `audio`. |
+| `authoring` | `Catalog::authoringModel()` | Admin-triggered, review-gated drafting. Rare, never on a student's latency budget. |
+
+Every lane resolves to a model the shipped catalog also declares, so it inherits that entry's `fallbacks` and price cap for free; a test holds it there. An app key that ships EMPTY falls through to the kit — which is the intended shape, since the whole point of #28 is that a model changes here and reaches three apps through a version bump.
+
+A default only moves when it is **same-or-cheaper AND same-or-faster AND same-or-smarter** — measured, not assumed. The `catalog.models` docblock carries the numbers behind the current pins.
+
+## The model menu
+
+`catalog.models` is the user-facing registry, ordered **cheapest first** (`sort_order` agrees with price, and a test says so). Two display rules are contract, not styling:
+
+- **A model is shown by its `label`** — the provider's real name ("DeepSeek V4 Flash 0731", "Claude Sonnet 5"). Never an invented "{company} · {variant}" composition: `company` is the brand mark beside the name and `variant`/`tier` are grouping metadata, not names.
+- **Cost is shown as a multiple of the default** — ×1, ×3, ×26 — never raw $/Mtok. The baseline is the default model, which is also the cheapest and carries both tags, so "×1" and "what you get if you choose nothing" are the same row.
+
+Entries carry app-facing fields the kit never interprets (`key`, `company`, `variant`, `tier`, `effort`, `cache_read_usd_per_million`), preserved into `ModelDefinition::$extra`. `key` is stable identity: stored user selections reference it, so renaming one is a data migration.
 
 ## The wire contract
 

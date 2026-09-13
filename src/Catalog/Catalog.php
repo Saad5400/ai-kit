@@ -59,7 +59,7 @@ class Catalog
      */
     public function chatModel(): string
     {
-        return (string) config('ai-kit.chat.model', 'deepseek/deepseek-v4-flash');
+        return (string) config('ai-kit.chat.model', 'deepseek/deepseek-v4-flash-0731');
     }
 
     /**
@@ -82,7 +82,51 @@ class Catalog
      */
     public function visionModel(): string
     {
-        return (string) config('ai-kit.vision.model', 'google/gemini-2.5-flash-lite');
+        return (string) config('ai-kit.vision.model', 'google/gemini-3.1-flash-lite');
+    }
+
+    /**
+     * The sturdier model a vision caller retries onto when {@see visionModel()}
+     * errors, or returns unusable output twice in a row (DECISIONS.md #28a).
+     */
+    public function visionFallbackModel(): string
+    {
+        return (string) config('ai-kit.vision.fallback_model', 'google/gemini-3.5-flash-lite');
+    }
+
+    /**
+     * The fleet's default model for work read straight FROM A FILE — a scanned
+     * PDF parsed natively, a lecture recording transcribed, a long document
+     * summarized or translated whole (DECISIONS.md #28a).
+     *
+     * A third decision beside {@see chatModel()} and {@see visionModel()}
+     * because it carries a hard capability floor the others do not: the model
+     * must accept `file` AND `audio` input.
+     */
+    public function documentsModel(): string
+    {
+        return (string) config('ai-kit.documents.model', 'google/gemini-3.1-flash-lite');
+    }
+
+    /**
+     * The sturdier model a documents caller retries onto — see
+     * {@see documentsModel()}. Cheaper than the primary on AUDIO, so an ASR
+     * retry never costs more than the attempt it replaces.
+     */
+    public function documentsFallbackModel(): string
+    {
+        return (string) config('ai-kit.documents.fallback_model', 'google/gemini-3.5-flash-lite');
+    }
+
+    /**
+     * The heavyweight model for admin-triggered, review-gated drafting — page
+     * copy from a source document, proposed revisions, a course report's prose
+     * (DECISIONS.md #28a). Rare and never on a student's latency budget, so it
+     * buys reasoning depth the chat default does not need.
+     */
+    public function authoringModel(): string
+    {
+        return (string) config('ai-kit.authoring.model', 'deepseek/deepseek-v4-pro-0813');
     }
 
     /**

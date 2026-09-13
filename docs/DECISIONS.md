@@ -228,6 +228,48 @@ recommendation at decision time.
     their next kit bump — the inventory builder and the tool's tenancy stay
     app glue by design.
 
+28. **One model menu for the fleet, refreshed and named — RULED 2026-09-13 (Saad)**,
+    superseding #26's model pins (its machinery — shared catalog, provider-only cost,
+    `key` as stable identity — stands unchanged). Trigger: three apps had drifted to
+    three different answers for the same question. "Read this image" was
+    `gemini-2.5-flash` in s-grade, `gemini-3.1-flash-lite` in catodemy and
+    `gemini-2.5-flash-lite` in uqucc; s-grade's auto-title model was a fourth slug
+    the kit's `catalog.cheapest` already answered. The rule is: **a model decision is
+    made once, here, and no app names a slug of its own.**
+    (a) **Four shared lanes, not two.** `chat` and `vision` keep their meaning;
+    `documents` (native file + audio: scanned-PDF reads, ASR, whole-document summary
+    and translation) and `authoring` (admin-triggered, review-gated drafting) join
+    them, because those were exactly the surfaces still pinning privately — a lane
+    with no shared home is a lane that drifts. Every lane resolves to a model the
+    shipped catalog also declares, so it inherits that entry's fallbacks and price
+    cap; a test guards it. App keys ship EMPTY and fall through to the kit.
+    (b) **The defaults, and the bar a swap must clear.** A default only moves if it is
+    same-or-cheaper AND same-or-faster AND same-or-smarter; otherwise it is left alone
+    and merely unified. Measured against live OpenRouter on 2026-09-13:
+    chat `deepseek/deepseek-v4-flash` → **`deepseek/deepseek-v4-flash-0731`**
+    ($0.0476/$0.0952 → $0.04/$0.08 per M, 1.05M → 1.31M context, 2-4x the measured
+    token rate at equal-or-better answers); authoring `deepseek/deepseek-v4-pro` →
+    **`deepseek/deepseek-v4-pro-0813`** ($1.60/$3.20 → $0.579/$1.738 for the newer GA
+    build). Vision + documents are the ONE place the fleet spends more:
+    **`google/gemini-3.1-flash-lite`** at 98% character fidelity on a degraded Arabic
+    lecture scan against 83% for the `gemini-2.5-flash-lite` #26b had chosen on price.
+    83% on a scan is not a saving — it is a wrong grade in a student's summary — and
+    the new pin is still cheaper and faster than the `gemini-2.5-flash` two apps were
+    using privately. The whole 12-model menu is refreshed to each vendor's current
+    build at the same time (GLM 5.3, Qwen3.8, GPT-5.6, Gemini 3.8, Grok 4.6).
+    (c) **A model is shown by its NAME.** Pickers render `label` — "DeepSeek V4 Flash
+    0731", "Claude Sonnet 5" — never the invented "{company} · {variant}" composition
+    ("DeepSeek · سريع") the apps had been showing. That label named nothing the user
+    could look up, compare against what they had read elsewhere, or tell apart from
+    the next row by the same vendor. `company` survives as the brand mark beside the
+    name and `variant`/`tier` as grouping metadata; neither is a name.
+    (d) **Price is shown as a MULTIPLE OF THE DEFAULT.** The menu is ordered cheapest
+    first and each row reads ×1, ×3, ×26 — never a raw $/Mtok, and never a
+    credit estimate presented as if it were exact. The baseline is the DEFAULT model
+    (which is also the cheapest, and tagged both), so "×1" and "the one you get if you
+    choose nothing" are the same row. `sort_order` encodes the price order and a test
+    holds it to it.
+
 ## Deviation ledger
 
 | Shipped (v0.3.x / PR #127–#128) | Owner ruling 2026-08-17 | Resolution |
