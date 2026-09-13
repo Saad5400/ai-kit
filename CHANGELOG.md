@@ -3,6 +3,22 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.13.1
+
+- Catalog: `z-ai/glm-5.3-flash` re-priced to its live rate — $0.15/$0.50 per M, DOUBLE what it
+  published hours earlier on the same day. Re-read prices before trusting them; `sort_order`
+  moves with them.
+- Catalog: `deepseek/deepseek-v4.1-flash` (key `deepseek-balanced`) joins the menu — DeepSeek's
+  newest, the first on their Causal Encoder-Decoder architecture, and the only DeepSeek row that
+  takes IMAGE input. $0.15/$0.60 per M, 1.05M context. Not a default candidate at ~4x the chat
+  default's input rate; it earns its slot on the capability neither V4 Flash nor V4 Pro has.
+- Catalog: `minimax/minimax-m3` (key `minimax-fast`) joins the menu — $0.30/$1.20 per M, 1M
+  context, text + image + video, and the fastest of the candidates measured (160 tok/s).
+- Both were benched 2026-09-13 on the Arabic tool-call and multi-step-calculation turns and
+  answered correctly. Also measured and NOT added: Kimi K3 (Qwen3.8 Max covers the tier at a
+  third of the output rate), Tencent HY4 and ByteDance Seed 2.1 Turbo (10-16 s per turn),
+  StepFun 3.7 Flash and Ling 3.0 Flash VL (262k / 131k context, far under the rest of the menu).
+
 ## 0.13.0
 
 Model unification (DECISIONS.md #28). One menu, four shared lanes, real names.

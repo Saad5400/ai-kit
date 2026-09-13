@@ -234,6 +234,12 @@ return [
     | so a stale row here can misinform but can never mischarge. Every rate
     | below was read from the live models API on 2026-09-13.
     |
+    | RE-READ THEM. `z-ai/glm-5.3-flash` doubled — $0.075/$0.25 to $0.15/$0.50 —
+    | inside the few hours between the first draft of this list and its review.
+    | A price here is a snapshot, not a constant; check the live API before
+    | trusting one, and re-check `sort_order` when you do, because the menu's
+    | order and its ×-multipliers are read against these numbers.
+    |
     | `label` is the model's REAL NAME as the provider publishes it ("DeepSeek
     | V4 Flash 0731", "Gemini 3.5 Flash Lite") and it is what every picker in
     | the fleet renders (DECISIONS.md #28b). The older "{company} · {variant}"
@@ -330,26 +336,6 @@ return [
                 'sort_order' => 10,
             ],
 
-            'z-ai/glm-5.3-flash' => [
-                'key' => 'glm-fast',
-                'canonical_slug' => 'z-ai/glm-5.3-flash-20260826',
-                'label' => 'GLM 5.3 Flash',
-                'company' => 'Z.ai',
-                'variant' => 'fast',
-                'tier' => 'fast',
-                'effort' => 'medium',
-                'input_usd_per_million' => 0.075,
-                'output_usd_per_million' => 0.25,
-                'cache_read_usd_per_million' => 0.015,
-                'context_length' => 1310720,
-                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
-                'tasks' => ['chat', 'mcq', 'summary'],
-                'tags' => [],
-                'fallbacks' => ['deepseek/deepseek-v4-flash-0731'],
-                'provider_max_price' => null,
-                'sort_order' => 20,
-            ],
-
             'qwen/qwen3.8-flash' => [
                 'key' => 'qwen-fast',
                 'canonical_slug' => 'qwen/qwen3.8-flash-20260826',
@@ -367,7 +353,55 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
+                'sort_order' => 20,
+            ],
+
+            'z-ai/glm-5.3-flash' => [
+                'key' => 'glm-fast',
+                'canonical_slug' => 'z-ai/glm-5.3-flash-20260826',
+                'label' => 'GLM 5.3 Flash',
+                'company' => 'Z.ai',
+                'variant' => 'fast',
+                'tier' => 'fast',
+                'effort' => 'medium',
+                // Re-read 2026-09-13 PM: this row DOUBLED from $0.075/$0.25
+                // within the same day it was first written. Re-read the live
+                // rates before trusting any price in this file.
+                'input_usd_per_million' => 0.15,
+                'output_usd_per_million' => 0.5,
+                'cache_read_usd_per_million' => 0.03,
+                'context_length' => 1310720,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => [],
+                'fallbacks' => ['deepseek/deepseek-v4-flash-0731'],
+                'provider_max_price' => null,
                 'sort_order' => 30,
+            ],
+
+            'deepseek/deepseek-v4.1-flash' => [
+                'key' => 'deepseek-balanced',
+                'canonical_slug' => 'deepseek/deepseek-v4.1-flash-20260910',
+                'label' => 'DeepSeek V4.1 Flash',
+                'company' => 'DeepSeek',
+                'variant' => 'balanced',
+                'tier' => 'fast',
+                'effort' => 'medium',
+                'input_usd_per_million' => 0.15,
+                'output_usd_per_million' => 0.6,
+                'cache_read_usd_per_million' => 0.003,
+                'context_length' => 1048576,
+                // The ONLY DeepSeek row that can see: V4.1 Flash is the first
+                // built on the company's Causal Encoder-Decoder architecture and
+                // takes image input, which neither the V4 Flash default nor V4
+                // Pro does. That is the reason it earns a slot beside them
+                // rather than replacing one.
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => [],
+                'fallbacks' => ['deepseek/deepseek-v4-flash-0731'],
+                'provider_max_price' => null,
+                'sort_order' => 40,
             ],
 
             'openai/gpt-5.6-luna' => [
@@ -387,7 +421,27 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 40,
+                'sort_order' => 50,
+            ],
+
+            'minimax/minimax-m3' => [
+                'key' => 'minimax-fast',
+                'canonical_slug' => 'minimax/minimax-m3-20260531',
+                'label' => 'MiniMax M3',
+                'company' => 'MiniMax',
+                'variant' => 'fast',
+                'tier' => 'fast',
+                'effort' => 'medium',
+                'input_usd_per_million' => 0.3,
+                'output_usd_per_million' => 1.2,
+                'cache_read_usd_per_million' => 0.06,
+                'context_length' => 1048576,
+                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                'tasks' => ['chat', 'mcq', 'summary'],
+                'tags' => [],
+                'fallbacks' => [],
+                'provider_max_price' => null,
+                'sort_order' => 60,
             ],
 
             'google/gemini-3.5-flash-lite' => [
@@ -410,7 +464,7 @@ return [
                 'tags' => [],
                 'fallbacks' => ['google/gemini-3.1-flash-lite'],
                 'provider_max_price' => null,
-                'sort_order' => 50,
+                'sort_order' => 70,
             ],
 
             'deepseek/deepseek-v4-pro-0813' => [
@@ -434,7 +488,7 @@ return [
                 'tags' => [],
                 'fallbacks' => ['deepseek/deepseek-v4-flash-0731'],
                 'provider_max_price' => null,
-                'sort_order' => 60,
+                'sort_order' => 80,
             ],
 
             'google/gemini-3.8-flash' => [
@@ -454,7 +508,7 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 70,
+                'sort_order' => 90,
             ],
 
             'z-ai/glm-5.3' => [
@@ -474,7 +528,7 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 80,
+                'sort_order' => 100,
             ],
 
             'x-ai/grok-4.6' => [
@@ -494,7 +548,7 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 90,
+                'sort_order' => 110,
             ],
 
             'qwen/qwen3.8-max-0902' => [
@@ -514,7 +568,7 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 100,
+                'sort_order' => 120,
             ],
 
             'anthropic/claude-sonnet-5' => [
@@ -534,7 +588,7 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 110,
+                'sort_order' => 130,
             ],
 
             'google/gemini-3.1-pro-preview' => [
@@ -554,7 +608,7 @@ return [
                 'tags' => [],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 120,
+                'sort_order' => 140,
             ],
 
             'openai/gpt-5.6-terra' => [
@@ -574,7 +628,7 @@ return [
                 'tags' => ['smartest'],
                 'fallbacks' => [],
                 'provider_max_price' => null,
-                'sort_order' => 130,
+                'sort_order' => 150,
             ],
 
             'google/gemini-3.1-flash-lite' => [
