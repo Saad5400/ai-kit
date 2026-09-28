@@ -3,6 +3,8 @@
 namespace Saad\AiKit\Streaming;
 
 use Closure;
+use Illuminate\Container\Container;
+use Laravel\Ai\Exceptions\StreamErrorException;
 use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\ReasoningDelta;
 use Laravel\Ai\Streaming\Events\StreamEnd;
@@ -21,10 +23,27 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  *
  * TERMINAL-EVENT CONTRACT (identical here and on the buffered path through
  * {@see TurnBuffer}): a turn ends with EXACTLY ONE terminal event —
- * `done {...}` when it completed, or `error {message}` when it did not.
- * `error` is terminal; no `done` ever follows it. A client that tears its
- * stream down on either event therefore behaves the same whether the turn
- * was streamed inline or replayed out of a buffer.
+ * `done {...}` when it completed, or `error {message, code}` when it did
+ * not. `error` is terminal; no `done` ever follows it. A client that tears
+ * its stream down on either event therefore behaves the same whether the
+ * turn was streamed inline or replayed out of a buffer. `code` is the
+ * kit's machine-readable reason ({@see ErrorCode}); it is optional on the
+ * contract, and a client must not require it.
+ *
+ * A PROVIDER ERROR IN THE STREAM (OpenRouter's usual mid-stream 502) is
+ * emitted as `error` the moment its event arrives, and the fold then pulls
+ * the stream ONCE more instead of walking away: laravel/ai 1.0 throws
+ * StreamErrorException on that pull, and that throw is what runs its own
+ * failure path — RememberConversation stores the turn as a `failed` row
+ * with its completed steps (every tool that already ran) and `meta.error`.
+ * Walking away at the error left the vendor generator suspended, so
+ * neither `then()` nor `catch()` ever ran and the turn left no row. The
+ * expected StreamErrorException is settled here (the wire already has its
+ * terminal); any other throw propagates as before. Should a stream keep
+ * yielding past its error instead of throwing, the fold stops at the next
+ * event without emitting it — a turn the client was told is over never
+ * runs another step. {@see InterruptedTurns} adds the interrupted step's
+ * partial text to what the vendor stores.
  *
  * REASONING CONTRACT (owner decision #18, ruled 2026-08-18): reasoning is
  * emitted BY DEFAULT as bare `reasoning {text}` deltas — there are no
@@ -174,7 +193,11 @@ class StreamEventMapper
      * `($event, callable $emit, StreamResult $result)` and replaces the
      * default handling for that event. A hook on {@see Error} still marks
      * the result failed and ends the fold — unless it returns exactly
-     * `true`, which continues past a recoverable failure.
+     * `true`, which continues past a recoverable failure. On laravel/ai 1.0
+     * an in-stream error always ends its step, so the continued fold meets
+     * StreamErrorException on the next pull: the fold then ends failed,
+     * emitting the default `error` frame (the hook's own emissions stand)
+     * and keeping the partial result — the text and tools so far.
      *
      * @param  class-string<StreamEvent>  $eventClass
      */
@@ -284,19 +307,24 @@ class StreamEventMapper
 
     /**
      * Fold the stream into wire events on the sink. On a terminal error the
-     * fold stops after emitting `error` — no `done` is emitted, mirroring
+     * fold ends after emitting `error` — no `done` is emitted, mirroring
      * the apps' contract (the client treats `error` as terminal).
      *
      * Coalescing is OFF here unless the app called {@see coalesce()}: an
      * inline SSE response wants each token on the wire the moment it
      * exists.
      *
+     * `$into` is the result to collect into — pass one to keep what the
+     * turn produced when the fold THROWS (a provider 502 raised as an
+     * exception): the text, tool calls and results up to the throw are in
+     * it, which a returned value could not carry. {@see TurnRunner} does.
+     *
      * @param  iterable<StreamEvent>  $stream
      * @param  callable(string, array<string, mixed>): void  $emit
      */
-    public function run(iterable $stream, callable $emit): StreamResult
+    public function run(iterable $stream, callable $emit, ?StreamResult $into = null): StreamResult
     {
-        return $this->mapped($stream, $emit, $this->coalesce === true);
+        return $this->mapped($stream, $emit, $this->coalesce === true, $into);
     }
 
     /**
@@ -309,18 +337,18 @@ class StreamEventMapper
      * @param  iterable<StreamEvent>  $stream
      * @param  callable(string, array<string, mixed>): void  $emit
      */
-    public function runBuffered(iterable $stream, callable $emit): StreamResult
+    public function runBuffered(iterable $stream, callable $emit, ?StreamResult $into = null): StreamResult
     {
-        return $this->mapped($stream, $emit, $this->coalesce ?? true);
+        return $this->mapped($stream, $emit, $this->coalesce ?? true, $into);
     }
 
     /**
      * @param  iterable<StreamEvent>  $stream
      * @param  callable(string, array<string, mixed>): void  $emit
      */
-    protected function mapped(iterable $stream, callable $emit, bool $coalesce): StreamResult
+    protected function mapped(iterable $stream, callable $emit, bool $coalesce, ?StreamResult $into = null): StreamResult
     {
-        $result = new StreamResult;
+        $result = $into ?? new StreamResult;
 
         $sink = $coalesce
             ? new CoalescingSink(Closure::fromCallable($emit), $this->coalesceWindowMs, $this->coalesceMaxChars)
@@ -344,65 +372,102 @@ class StreamEventMapper
      */
     protected function fold(iterable $stream, callable $emit, StreamResult $result): void
     {
-        foreach ($stream as $event) {
-            // laravel/ai 1.0 streams a running sub-agent (AgentTool) as
-            // PRELIMINARY ToolResults that restate its output so far, then
-            // the real one. They are progress, not results: collecting them
-            // would duplicate the call in `toolResults`, and emitting them
-            // would settle the chip as `done` while the sub-agent still runs.
-            if ($event instanceof ToolResult && $event->preliminary) {
-                continue;
-            }
+        $interrupted = $this->interruptedTurns();
 
-            $this->collect($event, $result);
+        // Set once the turn's failure is settled: the default `error` went
+        // out, or an Error hook took it without asking to continue. The
+        // fold keeps pulling past it only so laravel/ai can throw.
+        $settled = false;
 
-            if (($hook = $this->hookFor($event)) !== null) {
-                $continue = $hook($event, $emit, $result);
+        try {
+            foreach ($stream as $event) {
+                if ($settled) {
+                    // 1.0 throws on this pull; a stream that yields instead
+                    // is not followed any further.
+                    return;
+                }
 
-                if ($event instanceof Error) {
-                    $result->error = $event;
+                $interrupted?->observe($event);
 
-                    if ($continue !== true) {
-                        $result->failed = true;
+                // laravel/ai 1.0 streams a running sub-agent (AgentTool) as
+                // PRELIMINARY ToolResults that restate its output so far, then
+                // the real one. They are progress, not results: collecting them
+                // would duplicate the call in `toolResults`, and emitting them
+                // would settle the chip as `done` while the sub-agent still runs.
+                if ($event instanceof ToolResult && $event->preliminary) {
+                    continue;
+                }
 
-                        return;
+                $this->collect($event, $result);
+
+                if (($hook = $this->hookFor($event)) !== null) {
+                    $continue = $hook($event, $emit, $result);
+
+                    if ($event instanceof Error) {
+                        $result->error = $event;
+
+                        if ($continue !== true) {
+                            $result->failed = true;
+                            $settled = true;
+                        }
                     }
+
+                    continue;
                 }
 
-                continue;
+                if ($event instanceof TextDelta) {
+                    $this->emitText($this->pushText($event->delta), $emit, $result);
+                } elseif ($event instanceof ReasoningDelta) {
+                    if ($this->reasoning && $event->delta !== '') {
+                        $emit('reasoning', ['text' => $event->delta]);
+                    }
+                } elseif ($event instanceof ToolCall) {
+                    if ($this->toolEvents) {
+                        $emit('tool', [
+                            'id' => $event->toolCall->id,
+                            'name' => $event->toolCall->name,
+                            'status' => 'running',
+                        ]);
+                    }
+                } elseif ($event instanceof ToolResult) {
+                    if ($this->toolEvents) {
+                        $emit('tool', [
+                            'id' => $event->toolResult->id,
+                            'name' => $event->toolResult->name,
+                            'status' => 'done',
+                            'successful' => $event->successful,
+                        ]);
+                    }
+                } elseif ($event instanceof Error) {
+                    $result->failed = true;
+                    $result->error = $event;
+                    $settled = true;
+
+                    $emit('error', $this->errorPayload($event));
+                }
+            }
+        } catch (StreamErrorException $exception) {
+            // The throw 1.0 answers an in-stream error with — its failure
+            // path has run by now. Only ours to settle when the error event
+            // came through this fold; a stream that ended short without one
+            // is a real failure the caller must see.
+            if ($result->error === null) {
+                throw $exception;
             }
 
-            if ($event instanceof TextDelta) {
-                $this->emitText($this->pushText($event->delta), $emit, $result);
-            } elseif ($event instanceof ReasoningDelta) {
-                if ($this->reasoning && $event->delta !== '') {
-                    $emit('reasoning', ['text' => $event->delta]);
-                }
-            } elseif ($event instanceof ToolCall) {
-                if ($this->toolEvents) {
-                    $emit('tool', [
-                        'id' => $event->toolCall->id,
-                        'name' => $event->toolCall->name,
-                        'status' => 'running',
-                    ]);
-                }
-            } elseif ($event instanceof ToolResult) {
-                if ($this->toolEvents) {
-                    $emit('tool', [
-                        'id' => $event->toolResult->id,
-                        'name' => $event->toolResult->name,
-                        'status' => 'done',
-                        'successful' => $event->successful,
-                    ]);
-                }
-            } elseif ($event instanceof Error) {
-                $result->failed = true;
-                $result->error = $event;
+            $result->failed = true;
 
-                $emit('error', ['message' => ($this->errorMessage)($event)]);
-
-                return;
+            // A hook kept the error "recoverable", but the step it ended
+            // cannot go on: the turn still needs its one terminal event.
+            if (! $settled) {
+                $emit('error', $this->errorPayload($result->error));
             }
+
+            return;
+        }
+
+        if ($settled) {
+            return;
         }
 
         $this->emitText($this->flushText(), $emit, $result);
@@ -412,6 +477,27 @@ class StreamEventMapper
         }
 
         $emit('done', ($this->doneUsing)($result));
+    }
+
+    /**
+     * The terminal `error` frame for a provider error event: the resolved
+     * display line and the kit's machine-readable code.
+     *
+     * @return array{message: string, code: string}
+     */
+    protected function errorPayload(Error $event): array
+    {
+        return [
+            'message' => (string) ($this->errorMessage)($event),
+            'code' => ErrorCode::forError($event),
+        ];
+    }
+
+    protected function interruptedTurns(): ?InterruptedTurns
+    {
+        $container = Container::getInstance();
+
+        return $container->bound(InterruptedTurns::class) ? $container->make(InterruptedTurns::class) : null;
     }
 
     /**
@@ -439,12 +525,14 @@ class StreamEventMapper
     {
         $done = null;
         $error = null;
+        $code = null;
 
-        $result = $this->runBuffered($stream, function (string $event, array $data) use ($buffer, $turnId, &$done, &$error): void {
+        $result = $this->runBuffered($stream, function (string $event, array $data) use ($buffer, $turnId, &$done, &$error, &$code): void {
             if ($event === 'done') {
                 $done = $data;
             } elseif ($event === 'error') {
                 $error = (string) ($data['message'] ?? '');
+                $code = is_string($data['code'] ?? null) ? $data['code'] : null;
             } else {
                 $buffer->append($turnId, $event, $data);
             }
@@ -453,7 +541,7 @@ class StreamEventMapper
         $meta = $meta instanceof Closure ? $meta($result) : $meta;
 
         if ($error !== null) {
-            $buffer->fail($turnId, $error, $meta);
+            $buffer->fail($turnId, $error, $meta, code: $code);
         } else {
             $buffer->finish($turnId, $done ?? [], $meta);
         }

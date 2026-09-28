@@ -77,6 +77,23 @@ Released together with part 2 (the conversation store), which it is not usable w
   PRELIMINARY `ToolResult`s (no `tool done` frame, no hook, not collected).
 - `failover.overloaded_statuses` default widened to include stock 1.0's 520/522/524.
 - Drift guard re-pinned against v1.0.0.
+- Streaming: failed and stopped turns are STORED (owner ruling 2026-09-28). The mapper no
+  longer walks away at an in-stream provider `Error`: it emits `error` and pulls once more,
+  so 1.0 throws `StreamErrorException` through RememberConversation's catch and a `failed`
+  row with the completed steps (tools that ran included) and `meta.error` is written. Before,
+  the vendor generator was left suspended and the turn left no row. A recoverable `on(Error)`
+  hook meets the same throw and now ends failed with one default `error` frame.
+- `TurnRunner`: a failed outcome keeps the partial `StreamResult` on a throw too (was
+  `new StreamResult`); a stop throws `TurnCancelledException` into the stream so the stopped
+  turn is stored (`status: failed`, `meta.error === TurnCancelledException::MESSAGE`) while
+  the outcome stays `cancelled` + `done`. `run()` / `runBuffered()` take an optional `$into`.
+- `InterruptedTurns` (`streaming.remember_interrupted_turns`, default on): the step that died
+  mid-stream is stored with its partial text, and a turn that died in its first step — which
+  stock stores nothing for — keeps the user row and a `failed` assistant row.
+- Wire: `error {message, code?}` — an optional machine-readable `code` (`Streaming\ErrorCode`:
+  `stream_error`, `provider_unavailable`, `rate_limited`, `killed`, `stale`, `internal_error`),
+  in PHP and `js/core/events.ts` (`ErrorPayload.code?`). `TurnBuffer::fail(..., code:)`,
+  `TurnOutcome::$failureCode`; the record meta gains `error_code`. Code-less frames stay valid.
 
 ### Gateway diet
 

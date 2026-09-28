@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { closesReasoning, isAiKitEvent, isTerminal } from './events'
+import { closesReasoning, isAiKitEvent, isTerminal, type ErrorEvent, type ErrorPayload } from './events'
 
 describe('the wire contract helpers', () => {
     it('tells a contract event from an app extension event', () => {
@@ -24,5 +24,18 @@ describe('the wire contract helpers', () => {
         expect(closesReasoning('error')).toBe(true)
         // Reasoning does not close itself — a block stays open across deltas.
         expect(closesReasoning('reasoning')).toBe(false)
+    })
+})
+
+describe('the error payload', () => {
+    it('keeps code optional, so a code-less frame from an older server still types', () => {
+        const legacy: ErrorPayload = JSON.parse('{"message":"حدث خطأ"}')
+        const coded: ErrorEvent = { event: 'error', data: { message: 'down', code: 'provider_unavailable' } }
+        // A code a later kit adds is still a string, not a type error.
+        const future: ErrorPayload = { message: 'x', code: 'some_new_code' }
+
+        expect(legacy.code).toBeUndefined()
+        expect(coded.data.code).toBe('provider_unavailable')
+        expect(future.code).toBe('some_new_code')
     })
 })

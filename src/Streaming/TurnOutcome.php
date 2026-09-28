@@ -18,6 +18,13 @@ use Throwable;
  * app-facing message for the failed cases; `exception` is only set when a
  * throw ended the turn; `done` is the mapper's assembled done payload
  * (from `doneUsing`), for apps that build on it rather than replacing it.
+ * `failureCode` is the kit's machine-readable reason ({@see ErrorCode}) for
+ * the failed cases — pass it to `TurnBuffer::fail(..., code: ...)` so the
+ * wire `error` carries it.
+ *
+ * A failed turn's `result` is PARTIAL, never empty: the text, tool calls
+ * and tool results the turn produced before it died, whether the provider
+ * reported the error in the stream or the stream threw.
  */
 final readonly class TurnOutcome
 {
@@ -31,6 +38,7 @@ final readonly class TurnOutcome
         public ?string $failure = null,
         public ?Throwable $exception = null,
         public ?array $done = null,
+        public ?string $failureCode = null,
     ) {}
 
     /**
@@ -41,10 +49,10 @@ final readonly class TurnOutcome
         return new self($result, cancelled: $cancelled, done: $done);
     }
 
-    public static function failed(StreamResult $result, string $failure, ?Throwable $exception = null): self
+    public static function failed(StreamResult $result, string $failure, ?Throwable $exception = null, ?string $code = null): self
     {
         $result->failed = true;
 
-        return new self($result, failed: true, failure: $failure, exception: $exception);
+        return new self($result, failed: true, failure: $failure, exception: $exception, failureCode: $code);
     }
 }

@@ -148,7 +148,7 @@ it('flushes held text before a terminal error', function () {
 
     expect($this->events)->toBe([
         ['delta', ['text' => 'partial']],
-        ['error', ['message' => 'generic']],
+        ['error', ['message' => 'generic', 'code' => 'stream_error']],
     ])->and($result->failed)->toBeTrue()
         ->and($result->text)->toBe('partial');
 });
