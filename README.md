@@ -215,7 +215,7 @@ abort_unless(app(ConversationStore::class)->conversationBelongsTo(
 ), 404);
 ```
 
-(`ConversationOwnership::owns()` is a deprecated alias of this for one release.) A resume whose decisions name no pending call throws `ApprovalMismatchException` **and fails the paused turn in place** (`status = failed`, stock 1.0 behaviour) — so validate ids against `StoredApprovals::pending()` first, which `ResumeDecisions::fromClient()` with an edit guard already does.
+(`ConversationOwnership::owns()` is a deprecated alias of this for one release.) A resume whose decisions name no pending call throws `ApprovalMismatchException` **and fails the paused turn in place** (`status = failed`, stock 1.0 behaviour, kept on purpose). Guarding stale and double-tapped decisions is the app's job, BEFORE the agent runs: build them with `ResumeDecisions::fromClient($input, $cards->editGuard($pending))` from the server's `StoredApprovals::pending()` set — the edit guard throws on an id that is not pending, so a second tap or a stale card never reaches the agent and never fails the pause.
 
 Resuming on a queue? A closure cannot travel in a job payload, so guard in the request and dispatch the plain result — `ResumeDecisions::guarded($input, $cards->editGuard($pending))` returns the same client-shaped decisions with every edit reconciled, having round-tripped them through `fromClient()` so an unreadable shape throws in the request rather than in the job. The job then resumes with a bare `fromClient($guarded)`.
 
@@ -416,7 +416,7 @@ php artisan ai-kit:backfill-conversation-steps   # idempotent: converts rows an 
 - Transcripts: expect ONE assistant row per turn, including turns that paused and resumed, and `failed` rows (filter on `status` if you hide them).
 - `ConversationOwnership` is deprecated — use `conversationBelongsTo()` and see "Check ownership before you resume" above.
 - With `persist_tool_traces` off, an assistant row keeps a content-only step (1.0 replays assistant text from `steps`); meta keeps only a failed turn's `error`.
-- `ai-kit:prune-conversations` strips traces out of the sealed `steps` row by row (keeping the text), skips `paused` rows, and also empties the legacy columns.
+- `ai-kit:prune-conversations` strips traces out of the sealed `steps` row by row (keeping the text), and also empties the legacy columns. It skips only a `paused` row that is still its conversation's newest assistant row (the one pause 1.0 can resume); an abandoned pause is stripped like any other row.
 
 ## Upgrading to v0.9.0
 

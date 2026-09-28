@@ -125,8 +125,11 @@ class PruneConversationsCommand extends Command
      * them, are emptied too.
      *
      * `steps` is sealed, so the rewrite is per row: reveal, reduce, re-seal
-     * the way the bound store writes. A `paused` row is skipped — its calls
-     * are what a resume needs. Runs in id-chunks like the delete pass; a
+     * the way the bound store writes. The one `paused` row that is still its
+     * conversation's newest assistant row is skipped — its calls are what a
+     * resume needs, and under laravel/ai 1.0 it is the only pause that can
+     * resume. An abandoned pause (a newer assistant row exists) is stripped
+     * like any other row; it keeps its `paused` status. Runs in id-chunks like the delete pass; a
      * stripped row has `'[]'` attachments and meta, matches nothing, and is
      * never rewritten.
      */
@@ -159,7 +162,15 @@ class PruneConversationsCommand extends Command
         while (true) {
             $rows = $connection->table($messagesTable)
                 ->where('created_at', '<', $cutoff)
-                ->when($hasStatus, fn ($query) => $query->where('status', '!=', MessageStatus::Paused->value))
+                ->when($hasStatus, fn ($query) => $query->where(fn ($query) => $query
+                    ->where('status', '!=', MessageStatus::Paused->value)
+                    // An abandoned pause: a newer assistant row exists in its
+                    // conversation, and under 1.0 only the newest can resume.
+                    ->orWhereExists(fn ($newer) => $newer->selectRaw('1')
+                        ->from($messagesTable.' as newer')
+                        ->whereColumn('newer.conversation_id', $messagesTable.'.conversation_id')
+                        ->where('newer.role', 'assistant')
+                        ->whereColumn('newer.id', '>', $messagesTable.'.id'))))
                 ->when($after !== null, fn ($query) => $query->where('id', '>', $after))
                 ->where(function ($query) use ($legacy, $hasApprovalState) {
                     $query->where('attachments', '!=', '[]')->orWhere('meta', '!=', '[]');

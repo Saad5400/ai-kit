@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Str;
+use Laravel\Ai\Contracts\ConversationStore;
 use Laravel\Ai\Enums\MessageStatus;
 use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Conversations\Events\ConversationsPruning;
@@ -156,6 +157,8 @@ it('empties the 0.10 trace columns past the trace window while the conversation 
 
 function tracedStepsRow(string $conversationId, int $ageDays, string $status = 'completed'): string
 {
+    // uuid7 ids sort by time; spacing inserts keeps "newest row" unambiguous.
+    usleep(1000);
     $id = (string) Str::uuid7();
 
     DB::table('agent_conversation_messages')->insert([
@@ -187,8 +190,9 @@ it('strips traces out of sealed steps past the trace window, keeping the text an
     $conversationId = prunableConversation(idleDays: 0);
 
     $old = tracedStepsRow($conversationId, ageDays: 30);
-    $paused = tracedStepsRow($conversationId, ageDays: 30, status: 'paused');
     $fresh = tracedStepsRow($conversationId, ageDays: 2);
+    // The newest assistant row: still resumable.
+    $paused = tracedStepsRow($conversationId, ageDays: 30, status: 'paused');
     $freshSteps = DB::table('agent_conversation_messages')->where('id', $fresh)->value('steps');
 
     $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
@@ -203,11 +207,56 @@ it('strips traces out of sealed steps past the trace window, keeping the text an
         ->and($row->usage)->toBe('{"input_tokens":10}')
         ->and($row->status)->toBe(MessageStatus::Completed->value)
         ->and(ConversationContent::reveal($row->content))->toBe('Done: widget deleted.')
-        // A paused turn keeps what a resume needs; a fresh one is inside the window.
+        // The newest paused turn keeps what a resume needs; a fresh one is inside the window.
         ->and(ConversationContent::revealJson(DB::table('agent_conversation_messages')->where('id', $paused)->value('steps'))[1]['tool_calls'])->toHaveCount(1)
         ->and(DB::table('agent_conversation_messages')->where('id', $fresh)->value('steps'))->toBe($freshSteps);
 
     // The stripped row matches nothing: a second run rewrites nothing.
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->doesntExpectOutputToContain('Stripped')
+        ->assertSuccessful();
+});
+
+it('strips an abandoned pause but spares the newest paused row of each conversation', function () {
+    // Conversation A: a pause the user walked away from, then a newer turn.
+    $walkedAway = prunableConversation(idleDays: 0);
+    $abandoned = tracedStepsRow($walkedAway, ageDays: 40, status: 'paused');
+    $newer = tracedStepsRow($walkedAway, ageDays: 30);
+
+    // Conversation B: its newest assistant row is still the pause — resumable.
+    $waiting = prunableConversation(idleDays: 0);
+    tracedStepsRow($waiting, ageDays: 40);
+    $resumable = tracedStepsRow($waiting, ageDays: 30, status: 'paused');
+
+    // Conversation C: two pauses, the older one superseded by the newer.
+    $twice = prunableConversation(idleDays: 0);
+    $superseded = tracedStepsRow($twice, ageDays: 40, status: 'paused');
+    $latestPause = tracedStepsRow($twice, ageDays: 30, status: 'paused');
+
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->expectsOutputToContain('Stripped tool traces from 4 messages')
+        ->assertSuccessful();
+
+    $steps = fn (string $id): array => ConversationContent::revealJson(DB::table('agent_conversation_messages')->where('id', $id)->value('steps'));
+    $contentOnly = [StoredSteps::step("Let me check.\n\nDone: widget deleted.")];
+
+    foreach ([$abandoned, $newer, $superseded] as $id) {
+        $row = DB::table('agent_conversation_messages')->where('id', $id)->sole();
+
+        expect($steps($id))->toBe($contentOnly)
+            ->and($row->meta)->toBe('[]')
+            ->and($row->steps)->not->toContain('Let me check');
+    }
+
+    foreach ([$resumable, $latestPause] as $id) {
+        expect($steps($id)[1]['tool_calls'][0])->toMatchArray(['id' => 'call_2', 'approval_reason' => 'destructive'])
+            ->and(DB::table('agent_conversation_messages')->where('id', $id)->value('meta'))->not->toBe('[]');
+    }
+
+    // The abandoned pause keeps its status but no longer carries a pending call.
+    expect(DB::table('agent_conversation_messages')->where('id', $abandoned)->value('status'))->toBe(MessageStatus::Paused->value)
+        ->and(app(ConversationStore::class)->pendingApprovalsFor($twice)[0]->id)->toBe('call_2');
+
     $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
         ->doesntExpectOutputToContain('Stripped')
         ->assertSuccessful();

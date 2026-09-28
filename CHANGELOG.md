@@ -30,9 +30,13 @@ rows onto it. See the README, "Upgrading to laravel/ai 1.0 (conversation store)"
   the constructor's `$connection` is ignored.
 - `ConversationOwnership` deprecated in favour of the store's `conversationBelongsTo()`; it
   delegates there when a participant type is given. README now warns that 1.0's
-  `storeApprovalResults()` no longer scopes to the participant — authorize before resuming.
+  `storeApprovalResults()` no longer scopes to the participant — authorize before resuming —
+  and that a mismatched resume fails the pause in place (stock 1.0, kept): apps guard stale
+  decisions with the `ResumeDecisions` edit guard before the agent runs.
+- Traces off keeps a failed turn's encrypted `meta.error` (DECISIONS.md deviation ledger, #7).
 - `ai-kit:prune-conversations` strips traces per row out of the sealed `steps` (keeping the
-  text as one step), skips `paused` rows, and empties the legacy columns too.
+  text as one step) and empties the legacy columns too. It skips only a `paused` row that is
+  still its conversation's newest assistant row; abandoned pauses are stripped.
 - Drift guard: per-method pins on every vendor store method the kit mirrors or rides, plus a
   count of the vendor's UPDATE sites.
 - Tests: full agent turns through the kit gateway (pause, resume folding into one row, failed
