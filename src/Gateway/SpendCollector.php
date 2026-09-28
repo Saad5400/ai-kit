@@ -2,6 +2,8 @@
 
 namespace Saad\AiKit\Gateway;
 
+use Saad\AiKit\Usage\InterruptedSpend;
+
 /**
  * Receives the exact provider cost and generation ids the gateway captures
  * from OpenRouter responses. The streamed/non-streamed split is deliberate:
@@ -12,10 +14,12 @@ namespace Saad\AiKit\Gateway;
  * turns from what the collector accumulated; a collector that cannot be
  * read back cannot be metered.
  *
- * PENDING generations (0.14.1) are steps a stop or a mid-stream failure cut
- * off after OpenRouter assigned the generation id but before its final
- * chunk carried `usage.cost`. OpenRouter still bills them; their price is
- * fetched afterwards by {@see InterruptedSpend}, which drains them.
+ * PENDING generations (0.14.1) are streamed steps that have not completed:
+ * the gateway records one on the step's first chunk and retires it when the
+ * step completes (recordGenerationId()). What is still pending when a usage
+ * row is written was cut off by a stop or a mid-stream failure — billed by
+ * OpenRouter, but without the final chunk's `usage.cost` — and is priced
+ * afterwards by {@see InterruptedSpend}.
  */
 interface SpendCollector
 {

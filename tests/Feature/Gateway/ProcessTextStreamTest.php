@@ -235,6 +235,9 @@ it('records a step whose consumer threw in mid-stream (a stop) as a pending gene
 
     $generator->current();
 
+    // Pending from the first chunk on — before any throw or destruction.
+    expect(app(SpendCollector::class)->pendingGenerationIds())->toBe(['gen-stopped']);
+
     expect(fn () => $generator->throw(new TurnCancelledException))->toThrow(TurnCancelledException::class);
 
     $spend = app(SpendCollector::class);

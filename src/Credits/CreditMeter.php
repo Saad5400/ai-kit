@@ -3,6 +3,8 @@
 namespace Saad\AiKit\Credits;
 
 use Illuminate\Database\UniqueConstraintViolationException;
+use Saad\AiKit\Usage\Events\InterruptedSpendResolved;
+use Saad\AiKit\Usage\InterruptedSpend;
 
 /**
  * The turn-metering policy both apps independently converged on, extracted:
@@ -98,5 +100,49 @@ class CreditMeter
             $cost,
             $source,
         );
+    }
+
+    /**
+     * Charge the late half of a turn — {@see InterruptedSpendResolved}, the
+     * cut-off generations priced after the fact — under its own key
+     * (`debit:turn:{id}:interrupted`), next to the turn's main debit.
+     *
+     * Waivers: a failed turn (free by ruling), no cost, zero credits. The
+     * free-turn waiver deliberately does NOT apply: a stopped single-step
+     * answer is exactly a cheap, tool-less turn, and pricing its stop is the
+     * point.
+     *
+     * @param  array<string, mixed>  $meta  merged into the debit's meta
+     */
+    public function chargeResolved(mixed $payer, InterruptedSpendResolved $event, array $meta = []): ChargeResult
+    {
+        $source = InterruptedSpend::COST_SOURCE;
+
+        if (! $event->billable()) {
+            return ChargeResult::waived('failed_turn', $event->costUsd, $source);
+        }
+
+        if ($event->costUsd <= 0) {
+            return ChargeResult::waived('no_cost');
+        }
+
+        $credits = $this->calculator->creditsForCostUsd($event->costUsd);
+
+        if ($credits === 0) {
+            return ChargeResult::waived('zero_credits', $event->costUsd, $source);
+        }
+
+        try {
+            $outcome = $this->debitor->debit($payer, $credits, $meta + [
+                'turn_id' => $event->turnId ?? $event->turn->invocation_id,
+                'cost_usd' => $event->costUsd,
+                'cost_source' => $source,
+                'generation_ids' => $event->generationIds,
+            ], $event->debitKey());
+        } catch (UniqueConstraintViolationException) {
+            return ChargeResult::alreadyCharged($credits, $event->costUsd, $source);
+        }
+
+        return ChargeResult::charged($outcome['debited'] ?? $credits, $outcome['write_off'] ?? 0, $event->costUsd, $source);
     }
 }

@@ -29,6 +29,7 @@ use Saad\AiKit\Catalog\ModelRouting;
 use Saad\AiKit\Streaming\ErrorCode;
 use Saad\AiKit\Streaming\TurnCancelledException;
 use Saad\AiKit\Support\TurnContext;
+use Saad\AiKit\Usage\InterruptedSpend;
 use Throwable;
 
 /**
@@ -816,27 +817,19 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     }
 
     /**
-     * The spend of a step that never completed. A cost that already arrived
-     * (a usage frame ahead of the error frame) is priced like any other
-     * step's; otherwise the generation id — on the very first chunk — is
-     * recorded as PENDING, for {@see InterruptedSpend} to price once
-     * OpenRouter's generation stats exist. A step cut off before its first
-     * chunk has no id and billed nothing.
+     * The spend of a step that never completed. Its generation id is already
+     * PENDING (recorded on its first chunk, {@see tapChunk()}), for
+     * {@see InterruptedSpend} to price once OpenRouter's generation stats
+     * exist; a cost that already arrived (a usage frame ahead of the error
+     * frame) prices it here instead, like any other step's. A step cut off
+     * before its first chunk has no id and billed nothing.
      */
     protected function recordInterruptedStep(StreamTap $tap): void
     {
-        if ($tap->generationId === null) {
-            return;
-        }
-
-        if ($tap->cost !== null) {
+        if ($tap->generationId !== null && $tap->cost !== null) {
             $this->spend->recordGenerationId($tap->generationId, streamed: true);
             $this->spend->recordCost($tap->cost, streamed: true);
-
-            return;
         }
-
-        $this->spend->recordPendingGeneration($tap->generationId);
     }
 
     /**
@@ -878,6 +871,15 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     protected function tapChunk(StreamTap $tap, array $data): array
     {
         if (is_string($data['id'] ?? null) && $data['id'] !== '') {
+            // Pending from the first chunk that names it — OpenRouter bills
+            // the generation from here on — until the step completes
+            // (recordGenerationId() retires it). Eager, not in a finally: a
+            // stop unwinds these generators by destruction, which a reference
+            // cycle can defer into the next turn.
+            if ($tap->generationId !== $data['id']) {
+                $this->spend->recordPendingGeneration($data['id']);
+            }
+
             $tap->generationId = $data['id'];
         }
 
