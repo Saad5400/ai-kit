@@ -205,6 +205,18 @@ $decisions = ResumeDecisions::fromClient(
 return $agent->continue($decisions);      // guarded arguments only
 ```
 
+**Check ownership before you resume.** Since laravel/ai 1.0, `storeApprovalResults()` finds the paused turn by conversation id ALONE — it no longer scopes the lookup to the participant, and neither does the kit's store. Whoever reaches `continue($conversationId, …)->prompt($decisions)` runs the paused tool. Authorize first, with the store's own check:
+
+```php
+use Laravel\Ai\Models\Conversation;
+
+abort_unless(app(ConversationStore::class)->conversationBelongsTo(
+    $conversationId, Conversation::participantType($user), Conversation::participantKey($user),
+), 404);
+```
+
+(`ConversationOwnership::owns()` is a deprecated alias of this for one release.) A resume whose decisions name no pending call throws `ApprovalMismatchException` **and fails the paused turn in place** (`status = failed`, stock 1.0 behaviour) — so validate ids against `StoredApprovals::pending()` first, which `ResumeDecisions::fromClient()` with an edit guard already does.
+
 Resuming on a queue? A closure cannot travel in a job payload, so guard in the request and dispatch the plain result — `ResumeDecisions::guarded($input, $cards->editGuard($pending))` returns the same client-shaped decisions with every edit reconciled, having round-tripped them through `fromClient()` so an unreadable shape throws in the request rather than in the job. The job then resumes with a bare `fromClient($guarded)`.
 
 ### A card without a form
@@ -386,6 +398,25 @@ It ships **source TypeScript with no build step**, so the consuming app's bundle
 optimizeDeps: { exclude: ['@saad5400/ai-kit'] },
 ssr: { noExternal: ['@saad5400/ai-kit'] },   // Inertia SSR builds
 ```
+
+## Upgrading to laravel/ai 1.0 (conversation store)
+
+laravel/ai 1.0 stores a turn as `steps` (one entry per round trip, each tool result on its call) plus a `status` (`completed` / `paused` / `failed`) instead of `tool_calls` / `tool_results` / `approval_state`. The kit's `EncryptedConversationStore` now writes that schema, sealed: `content`, `attachments`, `steps` and `meta` are ciphertext at rest (`usage` and `status` stay plaintext). A resumed pause folds into the row it paused on; a run that throws is stored as a `failed` turn with `meta.error`.
+
+**The migration.** `move_agent_conversation_messages_onto_steps` ships with the kit and runs with your normal `php artisan migrate` (pgsql and sqlite). It adds `steps` / `status`, rebuilds `participant_index` with `agent`, and converts every existing row — decrypting the 0.10 columns and re-sealing `steps` / `meta` the way the bound store writes them. Unlike upstream's backfill it **keeps pending approvals**: a call still pending becomes a `paused` row that `pendingApprovalsFor()` returns and a resume completes. The 0.10 columns are kept (made nullable) so workers still on the old code survive the deploy; a later release drops them. Once the deploy settles, run
+
+```bash
+php artisan ai-kit:backfill-conversation-steps   # idempotent: converts rows an old worker wrote after migrate
+```
+
+**App changes.**
+
+- Reading message rows directly: `tool_calls` / `tool_results` / `approval_state` are frozen legacy data now. Read `steps` through `ConversationContent::revealJson($row->steps)` (the vendor `ConversationMessage` model's `array` casts cannot read ciphertext — they yield null), `content` through `ConversationContent::reveal()`, and `status` plain. Or use the store: `paginateConversationMessages()` hands out decrypted `StoredMessage`s (`toolCalls()`, `toolResults()`, `steps`, `status`).
+- A pending call is a stored call with `approval_reason` and no `result` (`PendingApproval::isPending()`). `StoredApprovals::pending()` is now a wrapper over the store's `pendingApprovalsFor()`: only the NEWEST turn's pause counts (a pause the user walked away from is settled as denied by the next run). Its `$connection` argument is ignored.
+- Transcripts: expect ONE assistant row per turn, including turns that paused and resumed, and `failed` rows (filter on `status` if you hide them).
+- `ConversationOwnership` is deprecated — use `conversationBelongsTo()` and see "Check ownership before you resume" above.
+- With `persist_tool_traces` off, an assistant row keeps a content-only step (1.0 replays assistant text from `steps`); meta keeps only a failed turn's `error`.
+- `ai-kit:prune-conversations` strips traces out of the sealed `steps` row by row (keeping the text), skips `paused` rows, and also empties the legacy columns.
 
 ## Upgrading to v0.9.0
 
