@@ -4,6 +4,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\Schema;
 use Saad\AiKit\Support\TurnContext;
+use Saad\AiKit\Tests\Support\UsageTurns;
 use Saad\AiKit\Usage\UsageEvent;
 
 uses(RefreshDatabase::class);
@@ -25,7 +26,7 @@ it('records the step guard flags on the usage row and clears them for the next t
     TurnContext::flag('wrap_up', 'blank_final');
     TurnContext::flag('markup_leak', true);
 
-    [$event] = promptedEvent(streamed: true);
+    [$event] = UsageTurns::prompted(streamed: true);
     event($event);
 
     $row = UsageEvent::query()->firstOrFail();
@@ -34,7 +35,7 @@ it('records the step guard flags on the usage row and clears them for the next t
         ->and(TurnContext::flags())->toBe([]);
 
     // A clean turn writes no context at all.
-    [$clean] = promptedEvent(streamed: true);
+    [$clean] = UsageTurns::prompted(streamed: true);
     event($clean);
 
     expect(UsageEvent::query()->latest('id')->firstOrFail()->context)->toBeNull();
