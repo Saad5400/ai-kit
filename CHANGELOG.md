@@ -3,12 +3,12 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
-## Unreleased — laravel/ai 1.0
+## 0.14.0 — 2026-09-28
 
-Compatibility with `laravel/ai ^1.0` + `laravel/mcp ^1.0` (1.0 conflicts with mcp < 1.0), in
-one release: the compatibility fixes, the conversation store (which the rest is not usable
-without), failed and stopped turns stored through 1.0's own failure path, and the gateway diet.
-See the README, "Upgrading to laravel/ai 1.0 (conversation store)".
+laravel/ai 1.0. Compatibility with `laravel/ai ^1.0` + `laravel/mcp ^1.0` (1.0 conflicts with
+mcp < 1.0), in one release: the compatibility fixes, the conversation store (which the rest is
+not usable without), failed and stopped turns stored through 1.0's own failure path, and the
+gateway diet. See the README, "Upgrading to laravel/ai 1.0 (conversation store)".
 
 ### Compatibility
 
@@ -35,6 +35,8 @@ See the README, "Upgrading to laravel/ai 1.0 (conversation store)".
 - Drift guard re-pinned against v1.0.0.
 - Tests: `WriteExecutionsTest`'s unique-violation case claims inside a transaction (as
   `claim()` is documented), so it also passes on Postgres.
+- Tests: the usage suites' `promptedEvent()` moved to `Tests\Support\UsageTurns`, so
+  `TurnFlagsTest` runs alone and under `--parallel`.
 
 ### Conversation store
 
@@ -122,6 +124,31 @@ rows onto it.
 - Drift guard: pins `Middleware/RememberConversation.php`, `Gateway/RunContext.php`,
   `Responses/StreamableAgentResponse.php`, `Events/StepFailed.php`, `Events/AgentFailed.php` —
   the failure path the failed / stopped turn storage rides.
+- Step guard: a wrap-up (blank final step / step exhaustion) that ends on an in-stream error now
+  fails the whole step (the guard returns null, so stock throws `StreamErrorException` and the
+  turn is stored failed with the wrap-up's partial text). It used to return the pre-wrap-up step
+  as a success after the wire said `error`: the fold stopped following the stream, the vendor
+  generator was left suspended and NOTHING was stored — not the user message, not a write that
+  had already run — and with `withhold_tools` off the exhausted step's tool calls ran.
+- Mapper: a stream that yields past its settled error gets a `StreamErrorException` thrown into
+  it (the interrupted step sealed first) instead of being walked away from; `TurnRunner`'s stop
+  generator forwards a throw from the fold into the vendor stream.
+- Circuit breaker: a step ending on an in-stream `Error` that `ErrorCode` reads as
+  `provider_unavailable` / `rate_limited` counts as a failure; only a step that returned a
+  response counts as a success. The extra pull after an error let the step complete with null
+  and reset the breaker (half-open included), so mid-stream 502 storms never opened it.
+- `TurnRunner`: no stop poll after the run's final `StreamEnd` or a `ToolApprovalRequest` — a
+  stop landing there stored a finished turn as stopped with no usage row, or turned the pause
+  the client already shows into a failed row.
+- Conversation id on the failure path: `TurnOutcome::$conversationId` /
+  `StreamResult::$conversationId` name the conversation a failed or stopped turn was stored in
+  (new `Streaming\StoredConversation::idOf()`, only once the row exists);
+  `TurnBuffer::fail(..., conversationId:)` adds `conversation_id` to the `error` frame and the
+  record meta, and `runIntoBuffer()` passes it. `js/core/events.ts`:
+  `ErrorPayload.conversation_id?`. Apps pass it through so a failed FIRST turn's next message
+  or Retry continues the stored thread instead of starting a duplicate.
+- Prune keeps a failed turn's sealed `meta.error` (a stopped turn stays `TurnState::Stopped`);
+  an error-only meta counts as nothing to strip, so such rows are not rewritten every run.
 - Tests: `FailedTurnPersistenceTest` runs on the kit's real migrations (0.10 create + phase A)
   and the real `EncryptedConversationStore`, sealing asserted, traces off, a failed resume and
   a failed turn on top of self-healed rows; also on Postgres via `AI_KIT_TEST_DB_URL`.
