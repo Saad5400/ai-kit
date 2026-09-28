@@ -38,6 +38,56 @@ class ConversationContent
     }
 
     /**
+     * Reveal a value, refusing to pass ciphertext off as plaintext: a value
+     * shaped like a Laravel encrypted payload that does NOT decrypt (the app
+     * key rotated without `APP_PREVIOUS_KEYS`, a foreign key, a corrupt
+     * row) throws instead of coming back as-is. For writers that would
+     * otherwise persist the ciphertext as text, or overwrite a column they
+     * could not read.
+     *
+     * @throws UndecryptableConversationContent
+     */
+    public static function revealStrict(?string $value): ?string
+    {
+        if ($value === null || $value === '' || ! static::looksEncrypted($value)) {
+            return $value;
+        }
+
+        try {
+            return Crypt::decryptString($value);
+        } catch (Throwable $e) {
+            throw new UndecryptableConversationContent('A conversation column holds ciphertext this app key cannot decrypt.', previous: $e);
+        }
+    }
+
+    /**
+     * {@see revealStrict()} then decode, as revealJson() does.
+     *
+     * @return array<array-key, mixed>
+     *
+     * @throws UndecryptableConversationContent
+     */
+    public static function revealJsonStrict(?string $value): array
+    {
+        return is_array($decoded = json_decode(static::revealStrict($value) ?? '', true)) ? $decoded : [];
+    }
+
+    /**
+     * Whether a stored value is shaped like a Laravel encrypted payload
+     * (base64 JSON carrying iv / value / mac).
+     */
+    public static function looksEncrypted(?string $value): bool
+    {
+        if ($value === null || $value === '' || ($decoded = base64_decode($value, true)) === false) {
+            return false;
+        }
+
+        $payload = json_decode($decoded, true);
+
+        return is_array($payload) && isset($payload['iv'], $payload['value'], $payload['mac']);
+    }
+
+    /**
      * Reveal a stored JSON column and decode it, tolerating null, plaintext
      * and malformed values (all of which decode to an empty array).
      *

@@ -403,11 +403,18 @@ ssr: { noExternal: ['@saad5400/ai-kit'] },   // Inertia SSR builds
 
 laravel/ai 1.0 stores a turn as `steps` (one entry per round trip, each tool result on its call) plus a `status` (`completed` / `paused` / `failed`) instead of `tool_calls` / `tool_results` / `approval_state`. The kit's `EncryptedConversationStore` now writes that schema, sealed: `content`, `attachments`, `steps` and `meta` are ciphertext at rest (`usage` and `status` stay plaintext). A resumed pause folds into the row it paused on; a run that throws is stored as a `failed` turn with `meta.error`.
 
-**The migration.** `move_agent_conversation_messages_onto_steps` ships with the kit and runs with your normal `php artisan migrate` (pgsql and sqlite). It adds `steps` / `status`, rebuilds `participant_index` with `agent`, and converts every existing row — decrypting the 0.10 columns and re-sealing `steps` / `meta` the way the bound store writes them. Unlike upstream's backfill it **keeps pending approvals**: a call still pending becomes a `paused` row that `pendingApprovalsFor()` returns and a resume completes. The 0.10 columns are kept (made nullable) so workers still on the old code survive the deploy; a later release drops them. Once the deploy settles, run
+**The migration.** `move_agent_conversation_messages_onto_steps` ships with the kit and runs with your normal `php artisan migrate` (pgsql and sqlite). It adds `steps` / `status`, makes `tool_calls` / `tool_results` nullable, rebuilds `participant_index` with `agent`, and converts every existing row — decrypting the 0.10 columns and sealing `steps` / `meta` the way the bound store writes them (and always sealed when the source row was ciphertext: an app that turned encryption off never has once-encrypted data decrypted at rest by a migration; such a row's `content` is ciphertext to the vendor store anyway). Unlike upstream's backfill it **keeps pending approvals**: a call still pending becomes a `paused` row that `pendingApprovalsFor()` returns and a resume completes. Memory stays bounded on long threads (rows convert one at a time).
+
+- **What it writes.** `steps`, `status`, and `meta` (rewritten without `reasoning` / `provider_content_blocks` / `provider_steps`, which move into steps or are dropped). `tool_calls`, `tool_results` and `approval_state` are never written, so a worker still on the 0.10 code keeps reading them mid-deploy.
+- **What a rollback to the 0.10 code degrades.** Rows converted here lose `meta.reasoning` and the paused turn's raw provider blocks to the old reader (a paused turn replays through the generic path). Rows WRITTEN by 1.0 carry nothing in the 0.10 columns: the old code sees their text only — no tool calls or results — cannot see or resume a 1.0 pause (`approval_state` is NULL), and shows a failed turn as a normal reply.
+- **Undecryptable rows are left alone.** A row whose ciphertext this app key cannot decrypt (the key rotated without `APP_PREVIOUS_KEYS`) keeps `steps` NULL and every other column exactly as it was; so does every unconverted row of a conversation whose tool results cannot be decrypted. The migration logs their ids (and prints them when run from a console) and still succeeds; the command below prints them and exits non-zero. Restore the key and re-run it.
+- **The deploy window.** A worker still on the 0.10 code writes rows with `steps` NULL, and may answer a converted pause in the legacy columns. The encrypted store heals a conversation on first read (history, `pendingApprovalsFor()`, a resume) — converting those rows and folding the late results onto the pause — and the command does the same in bulk:
 
 ```bash
-php artisan ai-kit:backfill-conversation-steps   # idempotent: converts rows an old worker wrote after migrate
+php artisan ai-kit:backfill-conversation-steps   # idempotent; run once the deploy settles
 ```
+
+- **Phase B** (a later release) drops the 0.10 columns and makes `steps` NOT NULL. It MUST refuse to run while any row still has `steps` NULL — those are exactly the rows above that could not be converted, and dropping the columns would lose them for good.
 
 **App changes.**
 

@@ -278,7 +278,7 @@ it('is idempotent, and the command converts rows an old worker wrote after the m
 
     $before = DB::table(Legacy::MESSAGES)->orderBy('id')->pluck('steps', 'id');
 
-    expect(StepsBackfill::configured()->run())->toBe(0);
+    expect(StepsBackfill::configured()->run())->toMatchObject(['written' => 0, 'reconciled' => 0, 'undecryptable' => []]);
 
     Legacy::migrate();
 

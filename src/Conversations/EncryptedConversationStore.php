@@ -5,7 +5,9 @@ namespace Saad\AiKit\Conversations;
 use Illuminate\Contracts\Pagination\CursorPaginator;
 use Illuminate\Pagination\Cursor;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Laravel\Ai\Approvals\PendingApproval;
 use Laravel\Ai\Enums\MessageStatus;
 use Laravel\Ai\Exceptions\ApprovalMismatchException;
@@ -48,6 +50,14 @@ use Throwable;
  * one that hands raw rows out (paginateConversationMessages) are reproduced
  * here with sealing folded in. The drift guard pins each of those vendor
  * bodies, so an upstream change fails loudly instead of skewing silently.
+ *
+ * Self-heal (while the 0.10 columns exist): every entry point that reads a
+ * conversation first converts rows a worker still on the 0.10 code wrote
+ * after the steps migration ran, and folds results such a worker recorded
+ * onto converted pauses ({@see StepsBackfill::heal()}), so history, pending
+ * approvals and resumes see them without waiting for
+ * `ai-kit:backfill-conversation-steps`. One indexed EXISTS probe per read
+ * when there is nothing to heal; a heal failure is reported, never thrown.
  */
 class EncryptedConversationStore extends DatabaseConversationStore
 {
@@ -59,6 +69,56 @@ class EncryptedConversationStore extends DatabaseConversationStore
     public function __construct(?string $connection = null, protected ?bool $persistToolTraces = null)
     {
         parent::__construct($connection);
+    }
+
+    protected ?StepsBackfill $healer = null;
+
+    protected bool $healerResolved = false;
+
+    /**
+     * Conversations whose heal left rows it could not decrypt: not retried
+     * (nor re-logged) for the life of this store instance.
+     *
+     * @var array<string, true>
+     */
+    protected array $unhealable = [];
+
+    /**
+     * Get the latest messages for the given conversation, healed first.
+     *
+     * @return Collection<int, Message>
+     */
+    public function getLatestConversationMessages(string $conversationId, int $limit): Collection
+    {
+        $this->heal($conversationId);
+
+        return parent::getLatestConversationMessages($conversationId, $limit);
+    }
+
+    /**
+     * Get the tool calls the newest turn is still waiting on, healed first —
+     * a pause an old worker wrote must repaint its card.
+     *
+     * @return list<PendingApproval>
+     */
+    public function pendingApprovalsFor(string $conversationId): array
+    {
+        $this->heal($conversationId);
+
+        return parent::pendingApprovalsFor($conversationId);
+    }
+
+    /**
+     * Store the assistant turn; a resume heals first so the paused row it
+     * folds into is found even when an old worker wrote it.
+     */
+    public function storeAssistantMessage(string $conversationId, ?string $participantType, string|int|null $participantId, AgentPrompt $prompt, AgentResponse $response, ?Throwable $exception = null): ?string
+    {
+        if ($prompt->hasApprovalDecisions()) {
+            $this->heal($conversationId);
+        }
+
+        return parent::storeAssistantMessage($conversationId, $participantType, $participantId, $prompt, $response, $exception);
     }
 
     /**
@@ -181,6 +241,8 @@ class EncryptedConversationStore extends DatabaseConversationStore
             return;
         }
 
+        $this->heal($conversationId);
+
         $resultIds = array_map(fn (ToolResult $result) => $result->id, $toolResults);
 
         DB::connection($this->connection)->transaction(function () use ($conversationId, $toolResults, $resultIds) {
@@ -227,6 +289,8 @@ class EncryptedConversationStore extends DatabaseConversationStore
      */
     public function paginateConversationMessages(string $conversationId, int $perPage = 15, string $cursorName = 'cursor', Cursor|string|null $cursor = null): CursorPaginator
     {
+        $this->heal($conversationId);
+
         return $this->table($this->messagesTable())
             ->where('conversation_id', $conversationId)
             ->orderByDesc('id')
@@ -313,6 +377,45 @@ class EncryptedConversationStore extends DatabaseConversationStore
         }
 
         return $record;
+    }
+
+    /**
+     * Convert what old workers left unconverted in this conversation.
+     */
+    protected function heal(string $conversationId): void
+    {
+        try {
+            if (isset($this->unhealable[$conversationId]) || ($healer = $this->healer()) === null || ! $healer->needsHealing($conversationId)) {
+                return;
+            }
+
+            $report = $healer->heal($conversationId);
+
+            if ($report->hasUndecryptable()) {
+                $this->unhealable[$conversationId] = true;
+
+                Log::warning('[ai-kit] '.$report->undecryptableSummary(), ['conversation_id' => $conversationId]);
+            }
+        } catch (Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * The backfill the self-heal runs, or null once the 0.10 columns are gone
+     * (resolved once per store instance).
+     */
+    protected function healer(): ?StepsBackfill
+    {
+        if (! $this->healerResolved) {
+            $this->healerResolved = true;
+
+            $backfill = new StepsBackfill(DB::connection($this->connection), $this->messagesTable(), encrypt: true);
+
+            $this->healer = $backfill->hasLegacyColumns() ? $backfill : null;
+        }
+
+        return $this->healer;
     }
 
     /**

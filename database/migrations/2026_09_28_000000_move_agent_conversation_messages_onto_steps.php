@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Ai\Enums\MessageStatus;
 use Laravel\Ai\Migrations\AiMigration;
@@ -18,13 +19,19 @@ use Saad\AiKit\Conversations\StepsBackfill;
  *   agent), which 1.0's agent-scoped latestConversationId() reads.
  * - Backfills every row still missing `steps`, encryption-aware
  *   ({@see StepsBackfill}): pending approvals survive as `paused` rows, and
- *   steps / meta are sealed the way the bound store writes them.
+ *   steps / meta are sealed the way the bound store writes them. A row
+ *   whose ciphertext does not decrypt with this app key is left untouched
+ *   (`steps` NULL) and logged with its id — restore the key and re-run the
+ *   command below.
  *
- * The 0.10 columns stay (with their data) so a worker still running the old
- * code mid-deploy neither crashes on insert nor loses its reads; a row such a
- * worker writes after this ran has no `steps` — re-run
- * `php artisan ai-kit:backfill-conversation-steps` once the deploy settles.
- * Phase B (a later release) drops the old columns and makes `steps` NOT NULL.
+ * `tool_calls` / `tool_results` / `approval_state` stay (with their data) so
+ * a worker still running the old code mid-deploy neither crashes on insert
+ * nor loses its reads; `meta` IS rewritten (reasoning and provider blocks
+ * move out). A row such a worker writes after this ran has no `steps`: the
+ * encrypted store converts it on first read, and
+ * `php artisan ai-kit:backfill-conversation-steps` converts the rest in bulk.
+ * Phase B (a later release) drops the old columns and makes `steps` NOT NULL
+ * — and MUST refuse to run while any row still has `steps` NULL.
  *
  * Every step is guarded, so this is a no-op on tables the vendor 1.0
  * migration created, and safe to re-run. `participant_id` stays the kit's
@@ -82,7 +89,18 @@ return new class extends AiMigration
             });
         }
 
-        StepsBackfill::configured($this->getConnection())->run();
+        $report = StepsBackfill::configured($this->getConnection())->run();
+
+        // Never fails the migration (the rows are left exactly as they
+        // were), but never silent either: the log, and the console when
+        // run by hand or by a deploy script.
+        if ($report->hasUndecryptable()) {
+            Log::warning('[ai-kit] '.$report->undecryptableSummary(), ['ids' => $report->undecryptable]);
+
+            if (app()->runningInConsole() && ! app()->runningUnitTests()) {
+                fwrite(STDERR, '  WARN  [ai-kit] '.$report->undecryptableSummary().PHP_EOL);
+            }
+        }
     }
 
     /**

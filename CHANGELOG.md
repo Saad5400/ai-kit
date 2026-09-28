@@ -16,7 +16,15 @@ rows onto it. See the README, "Upgrading to laravel/ai 1.0 (conversation store)"
   columns stay for old workers mid-deploy; phase B drops them in a later release. Guarded;
   pgsql and sqlite.
 - New `ai-kit:backfill-conversation-steps` re-runs the backfill for rows an old worker wrote
-  after the migration.
+  after the migration, and folds results an old worker recorded onto converted pauses. The
+  encrypted store does the same per conversation on first read (self-heal).
+- Backfill safety: a row whose ciphertext does not decrypt (APP_KEY rotated without
+  `APP_PREVIOUS_KEYS`) is left untouched with `steps` NULL and reported by id (migration: log +
+  console; command: output, non-zero exit) instead of being overwritten; `steps` / `meta` stay
+  sealed whenever the source was ciphertext; invalid UTF-8 is substituted, never written as an
+  empty column; the UPDATE re-checks `steps IS NULL`; memory is bounded per conversation
+  (id + results pre-pass, rows streamed). Phase B must refuse to drop the legacy columns while
+  any row has `steps` NULL.
 - `EncryptedConversationStore` rewritten onto 1.0: reads through the vendor's `decoded()` /
   `userMessageFrom()` seams; the three vendor methods that UPDATE rows (`resumePausedRow`,
   `forgetReplayBlocks`, `storeApprovalResults`) and `paginateConversationMessages` are mirrored

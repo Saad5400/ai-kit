@@ -9,10 +9,12 @@ use Saad\AiKit\Conversations\StepsBackfill;
  * Re-runs the laravel/ai 1.0 steps backfill the kit's
  * `move_agent_conversation_messages_onto_steps` migration performs.
  *
- * Idempotent: only rows whose `steps` is still NULL are written. Run it once
- * a deploy has settled, to convert the rows a worker still on the 0.10 code
- * wrote after the migration ran (1.0 reads assistant history from `steps`,
- * so such a row would replay as an empty turn until converted).
+ * Idempotent: only rows whose `steps` is still NULL are written, plus paused
+ * rows whose pending call an old worker answered in the legacy columns since.
+ * Run it once a deploy has settled, to convert what workers still on the
+ * 0.10 code wrote after the migration ran (the encrypted store also heals
+ * such a conversation on first read). Exits non-zero, naming the ids, when
+ * rows hold ciphertext this app key cannot decrypt — those are left alone.
  */
 class BackfillConversationStepsCommand extends Command
 {
@@ -23,11 +25,21 @@ class BackfillConversationStepsCommand extends Command
 
     public function handle(): int
     {
-        $written = StepsBackfill::configured(chunk: max(1, (int) $this->option('chunk')))->run();
+        $report = StepsBackfill::configured(chunk: max(1, (int) $this->option('chunk')))->run();
 
-        $this->info($written === 0
+        $this->info($report->written === 0
             ? 'Every conversation message already has steps.'
-            : sprintf('Converted %d conversation messages onto steps.', $written));
+            : sprintf('Converted %d conversation messages onto steps.', $report->written));
+
+        if ($report->reconciled > 0) {
+            $this->info(sprintf('Folded late results into %d paused conversation messages.', $report->reconciled));
+        }
+
+        if ($report->hasUndecryptable()) {
+            $this->warn($report->undecryptableSummary());
+
+            return self::FAILURE;
+        }
 
         return self::SUCCESS;
     }

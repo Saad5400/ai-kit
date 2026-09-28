@@ -2,17 +2,19 @@
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
-use Laravel\Ai\Contracts\ConversationStore;
 use Laravel\Ai\Enums\MessageStatus;
+use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Tests\ConversationsEncryptDisabledTestCase;
 use Saad\AiKit\Tests\Support\LegacyConversationRows as Legacy;
 
 uses(ConversationsEncryptDisabledTestCase::class, RefreshDatabase::class);
 
 // An app that opted out of encryption runs the vendor store, which reads
-// `steps` as plain JSON — so the backfill must write it plain too, while
-// still opening any ciphertext left from a time the app did encrypt.
-it('writes plaintext steps when the bound store does not encrypt', function () {
+// `steps` as plain JSON — so the backfill writes plaintext rows plain. A row
+// left from a time the app DID encrypt stays sealed: a migration never
+// decrypts data at rest (that row's `content` is ciphertext to the vendor
+// store anyway).
+it('writes plaintext steps for plaintext rows and keeps once-encrypted rows sealed', function () {
     Legacy::rewindSchema();
 
     $conversationId = Legacy::conversation();
@@ -34,14 +36,11 @@ it('writes plaintext steps when the bound store does not encrypt', function () {
     $rows = DB::table(Legacy::MESSAGES)->where('role', 'assistant')->orderBy('id')->get();
 
     expect(json_decode($rows[0]->steps, true)[0]['tool_calls'][0])->toMatchArray(['id' => 'call_1', 'result' => 'plain result'])
-        ->and(json_decode($rows[1]->steps, true)[0])->toMatchArray(['content' => 'sealed answer'])
-        ->and(json_decode($rows[1]->steps, true)[0]['tool_calls'][0])->toMatchArray(['id' => 'call_2', 'approval_reason' => null])
+        ->and(json_decode($rows[0]->meta, true))->toMatchArray(['provider' => 'openrouter'])
+        ->and($rows[1]->steps)->not->toContain('sealed answer')
+        ->and($rows[1]->meta)->not->toContain('openrouter')
+        ->and(ConversationContent::revealJson($rows[1]->steps)[0])->toMatchArray(['content' => 'sealed answer'])
+        ->and(ConversationContent::revealJson($rows[1]->steps)[0]['tool_calls'][0])->toMatchArray(['id' => 'call_2', 'approval_reason' => null])
         ->and($rows[1]->status)->toBe(MessageStatus::Paused->value)
-        ->and(json_decode($rows[1]->meta, true))->toMatchArray(['provider' => 'openrouter']);
-
-    $pending = app(ConversationStore::class)->pendingApprovalsFor($conversationId);
-
-    expect($pending)->toHaveCount(1)
-        ->and($pending[0]->id)->toBe('call_2')
-        ->and($pending[0]->reason)->toBeNull();
+        ->and(ConversationContent::revealJson($rows[1]->meta))->toMatchArray(['provider' => 'openrouter']);
 });
