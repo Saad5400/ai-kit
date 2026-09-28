@@ -20,6 +20,31 @@ class InspectedStepResponse extends StepResponse
 
     public ?string $providerName = null;
 
+    /**
+     * Re-wrap a stock step with every field intact (the raw HTTP response
+     * included), ready for {@see inspected()}.
+     */
+    public static function from(StepResponse $step): self
+    {
+        $inspected = new self(
+            text: $step->text,
+            toolCalls: $step->toolCalls,
+            finishReason: $step->finishReason,
+            usage: $step->usage,
+            meta: $step->meta,
+            structured: $step->structured,
+            continuationToken: $step->continuationToken,
+            replayBlocks: $step->replayBlocks,
+            pendingApprovals: $step->pendingApprovals,
+            reasoning: $step->reasoning,
+            providerToolCalls: $step->providerToolCalls,
+        );
+
+        $inspected->raw = $step->raw;
+
+        return $inspected;
+    }
+
     public function inspected(bool $markupLeaked, string $leakedMarkup, ?string $providerName): static
     {
         $this->markupLeaked = $markupLeaked;

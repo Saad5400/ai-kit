@@ -5,12 +5,12 @@ use Laravel\Ai\Ai;
 use Laravel\Ai\Storage\DatabaseConversationStore;
 
 /**
- * Pins the vendor sources ReasoningOpenRouterGateway copies from or wraps.
- * When laravel/ai changes any of them, this fails on purpose: upstream may
- * have absorbed one of our fixes (drop the delta), changed the surface we
- * patch (re-diff processTextStream against the new stock body), or shipped
- * behavior our copy now misses (port it). After reconciling, refresh the
- * hash here. Recorded against laravel/ai v1.0.0.
+ * Pins the vendor sources ReasoningOpenRouterGateway hooks into. It copies
+ * no vendor logic any more; it rewrites stream chunks before stock's loop
+ * reads them and overrides a few seams. When laravel/ai changes any of
+ * these files, this fails on purpose: upstream may have absorbed one of our
+ * deltas (drop it), or changed a surface a hook leans on (re-check the hook).
+ * After reconciling, refresh the hash here. Recorded against laravel/ai v1.0.0.
  *
  * Versions BELOW the rebase version (the prefer-lowest CI cells) skip: their
  * sources are known to differ and there is nothing to reconcile — functional
@@ -32,21 +32,40 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
     }
 
     $pinned = [
+        // processTextStream() runs this stock loop over chunks tapChunk()
+        // rewrote first. It leans on: reasoning read from `reasoning` then
+        // `reasoning_details` (DeepSeek `reasoning_content` is renamed to
+        // `reasoning`); empty `content` skipped; the reasoning block closed
+        // on non-empty content OR a `tool_calls` key (a fully held/swallowed
+        // content chunk gets `tool_calls: []` to close it); every choice
+        // chunk processed until the parser ends (the held leak tail is a
+        // synthetic final chunk, emitted before TextEnd and tool calls);
+        // and an Error frame returning null.
         'Gateway/OpenRouter/Concerns/HandlesTextStreaming.php' => 'edb21b567ee8575f6b1ded539dbc5f805022b58b6477a5c52505a71e7495a191',
         'Gateway/OpenRouter/Concerns/ParsesTextResponses.php' => 'b3367ebe29da3fc7d8e81bcf970b4e7de28f3fd276e7136efaec90ddd5e9dc26',
         'Gateway/OpenRouter/Concerns/BuildsTextRequests.php' => '323379f22747ca5b2a8da67e5605a8c97736a09a2013904111ec7e01cef7546c',
         'Gateway/OpenRouter/Concerns/CreatesOpenRouterClient.php' => '0eb8db8712cf6fe41c50431047a3da6fdbc5b331268d63e60d9591a0b12af375',
-        // The gateway's mapAttachments() override delegates every non-audio
-        // attachment back to this trait one at a time, and leans on its throw
-        // for unsupported types. Upstream added the audio case in 1.0; the
-        // override is kept until the gateway diet retires it (its format
-        // inference tolerates mimes stock's audioFormat() throws on).
+        // Stock maps every audio attachment (Base64Audio, any StorableFile
+        // Audio, an audio/* UploadedFile) to `input_audio`, routing the
+        // format through audioFormat(), which the gateway overrides to be
+        // tolerant; a missing mime reaches it as 'audio/mp3'.
         'Gateway/OpenRouter/Concerns/MapsAttachments.php' => 'a7c674a62ebf659cf320738033fe1b7bd30c8ccfb65bf9d394a8267f27f21689',
+        // Declares the audioFormat() the gateway overrides (also used by the
+        // transcription endpoint, after its pcm-to-wav conversion).
+        'Gateway/OpenRouter/OpenRouterGateway.php' => '58b8aa484fbc1f33300014537610d0540f2365f6aaa70f923aef52ffeb3a2c38',
+        // InspectedStepResponse::from() copies every constructor field; a
+        // field added upstream would be silently dropped by the re-wrap.
+        'Gateway/StepResponse.php' => 'cde94246dc683e812224858ded01f6f342becd3134f5e5796eee8f462b2a3a71',
         'Gateway/OpenAiCompatible/Concerns/PerformsChatCompletionSteps.php' => 'b0a6c3786124f9cca8898f424d8efb0fdddaccf280e3bec17aaeb96bc9735167',
+        // parseServerSentEvents() is the tap point: the override delegates a
+        // StreamTap's real body to it and rewrites what it yields.
         'Gateway/Concerns/ParsesServerSentEvents.php' => '6429c2393b9f9d3d1d6e6cee92d356bda84067151c3bca050635a6c06de7b649',
         // M2 additions — failover semantics the fallback chains and circuit
         // breaker ride on, and the event dispatch points metering listens to.
         'Promptable.php' => '3b57caba0d069be9843180b90cbaa85745314c1b1e077610a504b095edb1697a',
+        // overloadedStatusCodes() extends this trait's list; recordStepFailure()
+        // relies on withErrorHandling() wrapping ConnectionException into
+        // ProviderConnectionException (a FailoverableException).
         'Gateway/Concerns/HandlesFailoverErrors.php' => '94aa857c8decc7d25520881c0daf9bfebd18be3111dc97ee63b2a592fbdb9ded',
         'Providers/Concerns/GeneratesText.php' => 'aa6a9dcd5792fb08e13611924c1447b472afe3c03d53a0d6f27807abeed4b5b6',
         'Providers/Concerns/StreamsText.php' => '0278107e076268c99162c1c12fa2896cc1957550f559790c3d4f9b7aee4a803e',
@@ -91,8 +110,8 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
 
     expect($drifted)->toBe([], sprintf(
         "laravel/ai gateway sources drifted since the fork was rebased:\n  - %s\n\n".
-        'Re-diff ReasoningOpenRouterGateway against the new stock sources (did upstream '.
-        'absorb a delta? change the copied stream loop? add behavior we must port?), '.
+        'Re-check ReasoningOpenRouterGateway against the new stock sources (did upstream '.
+        'absorb a delta? change a surface a hook leans on, per the comments above?), '.
         'reconcile, then refresh the pinned hashes in %s.',
         implode("\n  - ", $drifted),
         __FILE__,

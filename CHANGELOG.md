@@ -78,6 +78,38 @@ Released together with part 2 (the conversation store), which it is not usable w
 - `failover.overloaded_statuses` default widened to include stock 1.0's 520/522/524.
 - Drift guard re-pinned against v1.0.0.
 
+### Gateway diet
+
+`ReasoningOpenRouterGateway` no longer carries any copied vendor logic: 1160 → 868 lines,
+**−237 net in `src/Gateway`** (−423 / +186, including the new 30-line `StreamTap`).
+
+- Streaming: the ~300-line copy of stock `processTextStream` is gone. Stock 1.0 now runs the
+  loop (and emits reasoning from `reasoning` / `reasoning_details` itself); the kit taps each
+  decoded chunk via a `parseServerSentEvents()` override on a `StreamTap` body: generation id,
+  `usage.cost` and upstream `provider` captured; DeepSeek `reasoning_content` renamed to
+  `reasoning`; TTFT stamped at the first reasoning / visible text token; `content` run through
+  `MarkupLeakFilter`, with the held tail released as one synthetic final chunk. A thin
+  `processTextStream()` wrapper records the spend and re-wraps the step as
+  `InspectedStepResponse` (new `InspectedStepResponse::from()`). Differentially fuzzed against
+  the old copy (20k random streams): events, text, tool calls, usage, spend and TTFT identical.
+  **One deliberate difference**: a single chunk carrying BOTH reasoning and content now closes
+  the reasoning block right after that chunk's reasoning (stock's order); the copy closed it
+  first, reopened a new block, and left it open across the text.
+- Audio: `mapAttachments()` / `mapAudioAttachment()` / `audioPart()` / `inputAudioFormat()`
+  removed — stock 1.0 maps Base64Audio, every `StorableFile` Audio and `audio/*` uploads to
+  `input_audio`. Kept: a tolerant `audioFormat()` override (parameters like
+  `;codecs=opus` dropped, `video/webm`/`video/mp4` from finfo accepted, unlisted containers pass
+  through, no container → `mp3`). Lost: the filename-extension fallback, so a Base64Audio with no
+  mime is now `mp3` (stock's default) rather than read off its name. The part's keys are now
+  `format, data` (stock order). The override also makes OpenRouter transcription tolerant.
+- Failover: `failover.overloaded_statuses` now lists ADDITIONS to stock's
+  502/503/504/520/522/524 (default `[500, 529]`); stock's list always applies. An app config that
+  narrowed the list (uqucc: `[500, 502, 503, 504, 529]`) now also fails over on 520/522/524.
+  `recordStepFailure()` drops its `ConnectionException` branch — stock wraps connection failures
+  into `ProviderConnectionException`, a `FailoverableException`.
+- Drift guard: pins now say which hook leans on which vendor behaviour; `OpenRouterGateway.php`
+  (the `audioFormat()` seam) and `StepResponse.php` (every field `from()` copies) are pinned.
+
 ## 0.13.1
 
 - Catalog: `z-ai/glm-5.3-flash` re-priced to its live rate — $0.15/$0.50 per M, DOUBLE what it
