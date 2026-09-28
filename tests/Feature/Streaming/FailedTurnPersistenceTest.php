@@ -9,11 +9,18 @@ use Laravel\Ai\Approvals\Decisions;
 use Laravel\Ai\Contracts\ConversationStore;
 use Laravel\Ai\Enums\MessageStatus;
 use Laravel\Ai\Exceptions\ProviderOverloadedException;
+use Laravel\Ai\Exceptions\StreamErrorException;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Storage\DatabaseConversationStore;
+use Laravel\Ai\Streaming\Events\Error;
+use Laravel\Ai\Streaming\Events\StreamEnd;
+use Laravel\Ai\Streaming\Events\TextDelta;
+use Laravel\Ai\Streaming\Events\ToolApprovalRequest;
 use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Conversations\EncryptedConversationStore;
 use Saad\AiKit\Conversations\StoredSteps;
 use Saad\AiKit\Conversations\TurnState;
+use Saad\AiKit\Gateway\ModelCircuitBreaker;
 use Saad\AiKit\Streaming\ErrorCode;
 use Saad\AiKit\Streaming\InterruptedTurns;
 use Saad\AiKit\Streaming\StreamEventMapper;
@@ -26,6 +33,7 @@ use Saad\AiKit\Tests\Support\OpenRouterSse;
 use Saad\AiKit\Tests\Support\RememberingApprovalAgent;
 use Saad\AiKit\Tests\Support\RememberingNoteAgent;
 use Saad\AiKit\Tests\Support\SpyTurnBuffer;
+use Saad\AiKit\Usage\UsageEvent;
 
 /**
  * A turn that dies — or is stopped — is stored, end to end: a real
@@ -592,4 +600,251 @@ it('heals an old worker\'s rows before a turn that fails on top of them, sealing
 
     expectNoteRowSealed($healed, ['I keep notes']);
     expectNoteRowSealed($failed, ['Let me th', 'Provider returned error']);
+});
+
+// Review regressions -----------------------------------------------------------
+
+/** Step 1 after the tool: blank, so the step guard appends its wrap-up. */
+function blankNoteStep(): string
+{
+    return OpenRouterSse::body([
+        OpenRouterSse::chunk(['content' => ''], finishReason: 'stop'),
+        OpenRouterSse::usageFrame(['prompt_tokens' => 10, 'completion_tokens' => 1]),
+    ]);
+}
+
+it('stores a turn whose blank-final wrap-up errored mid-stream', function (Closure $store) {
+    app()->instance(ConversationStore::class, $store());
+
+    noteReplies(saveNoteStep(), blankNoteStep(), erroringStep('Done: I sa'));
+
+    $events = [];
+    $result = (new StreamEventMapper)->run(noteStream(), function (string $event) use (&$events) {
+        $events[] = $event;
+    });
+
+    expect($events)->toBe(['delta', 'tool', 'tool', 'delta', 'error'])
+        ->and($result->failed)->toBeTrue()
+        ->and($GLOBALS['noteReplies'])->toBe([]);
+
+    // The user row, the executed write, and the wrap-up's partial text.
+    expectFailedTurnStored('Provider returned error', 'Done: I sa');
+})->with('stores');
+
+/**
+ * A stream that keeps yielding past its error instead of throwing — what
+ * the wrap-up bug looked like from the fold. Records what was thrown in.
+ */
+function yieldingPastError(): Generator
+{
+    try {
+        yield new TextDelta('e1', 'm1', 'partial', time());
+        yield new Error('e2', '502', 'Provider returned error', false, time());
+        yield new StreamEnd('e3', 'stop', new TextUsage, time());
+        $GLOBALS['yieldedPast'] = 'walked on';
+    } catch (StreamErrorException $e) {
+        $GLOBALS['yieldedPast'] = $e->error?->message;
+
+        throw $e;
+    }
+}
+
+it('throws into a stream that yields past its settled error instead of walking away', function () {
+    $GLOBALS['yieldedPast'] = null;
+
+    $events = [];
+    $result = (new StreamEventMapper)->doneUsing(fn () => ['x' => 1])->run(yieldingPastError(), function (string $event) use (&$events) {
+        $events[] = $event;
+    });
+
+    expect($events)->toBe(['delta', 'error'])
+        ->and($result->failed)->toBeTrue()
+        ->and($GLOBALS['yieldedPast'])->toBe('Provider returned error');
+});
+
+it('forwards that throw through TurnRunner\'s stop generator to the vendor stream', function () {
+    $GLOBALS['yieldedPast'] = null;
+
+    $buffer = tap(new SpyTurnBuffer)->start('t1');
+
+    $outcome = app(TurnRunner::class)->run('t1', fn () => yieldingPastError(), new StreamEventMapper, $buffer);
+
+    expect($outcome->failed)->toBeTrue()
+        ->and($outcome->exception)->toBeNull()
+        ->and($outcome->failure)->toBe('Provider returned error')
+        ->and($GLOBALS['yieldedPast'])->toBe('Provider returned error');
+});
+
+it('counts an in-stream provider error against the circuit breaker, never as a success', function () {
+    config()->set('ai-kit.gateway.circuit_breaker.enabled', true);
+    config()->set('ai-kit.gateway.circuit_breaker.failure_threshold', 2);
+    app()->forgetInstance(ModelCircuitBreaker::class);
+    app()->instance(ConversationStore::class, new DatabaseConversationStore);
+
+    $breaker = app(ModelCircuitBreaker::class);
+    $breaker->recordFailure('openrouter', 'test/model');
+
+    noteReplies(erroringStep('Hi'));
+
+    (new StreamEventMapper)->run(noteStream(), fn () => null);
+
+    // Threshold 2: the in-stream 502 was the second failure, not a reset.
+    expect($breaker->isOpen('openrouter', 'test/model'))->toBeTrue();
+});
+
+it('leaves the breaker alone for an in-stream error that is not about provider health', function () {
+    config()->set('ai-kit.gateway.circuit_breaker.enabled', true);
+    config()->set('ai-kit.gateway.circuit_breaker.failure_threshold', 2);
+    app()->forgetInstance(ModelCircuitBreaker::class);
+    app()->instance(ConversationStore::class, new DatabaseConversationStore);
+
+    $breaker = app(ModelCircuitBreaker::class);
+    $breaker->recordFailure('openrouter', 'test/model');
+
+    noteReplies(OpenRouterSse::body([
+        OpenRouterSse::chunk(['content' => 'Hi']),
+        ['id' => 'gen-x', 'error' => ['code' => 400, 'message' => 'Bad input']],
+    ]));
+
+    (new StreamEventMapper)->run(noteStream(), fn () => null);
+
+    // Neither a failure (not health) nor a success reset: one more failure opens it.
+    expect($breaker->isOpen('openrouter', 'test/model'))->toBeFalse();
+
+    $breaker->recordFailure('openrouter', 'test/model');
+
+    expect($breaker->isOpen('openrouter', 'test/model'))->toBeTrue();
+});
+
+it('ignores a stop that lands on the final StreamEnd: the finished turn is stored completed, with its usage', function () {
+    app()->instance(ConversationStore::class, new DatabaseConversationStore);
+
+    noteReplies(OpenRouterSse::body([
+        OpenRouterSse::chunk(['content' => 'Full answer.'], finishReason: 'stop'),
+        OpenRouterSse::usageFrame(['prompt_tokens' => 10, 'completion_tokens' => 5, 'cost' => 0.001]),
+    ]));
+
+    $buffer = tap(new SpyTurnBuffer)->start('t1');
+
+    $mapper = (new StreamEventMapper)->on(StreamEnd::class, function () use ($buffer) {
+        $buffer->cancel('t1');
+        Carbon::setTestNow(Carbon::now()->addSeconds(2));
+    });
+
+    $outcome = app(TurnRunner::class)->run('t1', fn () => (new RememberingNoteAgent)->forUser((object) ['id' => 7])
+        ->stream('hello', provider: 'openrouter', model: 'test/model'), $mapper, $buffer);
+
+    [, $assistant] = [...noteRows()];
+
+    expect($outcome->cancelled)->toBeFalse()
+        ->and($outcome->failed)->toBeFalse()
+        ->and($assistant->status)->toBe(MessageStatus::Completed->value)
+        ->and(TurnState::of($assistant->status, $assistant->meta))->toBe(TurnState::Completed)
+        ->and(UsageEvent::count())->toBe(1);
+});
+
+it('ignores a stop that lands on the approval request: the pause the client shows stays a pause', function () {
+    app()->instance(ConversationStore::class, new DatabaseConversationStore);
+
+    noteReplies(widgetPauseStep());
+
+    $buffer = tap(new SpyTurnBuffer)->start('t1');
+
+    $mapper = (new StreamEventMapper)->on(ToolApprovalRequest::class, function () use ($buffer) {
+        $buffer->cancel('t1');
+        Carbon::setTestNow(Carbon::now()->addSeconds(2));
+    });
+
+    $outcome = app(TurnRunner::class)->run('t1', fn () => (new RememberingApprovalAgent)->forUser((object) ['id' => 7])
+        ->stream('please delete widget 4', provider: 'openrouter', model: 'test/model'), $mapper, $buffer);
+
+    $row = noteRows()->where('role', 'assistant')->sole();
+
+    expect($outcome->cancelled)->toBeFalse()
+        ->and($row->status)->toBe(MessageStatus::Paused->value)
+        ->and(TurnState::of($row->status, $row->meta))->toBe(TurnState::Paused);
+});
+
+// The conversation a failed first turn was stored in ---------------------------
+
+it('names the conversation a failed first turn was stored in, on the outcome and the error frame', function () {
+    noteReplies(saveNoteStep(), erroringStep());
+
+    $buffer = tap(new SpyTurnBuffer)->start('t1');
+
+    $outcome = app(TurnRunner::class)->run('t1', fn () => noteStream(), new StreamEventMapper, $buffer);
+
+    $conversationId = DB::table('agent_conversations')->sole()->id;
+
+    expect($outcome->failed)->toBeTrue()
+        ->and($outcome->conversationId)->toBe($conversationId)
+        ->and($outcome->result->conversationId)->toBe($conversationId);
+
+    // What the app writes: the frame and the record meta carry it.
+    $buffer->fail('t1', $outcome->failure, code: $outcome->failureCode, conversationId: $outcome->conversationId);
+
+    $record = $buffer->get('t1');
+
+    expect(collect($record['events'])->last())->toMatchArray(['event' => 'error', 'data' => [
+        'message' => 'Provider returned error',
+        'code' => ErrorCode::PROVIDER_UNAVAILABLE,
+        'conversation_id' => $conversationId,
+    ]])
+        ->and($record['meta']['conversation_id'])->toBe($conversationId);
+});
+
+it('names it for a first turn that threw, and for a stopped first turn', function () {
+    noteReplies(Http::response('upstream down', 502));
+
+    $thrown = app(TurnRunner::class)->run('t1', fn () => noteStream(), new StreamEventMapper, tap(new SpyTurnBuffer)->start('t1'));
+
+    expect($thrown->exception)->not->toBeNull()
+        ->and($thrown->conversationId)->toBe(DB::table('agent_conversations')->sole()->id);
+
+    DB::table('agent_conversations')->delete();
+    noteReplies(saveNoteStep());
+
+    $buffer = tap(new SpyTurnBuffer)->start('t2');
+    $buffer->cancel('t2');
+
+    $stopped = app(TurnRunner::class)->run('t2', fn () => noteStream(), new StreamEventMapper, $buffer);
+
+    expect($stopped->cancelled)->toBeTrue()
+        ->and($stopped->conversationId)->toBe(DB::table('agent_conversations')->sole()->id);
+});
+
+it('carries it through runIntoBuffer\'s own fail', function () {
+    noteReplies(erroringStep('Let me th'));
+
+    $buffer = tap(new SpyTurnBuffer)->start('t1');
+
+    $result = (new StreamEventMapper)->runIntoBuffer(noteStream(), $buffer, 't1');
+
+    $conversationId = DB::table('agent_conversations')->sole()->id;
+
+    expect($result->conversationId)->toBe($conversationId)
+        ->and(collect($buffer->get('t1')['events'])->last()['data']['conversation_id'])->toBe($conversationId)
+        ->and($buffer->get('t1')['meta']['conversation_id'])->toBe($conversationId);
+});
+
+it('names no conversation when nothing was stored, and the continued one on a continued turn', function () {
+    app()->instance(InterruptedTurns::class, new InterruptedTurns(enabled: false));
+
+    noteReplies(erroringStep());
+
+    $outcome = app(TurnRunner::class)->run('t1', fn () => noteStream(), new StreamEventMapper, tap(new SpyTurnBuffer)->start('t1'));
+
+    // Stock stored nothing for a run that died in its first step: the pending id names nothing.
+    expect(DB::table('agent_conversations')->count())->toBe(0)
+        ->and($outcome->conversationId)->toBeNull();
+
+    app()->instance(InterruptedTurns::class, new InterruptedTurns);
+    $conversationId = Legacy::conversation();
+    noteReplies(erroringStep());
+
+    $continued = app(TurnRunner::class)->run('t2', fn () => (new RememberingNoteAgent)->continue($conversationId, (object) ['id' => 7])
+        ->stream('again', provider: 'openrouter', model: 'test/model'), new StreamEventMapper, tap(new SpyTurnBuffer)->start('t2'));
+
+    expect($continued->failed)->toBeTrue()
+        ->and($continued->conversationId)->toBe($conversationId);
 });

@@ -13,6 +13,7 @@ use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Responses\Data\FinishReason;
 use Laravel\Ai\Responses\Data\ToolCall;
 use Laravel\Ai\Responses\Data\ToolResult;
+use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\StreamStart;
 use Laravel\Ai\Streaming\Events\TextDelta;
@@ -264,6 +265,36 @@ it('honors the exhaustion toggle', function () {
     guardedStream(guardedGateway(['final_step' => ['withhold_tools' => false]], ['wrap_up' => ['on_exhaustion' => false]]), afterToolMessages(), [lookupTool()], finalStep: true);
 
     expect(Http::recorded())->toHaveCount(1);
+});
+
+/** A wrap-up that streams some text, then OpenRouter's mid-stream error frame. */
+function erroringWrapUpStream(): string
+{
+    return OpenRouterSse::body([
+        guardChunk(['content' => 'Done: I fou']),
+        ['id' => 'gen-wrap', 'error' => ['code' => 502, 'message' => 'Provider returned error']],
+    ]);
+}
+
+it('fails the step when a blank-final wrap-up errors mid-stream, instead of passing the blank step off as a success', function () {
+    Http::fake(['*' => Http::sequence()->push(blankStream())->push(erroringWrapUpStream())]);
+
+    [$events, $step] = guardedStream(guardedGateway(), afterToolMessages(), [lookupTool()]);
+
+    // null makes stock's loop throw StreamErrorException on the next pull.
+    expect($step)->toBeNull()
+        ->and(array_filter($events, fn ($e) => $e instanceof Error))->toHaveCount(1)
+        ->and(wireText($events))->toBe('Done: I fou');
+});
+
+it('fails the step when a step-exhaustion wrap-up errors, so its tool calls never run', function () {
+    Http::fake(['*' => Http::sequence()->push(toolCallStream('Let me check one more thing.'))->push(erroringWrapUpStream())]);
+
+    [$events, $step] = guardedStream(guardedGateway(['final_step' => ['withhold_tools' => false]]), afterToolMessages(), [lookupTool()], finalStep: true);
+
+    // Returning the pre-wrap-up step would hand the loop its tool call to run after the wire said `error`.
+    expect($step)->toBeNull()
+        ->and(TurnContext::flags())->toBe(['wrap_up' => 'step_exhaustion']);
 });
 
 it('resolves the wrap-up instruction from the closure seam first', function () {

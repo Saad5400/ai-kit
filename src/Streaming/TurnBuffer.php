@@ -252,17 +252,30 @@ class TurnBuffer
      * ship elsewhere. Default OFF: the contract above is what the kit
      * promises unless an app asks for otherwise.
      *
+     * `$conversationId` names the conversation the failed turn was stored
+     * in ({@see TurnOutcome::$conversationId}): the frame becomes
+     * `error {message, code?, conversation_id}` and the record's meta gains
+     * `conversation_id` (unless `$meta` already sets one), so a client whose
+     * FIRST turn failed continues that thread on its next message or Retry.
+     *
      * @param  array<string, mixed>  $meta
      */
-    public function fail(string $turnId, string $message, array $meta = [], bool $trailingDone = false, ?string $code = null): void
+    public function fail(string $turnId, string $message, array $meta = [], bool $trailingDone = false, ?string $code = null, ?string $conversationId = null): void
     {
-        $this->append($turnId, 'error', $code === null ? ['message' => $message] : ['message' => $message, 'code' => $code]);
+        $frame = ['message' => $message]
+            + ($code === null ? [] : ['code' => $code])
+            + ($conversationId === null ? [] : ['conversation_id' => $conversationId]);
+
+        $this->append($turnId, 'error', $frame);
 
         if ($trailingDone) {
             $this->append($turnId, 'done', []);
         }
 
-        $this->complete($turnId, 'failed', $meta + ['error' => $message] + ($code === null ? [] : ['error_code' => $code]));
+        $this->complete($turnId, 'failed', $meta
+            + ['error' => $message]
+            + ($code === null ? [] : ['error_code' => $code])
+            + ($conversationId === null ? [] : ['conversation_id' => $conversationId]));
     }
 
     /**

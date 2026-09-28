@@ -3,7 +3,9 @@
 namespace Saad\AiKit\Streaming;
 
 use Closure;
+use Generator;
 use Illuminate\Container\Container;
+use IteratorAggregate;
 use Laravel\Ai\Exceptions\StreamErrorException;
 use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\ReasoningDelta;
@@ -12,6 +14,7 @@ use Laravel\Ai\Streaming\Events\StreamEvent;
 use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\ToolCall;
 use Laravel\Ai\Streaming\Events\ToolResult;
+use Throwable;
 
 /**
  * Folds a laravel/ai stream (an iterable of streaming events) into the
@@ -41,8 +44,9 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  * expected StreamErrorException is settled here (the wire already has its
  * terminal); any other throw propagates as before. Should a stream keep
  * yielding past its error instead of throwing, the fold stops at the next
- * event without emitting it — a turn the client was told is over never
- * runs another step. {@see InterruptedTurns} adds the interrupted step's
+ * event without emitting it and throws a StreamErrorException into the
+ * stream there — a turn the client was told is over never runs another
+ * step, and is still stored as failed. {@see InterruptedTurns} adds the interrupted step's
  * partial text to what the vendor stores.
  *
  * REASONING CONTRACT (owner decision #18, ruled 2026-08-18): reasoning is
@@ -357,10 +361,20 @@ class StreamEventMapper
         // The flush rides a finally so text the model produced before a
         // mid-stream throw still reaches the sink — uncoalesced, those
         // frames had already been emitted by the time the throw landed.
+        $completed = false;
+
         try {
             $this->fold($stream, $sink ?? $emit, $result);
+
+            $completed = ! $result->failed;
         } finally {
             $sink?->flush();
+
+            // Failed (in the stream or by a throw): name the conversation
+            // the vendor stored the turn in, for the error frame.
+            if (! $completed) {
+                $result->conversationId ??= StoredConversation::idOf($stream);
+            }
         }
 
         return $result;
@@ -379,11 +393,19 @@ class StreamEventMapper
         // fold keeps pulling past it only so laravel/ai can throw.
         $settled = false;
 
+        // Iterated by hand (rather than through the aggregate) so a stream
+        // that yields past its settled error can have the failure thrown
+        // into the very generator the vendor is suspended in.
+        $events = $stream instanceof IteratorAggregate ? $stream->getIterator() : $stream;
+
         try {
-            foreach ($stream as $event) {
+            foreach ($events as $event) {
                 if ($settled) {
                     // 1.0 throws on this pull; a stream that yields instead
-                    // is not followed any further.
+                    // is not followed any further — but it is not abandoned
+                    // either, or the vendor's failure path never runs.
+                    $this->refuseToFollow($events, $event, $result);
+
                     return;
                 }
 
@@ -480,6 +502,38 @@ class StreamEventMapper
     }
 
     /**
+     * Settle a stream that kept yielding after its error was settled: the
+     * event is not emitted (the client was told the turn is over), and a
+     * StreamErrorException carrying the error is thrown into the generator
+     * at the yield it is suspended on — laravel/ai's own failure path, so
+     * the turn is stored as failed (with the interrupted step's partial
+     * text, sealed first) instead of the generator being left suspended
+     * with nothing stored. The throw coming back out is the expected exit;
+     * anything else the vendor's persistence throws is reported, never
+     * allowed to add a second terminal.
+     *
+     * @param  iterable<StreamEvent>  $events
+     */
+    protected function refuseToFollow(iterable $events, StreamEvent $event, StreamResult $result): void
+    {
+        if (! $events instanceof Generator || ! $events->valid()) {
+            return;
+        }
+
+        if ($event->invocationId !== null) {
+            $this->interruptedTurns()?->sealTracked($event->invocationId);
+        }
+
+        try {
+            $events->throw(new StreamErrorException($result->error));
+        } catch (StreamErrorException) {
+            // The vendor's catch ran and rethrew it.
+        } catch (Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
      * The terminal `error` frame for a provider error event: the resolved
      * display line and the kit's machine-readable code.
      *
@@ -541,7 +595,7 @@ class StreamEventMapper
         $meta = $meta instanceof Closure ? $meta($result) : $meta;
 
         if ($error !== null) {
-            $buffer->fail($turnId, $error, $meta, code: $code);
+            $buffer->fail($turnId, $error, $meta, code: $code, conversationId: $result->conversationId);
         } else {
             $buffer->finish($turnId, $done ?? [], $meta);
         }

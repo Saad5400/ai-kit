@@ -38,4 +38,12 @@ describe('the error payload', () => {
         expect(coded.data.code).toBe('provider_unavailable')
         expect(future.code).toBe('some_new_code')
     })
+
+    it('carries the conversation a failed first turn was stored in, optionally', () => {
+        const failedFirst: ErrorPayload = JSON.parse('{"message":"down","code":"provider_unavailable","conversation_id":"019a-conv"}')
+        const legacy: ErrorPayload = { message: 'down' }
+
+        expect(failedFirst.conversation_id).toBe('019a-conv')
+        expect(legacy.conversation_id).toBeUndefined()
+    })
 })

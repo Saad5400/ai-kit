@@ -11,6 +11,7 @@ use Laravel\Ai\Enums\MessageStatus;
 use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Conversations\Events\ConversationsPruning;
 use Saad\AiKit\Conversations\StoredSteps;
+use Saad\AiKit\Conversations\TurnState;
 use Saad\AiKit\Conversations\UndecryptableConversationContent;
 
 /**
@@ -120,8 +121,9 @@ class PruneConversationsCommand extends Command
     /**
      * Strip tool traces from message rows older than the trace window: the
      * row keeps the text the user saw (as ONE content-only step) and its
-     * usage — aggregate numbers, no user content — while attachments, meta,
-     * tool calls with their results, reasoning and replay blocks go. The
+     * usage — aggregate numbers, no user content — while attachments,
+     * meta (all but a failed turn's `error`), tool calls with their
+     * results, reasoning and replay blocks go. The
      * 0.10 trace columns, still present until the phase-B migration drops
      * them, are emptied too.
      *
@@ -141,7 +143,10 @@ class PruneConversationsCommand extends Command
      * stripped row is never rewritten, only re-read. A row whose `steps` is
      * still NULL (not converted yet) keeps it NULL for the backfill, and a
      * row whose sealed steps this app key cannot decrypt is left alone
-     * entirely (reported, never overwritten with its own ciphertext).
+     * entirely (reported, never overwritten with its own ciphertext). A
+     * failed turn keeps its `meta.error` (sealed), so a stopped turn still
+     * reads as stopped; a row whose meta is that error alone has nothing
+     * left to strip.
      */
     protected function pruneToolTraces(): void
     {
@@ -231,7 +236,7 @@ class PruneConversationsCommand extends Command
                     ->where('id', $row->id)
                     ->update([
                         'attachments' => '[]',
-                        'meta' => '[]',
+                        'meta' => $this->strippedMeta($row->meta, $encrypt),
                         ...($steps === null ? [] : ['steps' => $encrypt ? ConversationContent::concealJson($steps) : $steps]),
                         ...array_fill_keys($legacy, '[]'),
                         ...($hasApprovalState ? ['approval_state' => null] : []),
@@ -264,13 +269,36 @@ class PruneConversationsCommand extends Command
      */
     protected function carriesNothingElse(object $row, array $legacy, bool $hasApprovalState): bool
     {
-        foreach (['attachments', 'meta', ...$legacy] as $column) {
+        foreach (['attachments', ...$legacy] as $column) {
             if (! in_array($row->{$column}, [null, '', '[]'], true)) {
                 return false;
             }
         }
 
+        if (! in_array($row->meta, [null, '', '[]'], true) && array_keys(ConversationContent::revealJson($row->meta)) !== ['error']) {
+            return false;
+        }
+
         return ! $hasApprovalState || $row->approval_state === null;
+    }
+
+    /**
+     * The meta a stripped row keeps: nothing, except a failed turn's
+     * `error` — it is what tells a reader why the turn ended (a stop reads
+     * as {@see TurnState::Stopped} by it), not a
+     * trace of what the turn did. Sealed the way the bound store writes it.
+     */
+    protected function strippedMeta(?string $meta, bool $encrypt): string
+    {
+        $error = ConversationContent::revealJson($meta)['error'] ?? null;
+
+        if (! is_string($error)) {
+            return '[]';
+        }
+
+        $json = (string) json_encode(['error' => $error]);
+
+        return $encrypt ? (string) ConversationContent::concealJson($json) : $json;
     }
 
     /**

@@ -11,6 +11,8 @@ use Laravel\Ai\Enums\MessageStatus;
 use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Conversations\Events\ConversationsPruning;
 use Saad\AiKit\Conversations\StoredSteps;
+use Saad\AiKit\Conversations\TurnState;
+use Saad\AiKit\Streaming\TurnCancelledException;
 
 uses(RefreshDatabase::class);
 
@@ -320,6 +322,44 @@ it('keeps an unconverted row\'s NULL steps for the backfill, and leaves undecryp
         ->and($row->meta)->toBe('[]')
         ->and(DB::table('agent_conversation_messages')->where('id', $foreign)->value('steps'))->toBe($foreignSteps)
         ->and(DB::table('agent_conversation_messages')->where('id', $foreign)->value('meta'))->not->toBe('[]');
+});
+
+it('keeps a failed turn\'s sealed meta.error, so a stopped turn still reads as stopped, and never rewrites it again', function () {
+    $conversationId = prunableConversation(idleDays: 0);
+
+    $stopped = tracedStepsRow($conversationId, ageDays: 30, status: 'failed');
+    DB::table('agent_conversation_messages')->where('id', $stopped)->update([
+        'meta' => Crypt::encryptString(json_encode(['provider' => 'openrouter', 'model' => 'test/model', 'error' => TurnCancelledException::MESSAGE])),
+    ]);
+
+    $failed = tracedStepsRow($conversationId, ageDays: 30, status: 'failed');
+    DB::table('agent_conversation_messages')->where('id', $failed)->update([
+        'meta' => Crypt::encryptString(json_encode(['provider' => 'openrouter', 'error' => 'Provider returned error'])),
+    ]);
+
+    tracedStepsRow($conversationId, ageDays: 1);
+
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->expectsOutputToContain('Stripped tool traces from 2 messages')
+        ->assertSuccessful();
+
+    $row = fn (string $id): object => DB::table('agent_conversation_messages')->where('id', $id)->sole();
+
+    expect(ConversationContent::revealJson($row($stopped)->meta))->toBe(['error' => TurnCancelledException::MESSAGE])
+        ->and(ConversationContent::looksEncrypted($row($stopped)->meta))->toBeTrue()
+        ->and(TurnState::of($row($stopped)->status, $row($stopped)->meta))->toBe(TurnState::Stopped)
+        ->and(ConversationContent::revealJson($row($failed)->meta))->toBe(['error' => 'Provider returned error'])
+        ->and(TurnState::of($row($failed)->status, $row($failed)->meta))->toBe(TurnState::Failed)
+        ->and(ConversationContent::revealJson($row($stopped)->steps))->toBe([StoredSteps::step("Let me check.\n\nDone: widget deleted.")]);
+
+    $sealed = [$row($stopped)->meta, $row($stopped)->steps];
+
+    // Error-only meta is nothing left to strip: a second run rewrites nothing.
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->doesntExpectOutputToContain('Stripped')
+        ->assertSuccessful();
+
+    expect([$row($stopped)->meta, $row($stopped)->steps])->toBe($sealed);
 });
 
 it('defaults the trace window to ai-kit.conversations.trace_retention_days', function () {

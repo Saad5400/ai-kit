@@ -19,12 +19,14 @@ use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Providers\Provider;
 use Laravel\Ai\Responses\Data\FinishReason;
 use Laravel\Ai\Responses\Data\ToolCall;
+use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\StreamEvent;
 use Laravel\Ai\Streaming\Events\StreamStart;
 use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
 use Laravel\Ai\Tools\ToolNameResolver;
 use Saad\AiKit\Catalog\ModelRouting;
+use Saad\AiKit\Streaming\ErrorCode;
 use Saad\AiKit\Support\TurnContext;
 use Throwable;
 
@@ -220,7 +222,9 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
      *     the answer-now instruction, and is merged into a single response.
      *
      * A parent that ended on an `Error` event returns null; the guard steps
-     * aside (the loop and the mapper already handle that path).
+     * aside (the loop and the mapper already handle that path). So does a
+     * leak retry or wrap-up that ends on one: the whole step fails, never
+     * the pre-retry step passed off as a success.
      *
      * @return Generator<int, StreamEvent, mixed, StepResponse|null>
      */
@@ -304,7 +308,16 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             StepGuard::wrapUpContext($stepContext),
         ));
 
-        return $wrapUp instanceof StepResponse ? StepGuard::merge($step, $wrapUp) : $step;
+        // A wrap-up that ended on an in-stream Error (or without a step) is
+        // the step's failure: returning null makes stock throw
+        // StreamErrorException on the next pull, so the turn is stored as
+        // failed with the text it streamed (InterruptedTurns). Returning the
+        // pre-wrap-up step instead would pass the step off as a success
+        // after the wire already said `error` — the step's tools (a
+        // step-exhaustion wrap-up with tools not withheld) would run, and
+        // the fold, which stops following a stream past its error, would
+        // leave the vendor generator suspended with nothing stored.
+        return $wrapUp instanceof StepResponse ? StepGuard::merge($step, $wrapUp) : $wrapUp;
     }
 
     /**
@@ -467,22 +480,44 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
 
     /**
      * Delegate a step's stream while reporting its outcome to the breaker:
-     * any throw (initial connection or mid-stream) counts as a failure, full
-     * completion as a success.
+     * a provider-health throw (initial connection or mid-stream) counts as a
+     * failure, and so does a step that ended on an in-stream `Error` the kit
+     * reads as the provider being down or rate-limited (OpenRouter's usual
+     * mid-stream 502) — stock returns null for that step instead of
+     * throwing. Only a step that returned a response counts as a success;
+     * one that ended short on any other error moves nothing.
+     *
+     * Iterated rather than `yield from`, to see the Error on its way past;
+     * a throw into this generator (a stop, the mapper refusing to follow a
+     * stream past its error) still lands here and propagates.
      */
     protected function recordingStream(string $providerName, string $model, Generator $stream): Generator
     {
+        $lastError = null;
+
         try {
-            yield from $stream;
+            foreach ($stream as $event) {
+                if ($event instanceof Error) {
+                    $lastError = $event;
+                }
+
+                yield $event;
+            }
         } catch (Throwable $exception) {
             $this->recordStepFailure($providerName, $model, $exception);
 
             throw $exception;
         }
 
-        $this->breaker?->recordSuccess($providerName, $model);
+        $step = $stream->getReturn();
 
-        return $stream->getReturn();
+        if ($step !== null) {
+            $this->breaker?->recordSuccess($providerName, $model);
+        } elseif ($lastError !== null && in_array(ErrorCode::forError($lastError), [ErrorCode::PROVIDER_UNAVAILABLE, ErrorCode::RATE_LIMITED], true)) {
+            $this->breaker?->recordFailure($providerName, $model);
+        }
+
+        return $step;
     }
 
     /**

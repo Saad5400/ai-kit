@@ -10,7 +10,9 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Context;
 use IteratorAggregate;
 use Laravel\Ai\Responses\StreamableAgentResponse;
+use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\StreamEvent;
+use Laravel\Ai\Streaming\Events\ToolApprovalRequest;
 use Saad\AiKit\Safety\KillSwitch;
 use Throwable;
 
@@ -119,6 +121,7 @@ class TurnRunner
         $previousUser = null;
         $swapped = false;
         $result = null;
+        $provider = null;
 
         // ONE outer try/finally owns every cleanup from here on — the
         // ToolProgress unbind and the guard restore run on EVERY exit
@@ -199,8 +202,10 @@ class TurnRunner
             // leaves the text and tools the turn produced on the outcome.
             $result = new StreamResult;
 
+            $provider = $stream();
+
             $mapper->runBuffered(
-                $this->untilCancelled($stream(), $buffer, $turnId, $cancelled),
+                $this->untilCancelled($provider, $buffer, $turnId, $cancelled),
                 $sink,
                 $result,
             );
@@ -210,12 +215,15 @@ class TurnRunner
                     $result,
                     $error !== null && $error !== '' ? $error : $resolveFailure(null),
                     code: $errorCode ?? ($result->error !== null ? ErrorCode::forError($result->error) : ErrorCode::STREAM_ERROR),
+                    conversationId: StoredConversation::idOf($provider),
                 );
             }
 
-            return TurnOutcome::completed($result, $done, $cancelled);
+            // A stop is stored as a failed row and never runs the vendor's
+            // then(): name its conversation too.
+            return TurnOutcome::completed($result, $done, $cancelled, $cancelled ? StoredConversation::idOf($provider) : null);
         } catch (Throwable $e) {
-            return TurnOutcome::failed($result ?? new StreamResult, $resolveFailure($e), $e, ErrorCode::forException($e));
+            return TurnOutcome::failed($result ?? new StreamResult, $resolveFailure($e), $e, ErrorCode::forException($e), StoredConversation::idOf($provider));
         } finally {
             ToolProgress::unbind();
 
@@ -247,10 +255,33 @@ class TurnRunner
         // throw into the very generator the vendor is suspended in.
         $events = $stream instanceof IteratorAggregate ? $stream->getIterator() : $stream;
 
-        foreach ($events as $event) {
-            yield $event;
+        // Once the run has reached its end (the final StreamEnd) or its
+        // pause (a ToolApprovalRequest — the approval card is already on
+        // the client), a stop is too late to mean anything: the vendor is
+        // about to store the turn as completed or paused, and throwing in
+        // now would store it as a stopped `failed` row instead — a finished
+        // answer without its usage, or a pause the client already shows.
+        $ending = false;
 
-            if ($this->now() - $lastCheck < 1000.0) {
+        foreach ($events as $event) {
+            try {
+                yield $event;
+            } catch (Throwable $e) {
+                // Thrown in by the fold (a stream yielding past its settled
+                // error): forward it to the vendor generator, so its failure
+                // path runs, then let it propagate back to the fold.
+                if ($events instanceof Generator && $events->valid()) {
+                    $events->throw($e);
+                }
+
+                throw $e;
+            }
+
+            if ($event instanceof StreamEnd || $event instanceof ToolApprovalRequest) {
+                $ending = true;
+            }
+
+            if ($ending || $this->now() - $lastCheck < 1000.0) {
                 continue;
             }
 

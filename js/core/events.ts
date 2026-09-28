@@ -215,10 +215,16 @@ export type KnownErrorCode =
  * `code` is OPTIONAL: older servers, and an app's own `on(Error)` hook,
  * send `message` alone, and a later kit may add codes — so branch on the
  * known ones and treat anything else (or nothing) as a generic failure.
+ *
+ * `conversation_id` is OPTIONAL too: the conversation a failed turn was
+ * stored in, sent when the turn opened it (a failed FIRST turn). Adopt it as
+ * the thread's id, so the next message or a Retry continues that
+ * conversation instead of starting a duplicate.
  */
 export type ErrorPayload = {
     message: string
     code?: KnownErrorCode | (string & {})
+    conversation_id?: string
 }
 
 export type DeltaEvent = { event: 'delta'; data: DeltaPayload }

@@ -30,4 +30,11 @@ class StreamResult
     public array $toolResults = [];
 
     public ?TextUsage $usage = null;
+
+    /**
+     * The conversation a turn that did not complete was stored in (see
+     * {@see StoredConversation}) — set on the failed path, null otherwise.
+     * A completed turn's id comes from the vendor response as always.
+     */
+    public ?string $conversationId = null;
 }
