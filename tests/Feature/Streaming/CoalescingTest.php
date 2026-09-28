@@ -1,9 +1,9 @@
 <?php
 
 use Illuminate\Support\Carbon;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall as ToolCallData;
 use Laravel\Ai\Responses\Data\ToolResult as ToolResultData;
-use Laravel\Ai\Responses\Data\Usage;
 use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\ReasoningDelta;
 use Laravel\Ai\Streaming\Events\StreamEnd;
@@ -44,7 +44,7 @@ it('merges consecutive deltas into one frame when coalescing, with identical res
     $result = $this->mapper->coalesce()->run([
         coalesceDelta('Hel'),
         coalesceDelta('lo'),
-        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+        new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
     ], $this->emit);
 
     expect($this->events)->toBe([
@@ -182,7 +182,7 @@ it('coalesces by default on runIntoBuffer', function () {
     $this->mapper->runIntoBuffer([
         coalesceDelta('Hel'),
         coalesceDelta('lo'),
-        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+        new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
     ], $buffer, 't1');
 
     expect($buffer->get('t1')['events'])->toBe([

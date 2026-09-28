@@ -1,8 +1,8 @@
 <?php
 
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall as ToolCallData;
 use Laravel\Ai\Responses\Data\ToolResult as ToolResultData;
-use Laravel\Ai\Responses\Data\Usage;
 use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\ReasoningDelta;
 use Laravel\Ai\Streaming\Events\StreamEnd;
@@ -30,13 +30,13 @@ beforeEach(function () {
 it('folds text deltas into delta events and a terminal done', function () {
     $this->mapper->doneUsing(fn ($result) => [
         'text' => $result->text,
-        'completion_tokens' => $result->usage?->completionTokens,
+        'completion_tokens' => $result->usage?->outputTokens,
     ]);
 
     $result = $this->mapper->run([
         fakeDelta('Hel'),
         fakeDelta('lo'),
-        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+        new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
     ], $this->emit);
 
     expect($this->events)->toBe([
@@ -49,12 +49,12 @@ it('folds text deltas into delta events and a terminal done', function () {
 
 it('sums usage across multi-step stream ends', function () {
     $result = $this->mapper->run([
-        new StreamEnd('s1', 'tool_use', new Usage(promptTokens: 10, completionTokens: 2), 1),
-        new StreamEnd('s2', 'stop', new Usage(promptTokens: 15, completionTokens: 3), 2),
+        new StreamEnd('s1', 'tool_use', new TextUsage(inputTokens: 10, outputTokens: 2), 1),
+        new StreamEnd('s2', 'stop', new TextUsage(inputTokens: 15, outputTokens: 3), 2),
     ], $this->emit);
 
-    expect($result->usage->promptTokens)->toBe(25)
-        ->and($result->usage->completionTokens)->toBe(5);
+    expect($result->usage->inputTokens)->toBe(25)
+        ->and($result->usage->outputTokens)->toBe(5);
 });
 
 it('emits error and stops without a done on a stream error', function () {
@@ -185,6 +185,30 @@ it('emits running and done tool events without arguments or results', function (
     // the status ever reach a public-facing client.
     expect(json_encode($this->events))->not->toContain('secret query')
         ->and(json_encode($this->events))->not->toContain('sensitive rows');
+});
+
+it('skips a sub-agent preliminary results: one done chip, one collected result, no hook call', function () {
+    $hooked = 0;
+
+    $result = $this->mapper
+        ->on(ToolResult::class, function (ToolResult $event, callable $emit) use (&$hooked): void {
+            $hooked++;
+            $emit('tool', ['id' => $event->toolResult->id, 'status' => 'done']);
+        })
+        ->run([
+            new ToolCall('tc1', new ToolCallData('id1', 'researcher', []), 1),
+            new ToolResult('p1', new ToolResultData('id1', 'researcher', [], 'so far'), true, null, 2, preliminary: true),
+            new ToolResult('p2', new ToolResultData('id1', 'researcher', [], 'so far, more'), true, null, 3, preliminary: true),
+            new ToolResult('tr1', new ToolResultData('id1', 'researcher', [], 'final'), true, null, 4),
+        ], $this->emit);
+
+    expect($this->events)->toBe([
+        ['tool', ['id' => 'id1', 'name' => 'researcher', 'status' => 'running']],
+        ['tool', ['id' => 'id1', 'status' => 'done']],
+        ['done', []],
+    ])->and($hooked)->toBe(1)
+        ->and($result->toolResults)->toHaveCount(1)
+        ->and($result->toolResults[0]->result)->toBe('final');
 });
 
 it('reports a failed tool on the wire', function () {
@@ -338,7 +362,7 @@ it('folds a stream into a buffered turn, with the buffer writing the one done', 
     $result = $this->mapper->runIntoBuffer([
         fakeDelta('Hel'),
         fakeDelta('lo'),
-        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+        new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
     ], $buffer, 't1', ['conversation_id' => 'c9']);
 
     $turn = $buffer->get('t1');
@@ -383,9 +407,9 @@ it('resolves closure meta after the fold, so post-stream facts reach the termina
 
     $this->mapper->runIntoBuffer([
         fakeDelta('Hello'),
-        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+        new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
     ], $buffer, 't1', fn (StreamResult $result): array => [
-        'completion_tokens' => $result->usage?->completionTokens,
+        'completion_tokens' => $result->usage?->outputTokens,
         'message' => ['role' => 'assistant', 'content' => $result->text],
     ]);
 
@@ -484,6 +508,6 @@ it('emits identical event sequences inline and buffered', function (array $strea
 
     expect($replayed)->toBe($inline);
 })->with([
-    'a turn that completes' => [fn () => [fakeDelta('hi'), new StreamEnd('s1', 'stop', new Usage(completionTokens: 2), 1)]],
+    'a turn that completes' => [fn () => [fakeDelta('hi'), new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 2), 1)]],
     'a turn that fails' => [fn () => [fakeDelta('partial'), new Error('e1', 'provider_error', 'boom', false, 1)]],
 ]);

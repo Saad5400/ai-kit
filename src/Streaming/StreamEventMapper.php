@@ -41,6 +41,9 @@ use Laravel\Ai\Streaming\Events\ToolResult;
  * these apps are public-facing and tool payloads carry retrieved records.
  * An app that wants richer payloads opts in with an explicit
  * `on(ToolCall::class, ...)` hook and owns the disclosure decision.
+ * A sub-agent's PRELIMINARY ToolResults (laravel/ai 1.0) are skipped
+ * outright — no frame, no hook, no collected result — so each call still
+ * settles exactly once.
  *
  * A call that pauses for approval emits its `running` event and no `done`
  * — the provider yields the ToolCall before the loop decides the call
@@ -342,6 +345,15 @@ class StreamEventMapper
     protected function fold(iterable $stream, callable $emit, StreamResult $result): void
     {
         foreach ($stream as $event) {
+            // laravel/ai 1.0 streams a running sub-agent (AgentTool) as
+            // PRELIMINARY ToolResults that restate its output so far, then
+            // the real one. They are progress, not results: collecting them
+            // would duplicate the call in `toolResults`, and emitting them
+            // would settle the chip as `done` while the sub-agent still runs.
+            if ($event instanceof ToolResult && $event->preliminary) {
+                continue;
+            }
+
             $this->collect($event, $result);
 
             if (($hook = $this->hookFor($event)) !== null) {

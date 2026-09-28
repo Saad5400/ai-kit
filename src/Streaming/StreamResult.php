@@ -2,9 +2,9 @@
 
 namespace Saad\AiKit\Streaming;
 
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall;
 use Laravel\Ai\Responses\Data\ToolResult;
-use Laravel\Ai\Responses\Data\Usage;
 use Laravel\Ai\Streaming\Events\Error;
 
 /**
@@ -29,5 +29,5 @@ class StreamResult
     /** @var list<ToolResult> */
     public array $toolResults = [];
 
-    public ?Usage $usage = null;
+    public ?TextUsage $usage = null;
 }

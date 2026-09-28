@@ -4,9 +4,9 @@ use Illuminate\Auth\GenericUser;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Context;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall as ToolCallData;
 use Laravel\Ai\Responses\Data\ToolResult as ToolResultData;
-use Laravel\Ai\Responses\Data\Usage;
 use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\TextDelta;
@@ -44,7 +44,7 @@ it('folds the stream into the buffer and hands the terminal back on the outcome'
         stream: fn (): array => [
             runnerDelta('Hel'),
             runnerDelta('lo'),
-            new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+            new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
         ],
         mapper: $this->mapper,
         buffer: $this->buffer,
