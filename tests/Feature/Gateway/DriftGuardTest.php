@@ -88,6 +88,21 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         'Approvals/PendingApproval.php' => '7a3e4dcfe84cfa0f157ce2981515907b6b4c71915b2ce4ed383a76a2379900d3',
         // The 1.0 row shape paginateConversationMessages() hands out.
         'Storage/StoredMessage.php' => 'bd444fa99a8a5946e41591a5705e3c287649af8e7d29a4379eff274a7ffcbfb4',
+        // Failed / stopped turns (Streaming\InterruptedTurns, TurnRunner's
+        // stop, the mapper's pull past an in-stream Error). They lean on:
+        // RememberConversation's catch storing the run context's
+        // recordedResponse() with the exception (and only when the failure
+        // propagates through its generator — hence the throw-in on stop);
+        // RunContext dispatching StepFailed BEFORE the throw leaves the loop,
+        // so seal() can recordStep() the interrupted step first; the loop
+        // (pinned above) throwing StreamErrorException on the pull after an
+        // Error event; StreamableAgentResponse handing out the very generator
+        // the vendor is suspended in (so Generator::throw() lands there).
+        'Middleware/RememberConversation.php' => '2c2e97b72eb41e7513a67f145b2cd43a54c39df8328a4b7a1bd4f437011af47f',
+        'Gateway/RunContext.php' => 'e975204751087ce71d355bf220a292b3ae8ec15f181cf2eb555d19e0c9015925',
+        'Responses/StreamableAgentResponse.php' => '3cd45b98a530c4ad9c76ab1ed1866b071f74857b96560f04c38a338957a92d03',
+        'Events/StepFailed.php' => '65d74309ad7f81c02e02c15dd067f02f854dc3a7c2da7c5087146ae88f62025c',
+        'Events/AgentFailed.php' => '80f4026f63ba6570b9832d245e2f81ae2dea3bca5a716da0656ff08c908dccf7',
     ];
 
     $sourceRoot = dirname((new ReflectionClass(Ai::class))->getFileName());

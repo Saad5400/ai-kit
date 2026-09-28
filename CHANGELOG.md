@@ -3,10 +3,43 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
-## Unreleased — laravel/ai 1.0, part 2 (conversation store)
+## Unreleased — laravel/ai 1.0
+
+Compatibility with `laravel/ai ^1.0` + `laravel/mcp ^1.0` (1.0 conflicts with mcp < 1.0), in
+one release: the compatibility fixes, the conversation store (which the rest is not usable
+without), failed and stopped turns stored through 1.0's own failure path, and the gateway diet.
+See the README, "Upgrading to laravel/ai 1.0 (conversation store)".
+
+### Compatibility
+
+- Usage: `RecordTurnUsage` read the removed `promptTokens`/`completionTokens` inside
+  `rescue()`, so under 1.0 every turn silently lost its usage row and `TurnUsageRecorded`.
+  It now reads `inputTokens`/`outputTokens` into the SAME columns (`prompt_tokens`, ...), and
+  the now-nullable cache/reasoning counts record as 0. For OpenRouter the numbers do not move:
+  its `prompt_tokens`/`completion_tokens` were always inclusive, which is what 1.0 now means.
+- `ModelDefinition::displayCostEstimateUsd()` prices the inclusive counts, one rate per side
+  (cached input at the base rate — `cache_read_usd_per_million` stays app metadata, #26d).
+- `RecordFailover` keys its row on `AgentFailedOver::$invocationId` (0.11+) instead of a
+  context lookup.
+- Gateway: `replayBlocks:` (was `providerContentBlocks:`), and `reasoning:` +
+  `providerToolCalls:` carried through the inspected re-wrap, salvage, leak retry and wrap-up
+  merge, so a non-streamed step no longer drops 1.0's reasoning. Streamed reasoning also falls
+  back to `reasoning_details` text, as stock 1.0 does.
+- Step guard: a leak retry / wrap-up no longer yields its own `StreamStart`. 1.0's
+  `TextDelta::combine()` splits steps at `StreamStart`, so the wrap-up persisted
+  `narration\n\n\n\nanswer` while the wire said `narration\n\nanswer`; wire, persisted text
+  and the merged step now agree.
+- Streaming: `StreamResult::$usage` is `?TextUsage`; `StreamEventMapper` skips a sub-agent's
+  PRELIMINARY `ToolResult`s (no `tool done` frame, no hook, not collected).
+- `failover.overloaded_statuses` default widened to include stock 1.0's 520/522/524.
+- Drift guard re-pinned against v1.0.0.
+- Tests: `WriteExecutionsTest`'s unique-violation case claims inside a transaction (as
+  `claim()` is documented), so it also passes on Postgres.
+
+### Conversation store
 
 The encrypted store on 1.0's `steps` / `status` schema, plus the migration that moves existing
-rows onto it. See the README, "Upgrading to laravel/ai 1.0 (conversation store)".
+rows onto it.
 
 - **Migration** `2026_09_28_000000_move_agent_conversation_messages_onto_steps` (phase A): adds
   `steps` (nullable for now) + `status`, makes `tool_calls` / `tool_results` nullable, rebuilds
@@ -45,38 +78,20 @@ rows onto it. See the README, "Upgrading to laravel/ai 1.0 (conversation store)"
 - `ai-kit:prune-conversations` strips traces per row out of the sealed `steps` (keeping the
   text as one step) and empties the legacy columns too. It skips only a `paused` row that is
   still its conversation's newest assistant row; abandoned pauses are stripped.
+  Candidates now include rows whose traces live ONLY in `steps` (meta and attachments `'[]'`,
+  e.g. converted from a 0.10 row with no meta), which the old `attachments` / `meta` / legacy
+  filter never picked; already content-only rows are re-read and skipped, never rewritten. A
+  row with `steps` still NULL keeps it NULL (the backfill converts it; phase B's guard still
+  sees it), and a row whose `steps` does not decrypt is left untouched and counted in a warning
+  instead of being overwritten with its own ciphertext as text.
 - Drift guard: per-method pins on every vendor store method the kit mirrors or rides, plus a
   count of the vendor's UPDATE sites.
 - Tests: full agent turns through the kit gateway (pause, resume folding into one row, failed
   turn, traces off, mismatched decisions) and the migration against 0.10-shaped encrypted rows.
   `AI_KIT_TEST_DB_URL` runs the suite on Postgres.
 
-## Unreleased — laravel/ai 1.0, part 1
+### Failed and stopped turns
 
-Compatibility with `laravel/ai ^1.0` + `laravel/mcp ^1.0` (1.0 conflicts with mcp < 1.0).
-Released together with part 2 (the conversation store), which it is not usable without.
-
-- Usage: `RecordTurnUsage` read the removed `promptTokens`/`completionTokens` inside
-  `rescue()`, so under 1.0 every turn silently lost its usage row and `TurnUsageRecorded`.
-  It now reads `inputTokens`/`outputTokens` into the SAME columns (`prompt_tokens`, ...), and
-  the now-nullable cache/reasoning counts record as 0. For OpenRouter the numbers do not move:
-  its `prompt_tokens`/`completion_tokens` were always inclusive, which is what 1.0 now means.
-- `ModelDefinition::displayCostEstimateUsd()` prices the inclusive counts, one rate per side
-  (cached input at the base rate — `cache_read_usd_per_million` stays app metadata, #26d).
-- `RecordFailover` keys its row on `AgentFailedOver::$invocationId` (0.11+) instead of a
-  context lookup.
-- Gateway: `replayBlocks:` (was `providerContentBlocks:`), and `reasoning:` +
-  `providerToolCalls:` carried through the inspected re-wrap, salvage, leak retry and wrap-up
-  merge, so a non-streamed step no longer drops 1.0's reasoning. Streamed reasoning also falls
-  back to `reasoning_details` text, as stock 1.0 does.
-- Step guard: a leak retry / wrap-up no longer yields its own `StreamStart`. 1.0's
-  `TextDelta::combine()` splits steps at `StreamStart`, so the wrap-up persisted
-  `narration\n\n\n\nanswer` while the wire said `narration\n\nanswer`; wire, persisted text
-  and the merged step now agree.
-- Streaming: `StreamResult::$usage` is `?TextUsage`; `StreamEventMapper` skips a sub-agent's
-  PRELIMINARY `ToolResult`s (no `tool done` frame, no hook, not collected).
-- `failover.overloaded_statuses` default widened to include stock 1.0's 520/522/524.
-- Drift guard re-pinned against v1.0.0.
 - Streaming: failed and stopped turns are STORED (owner ruling 2026-09-28). The mapper no
   longer walks away at an in-stream provider `Error`: it emits `error` and pulls once more,
   so 1.0 throws `StreamErrorException` through RememberConversation's catch and a `failed`
@@ -94,6 +109,22 @@ Released together with part 2 (the conversation store), which it is not usable w
   `stream_error`, `provider_unavailable`, `rate_limited`, `killed`, `stale`, `internal_error`),
   in PHP and `js/core/events.ts` (`ErrorPayload.code?`). `TurnBuffer::fail(..., code:)`,
   `TurnOutcome::$failureCode`; the record meta gains `error_code`. Code-less frames stay valid.
+- New `Conversations\TurnState` (enum: `completed` / `paused` / `failed` / `stopped`):
+  `TurnState::of(MessageStatus|string $status, array|string|null $meta = null)` classifies a
+  stored assistant row — `$meta` decoded, or the raw column sealed or plaintext —
+  `TurnState::ofMessage(StoredMessage)`, and `->interrupted()` (failed or stopped). `stopped`
+  is a `failed` row whose `meta.error` is `TurnCancelledException::MESSAGE`.
+- Under the encrypted store a failed or stopped row is sealed like any other: `content`,
+  `steps` and `meta` (with `error`) are ciphertext; a resume that dies folds into its paused row
+  sealed; the self-heal converts an old worker's rows before a failed turn's history loads.
+  With traces off the row keeps one content-only step and `meta = {error}` (sealed), so a stop
+  stays recognisable.
+- Drift guard: pins `Middleware/RememberConversation.php`, `Gateway/RunContext.php`,
+  `Responses/StreamableAgentResponse.php`, `Events/StepFailed.php`, `Events/AgentFailed.php` —
+  the failure path the failed / stopped turn storage rides.
+- Tests: `FailedTurnPersistenceTest` runs on the kit's real migrations (0.10 create + phase A)
+  and the real `EncryptedConversationStore`, sealing asserted, traces off, a failed resume and
+  a failed turn on top of self-healed rows; also on Postgres via `AI_KIT_TEST_DB_URL`.
 
 ### Gateway diet
 
