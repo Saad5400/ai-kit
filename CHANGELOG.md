@@ -3,6 +3,34 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## Unreleased — laravel/ai 1.0, part 1
+
+Compatibility with `laravel/ai ^1.0` + `laravel/mcp ^1.0` (1.0 conflicts with mcp < 1.0).
+**Not releasable on its own**: the conversation store still writes the 0.10 columns, and
+1.0's `steps`/`status` schema lands with the store rewrite in part 2.
+
+- Usage: `RecordTurnUsage` read the removed `promptTokens`/`completionTokens` inside
+  `rescue()`, so under 1.0 every turn silently lost its usage row and `TurnUsageRecorded`.
+  It now reads `inputTokens`/`outputTokens` into the SAME columns (`prompt_tokens`, ...), and
+  the now-nullable cache/reasoning counts record as 0. For OpenRouter the numbers do not move:
+  its `prompt_tokens`/`completion_tokens` were always inclusive, which is what 1.0 now means.
+- `ModelDefinition::displayCostEstimateUsd()` prices the inclusive counts, one rate per side
+  (cached input at the base rate — `cache_read_usd_per_million` stays app metadata, #26d).
+- `RecordFailover` keys its row on `AgentFailedOver::$invocationId` (0.11+) instead of a
+  context lookup.
+- Gateway: `replayBlocks:` (was `providerContentBlocks:`), and `reasoning:` +
+  `providerToolCalls:` carried through the inspected re-wrap, salvage, leak retry and wrap-up
+  merge, so a non-streamed step no longer drops 1.0's reasoning. Streamed reasoning also falls
+  back to `reasoning_details` text, as stock 1.0 does.
+- Step guard: a leak retry / wrap-up no longer yields its own `StreamStart`. 1.0's
+  `TextDelta::combine()` splits steps at `StreamStart`, so the wrap-up persisted
+  `narration\n\n\n\nanswer` while the wire said `narration\n\nanswer`; wire, persisted text
+  and the merged step now agree.
+- Streaming: `StreamResult::$usage` is `?TextUsage`; `StreamEventMapper` skips a sub-agent's
+  PRELIMINARY `ToolResult`s (no `tool done` frame, no hook, not collected).
+- `failover.overloaded_statuses` default widened to include stock 1.0's 520/522/524.
+- Drift guard re-pinned against v1.0.0.
+
 ## 0.13.1
 
 - Catalog: `z-ai/glm-5.3-flash` re-priced to its live rate — $0.15/$0.50 per M, DOUBLE what it
