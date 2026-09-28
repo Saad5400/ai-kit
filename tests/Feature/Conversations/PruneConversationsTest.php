@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Encryption\Encrypter;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
@@ -260,6 +261,65 @@ it('strips an abandoned pause but spares the newest paused row of each conversat
     $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
         ->doesntExpectOutputToContain('Stripped')
         ->assertSuccessful();
+});
+
+it('strips a 1.0 row whose traces live only in steps, with meta and attachments empty', function () {
+    $conversationId = prunableConversation(idleDays: 0);
+
+    $stepsOnly = tracedStepsRow($conversationId, ageDays: 30);
+    DB::table('agent_conversation_messages')->where('id', $stepsOnly)->update(['meta' => '[]']);
+
+    // Already content-only (a stripped row, or one written with traces off): nothing to do.
+    $contentOnly = tracedStepsRow($conversationId, ageDays: 30);
+    DB::table('agent_conversation_messages')->where('id', $contentOnly)->update([
+        'meta' => '[]',
+        'steps' => $sealedContentOnly = Crypt::encryptString(json_encode([StoredSteps::step('Done: widget deleted.')])),
+    ]);
+
+    // Newest assistant row, so neither row above is spared as a resumable pause.
+    tracedStepsRow($conversationId, ageDays: 1);
+
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->expectsOutputToContain('Stripped tool traces from 1 messages')
+        ->assertSuccessful();
+
+    $row = DB::table('agent_conversation_messages')->where('id', $stepsOnly)->sole();
+
+    expect(ConversationContent::revealJson($row->steps))->toBe([StoredSteps::step("Let me check.\n\nDone: widget deleted.")])
+        ->and(ConversationContent::looksEncrypted($row->steps))->toBeTrue()
+        ->and($row->meta)->toBe('[]')
+        // Untouched, not re-sealed: a rewrite would change the ciphertext.
+        ->and(DB::table('agent_conversation_messages')->where('id', $contentOnly)->value('steps'))->toBe($sealedContentOnly);
+
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->doesntExpectOutputToContain('Stripped')
+        ->assertSuccessful();
+});
+
+it('keeps an unconverted row\'s NULL steps for the backfill, and leaves undecryptable steps alone', function () {
+    $conversationId = prunableConversation(idleDays: 0);
+
+    $unconverted = tracedStepsRow($conversationId, ageDays: 30);
+    DB::table('agent_conversation_messages')->where('id', $unconverted)->update(['steps' => null, 'tool_calls' => '[{"id":"call_1"}]']);
+
+    $foreign = tracedStepsRow($conversationId, ageDays: 30);
+    $foreignSteps = (new Encrypter(random_bytes(32), 'aes-256-cbc'))->encryptString('[{"content":"x"}]');
+    DB::table('agent_conversation_messages')->where('id', $foreign)->update(['steps' => $foreignSteps]);
+
+    tracedStepsRow($conversationId, ageDays: 1);
+
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->expectsOutputToContain('Stripped tool traces from 1 messages')
+        ->expectsOutputToContain('Left 1 messages untouched')
+        ->assertSuccessful();
+
+    $row = DB::table('agent_conversation_messages')->where('id', $unconverted)->sole();
+
+    expect($row->steps)->toBeNull()
+        ->and($row->tool_calls)->toBe('[]')
+        ->and($row->meta)->toBe('[]')
+        ->and(DB::table('agent_conversation_messages')->where('id', $foreign)->value('steps'))->toBe($foreignSteps)
+        ->and(DB::table('agent_conversation_messages')->where('id', $foreign)->value('meta'))->not->toBe('[]');
 });
 
 it('defaults the trace window to ai-kit.conversations.trace_retention_days', function () {

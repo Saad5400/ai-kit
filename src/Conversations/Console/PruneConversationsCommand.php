@@ -11,6 +11,7 @@ use Laravel\Ai\Enums\MessageStatus;
 use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Conversations\Events\ConversationsPruning;
 use Saad\AiKit\Conversations\StoredSteps;
+use Saad\AiKit\Conversations\UndecryptableConversationContent;
 
 /**
  * Deletes conversations (and their messages) idle longer than the retention
@@ -129,9 +130,18 @@ class PruneConversationsCommand extends Command
      * conversation's newest assistant row is skipped — its calls are what a
      * resume needs, and under laravel/ai 1.0 it is the only pause that can
      * resume. An abandoned pause (a newer assistant row exists) is stripped
-     * like any other row; it keeps its `paused` status. Runs in id-chunks like the delete pass; a
-     * stripped row has `'[]'` attachments and meta, matches nothing, and is
-     * never rewritten.
+     * like any other row; it keeps its `paused` status. Runs in id-chunks like the delete pass.
+     *
+     * Candidates are rows with anything non-empty in attachments, meta, the
+     * legacy columns — or `steps`: a 1.0 row can carry its traces in `steps`
+     * alone (meta `'[]'`, e.g. a row converted from a 0.10 row with no
+     * meta). Sealed steps cannot be told apart in SQL, so an assistant row
+     * with non-empty steps is read and, when its steps carry nothing past
+     * the text and every other column is already empty, left untouched — a
+     * stripped row is never rewritten, only re-read. A row whose `steps` is
+     * still NULL (not converted yet) keeps it NULL for the backfill, and a
+     * row whose sealed steps this app key cannot decrypt is left alone
+     * entirely (reported, never overwritten with its own ciphertext).
      */
     protected function pruneToolTraces(): void
     {
@@ -157,6 +167,7 @@ class PruneConversationsCommand extends Command
         $encrypt = ConversationContent::encryptsAtRest();
 
         $stripped = 0;
+        $undecryptable = 0;
         $after = null;
 
         while (true) {
@@ -173,7 +184,10 @@ class PruneConversationsCommand extends Command
                         ->whereColumn('newer.id', '>', $messagesTable.'.id'))))
                 ->when($after !== null, fn ($query) => $query->where('id', '>', $after))
                 ->where(function ($query) use ($legacy, $hasApprovalState) {
-                    $query->where('attachments', '!=', '[]')->orWhere('meta', '!=', '[]');
+                    $query->where('attachments', '!=', '[]')->orWhere('meta', '!=', '[]')
+                        ->orWhere(fn ($query) => $query->where('role', 'assistant')
+                            ->whereNotNull('steps')
+                            ->whereNotIn('steps', ['', '[]']));
 
                     foreach ($legacy as $column) {
                         $query->orWhere($column, '!=', '[]');
@@ -185,26 +199,40 @@ class PruneConversationsCommand extends Command
                 })
                 ->orderBy('id')
                 ->limit($chunkSize)
-                ->get(['id', 'role', 'content', 'steps']);
+                ->get(['id', 'role', 'content', 'steps', 'attachments', 'meta', ...$legacy, ...($hasApprovalState ? ['approval_state'] : [])]);
 
             if ($rows->isEmpty()) {
                 break;
             }
 
             foreach ($rows as $row) {
-                $steps = $row->role === 'assistant'
-                    ? json_encode(StoredSteps::contentOnly(
-                        ConversationContent::revealJson($row->steps),
+                try {
+                    $decoded = $row->steps === null ? null : ConversationContent::revealJsonStrict($row->steps);
+                } catch (UndecryptableConversationContent) {
+                    $undecryptable++;
+
+                    continue;
+                }
+
+                if ($decoded !== null && ! StoredSteps::carriesTraces($decoded) && $this->carriesNothingElse($row, $legacy, $hasApprovalState)) {
+                    continue;
+                }
+
+                $steps = match (true) {
+                    $decoded === null => null,
+                    $row->role !== 'assistant' => '[]',
+                    default => json_encode(StoredSteps::contentOnly(
+                        $decoded,
                         ConversationContent::reveal((string) $row->content),
-                    ))
-                    : '[]';
+                    )),
+                };
 
                 $stripped += $connection->table($messagesTable)
                     ->where('id', $row->id)
                     ->update([
                         'attachments' => '[]',
                         'meta' => '[]',
-                        'steps' => $encrypt ? ConversationContent::concealJson($steps) : $steps,
+                        ...($steps === null ? [] : ['steps' => $encrypt ? ConversationContent::concealJson($steps) : $steps]),
                         ...array_fill_keys($legacy, '[]'),
                         ...($hasApprovalState ? ['approval_state' => null] : []),
                     ]);
@@ -220,6 +248,29 @@ class PruneConversationsCommand extends Command
                 max(1, (int) $traceDays),
             ));
         }
+
+        if ($undecryptable > 0) {
+            $this->warn(sprintf(
+                'Left %d messages untouched: their steps do not decrypt with this app key (restore it via APP_PREVIOUS_KEYS and re-run).',
+                $undecryptable,
+            ));
+        }
+    }
+
+    /**
+     * Whether a candidate row's non-steps columns hold nothing to strip.
+     *
+     * @param  list<string>  $legacy
+     */
+    protected function carriesNothingElse(object $row, array $legacy, bool $hasApprovalState): bool
+    {
+        foreach (['attachments', 'meta', ...$legacy] as $column) {
+            if (! in_array($row->{$column}, [null, '', '[]'], true)) {
+                return false;
+            }
+        }
+
+        return ! $hasApprovalState || $row->approval_state === null;
     }
 
     /**
