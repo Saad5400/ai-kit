@@ -3,6 +3,29 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.14.1 — 2026-09-28
+
+Interrupted spend: a stopped or failed turn is priced at the actual provider cost (owner ruling
+2026-09-28 — a stopped turn is debited up to the stop, a failed turn stays free but counts toward
+the budget). See the README, "Stopped and failed turns: interrupted spend".
+
+- Gateway: a streamed step that does not complete (a stop thrown in, an error frame, a thrown
+  failure, an abandoned stream) is recorded too — priced when its `usage.cost` already arrived
+  (this changes the old "an error-frame step records nothing"), otherwise as a PENDING generation.
+- `SpendCollector` gains `recordPendingGeneration()` and `pendingGenerationIds()` (an id that is
+  also a completed generation is never pending); `flush()` clears them. `ContextSpendCollector`
+  and `FakeSpendCollector` (+ `assertPending()`) implement them — a custom collector must too.
+- `GenerationCostResolver`: `GET /generation?id=` → `data.total_cost`, one look (`fetch()`) or a
+  bounded retry window (`resolve()` / `resolveMany()`), with the gateway's provider key.
+- `InterruptedSpend::dispatchFor($turnId, $context)`: drains the collector, budgets what was
+  priced, prices the pending generations on the spot, queues `ResolveInterruptedSpend` for the
+  rest (one look per attempt at 10/30/90/180/300 s, then gives up with a warning), and calls the
+  app-bound `InterruptedSpendHandler::resolved($turnId, $costUsd, $generationIds, $context)` at
+  most once. `NullInterruptedSpendHandler` is bound by default. Budget writes go through
+  `BudgetGuard::recordOnce()` keyed per generation id.
+- Config: `ai-kit.spend` (`resolve_interrupted`, `retry_delays_seconds`, the sync window, queue
+  and cache store).
+
 ## 0.14.0 — 2026-09-28
 
 laravel/ai 1.0. Compatibility with `laravel/ai ^1.0` + `laravel/mcp ^1.0` (1.0 conflicts with
