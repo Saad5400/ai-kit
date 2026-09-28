@@ -41,7 +41,7 @@ it('re-emits reasoning deltas around the text stream', function () {
     expect($step)->toBeInstanceOf(StepResponse::class)
         ->and($step->text)->toBe('Hello')
         ->and($step->finishReason)->toBe(FinishReason::Stop)
-        ->and($step->usage->promptTokens)->toBe(10);
+        ->and($step->usage->inputTokens)->toBe(10);
 });
 
 it('captures generation id and exact cost into the streamed bucket', function () {
@@ -63,6 +63,18 @@ it('understands DeepSeek-style reasoning_content deltas', function () {
     ], $events);
 
     expect(array_filter($events, fn ($e) => $e instanceof ReasoningDelta))->toHaveCount(1);
+});
+
+it('falls back to the reasoning_details text, as stock 1.0 does', function () {
+    $events = [];
+    GatewayFactory::streamed(GatewayFactory::gateway(), [
+        OpenRouterSse::chunk(['reasoning_details' => [['type' => 'reasoning.summary', 'summary' => 'Weighing ']]]),
+        OpenRouterSse::chunk(['reasoning_details' => [['type' => 'reasoning.text', 'text' => 'options.']]]),
+        OpenRouterSse::chunk(['content' => 'Done'], finishReason: 'stop'),
+    ], $events);
+
+    expect(ReasoningDelta::combine(array_filter($events, fn ($e) => $e instanceof ReasoningDelta)))
+        ->toBe('Weighing options.');
 });
 
 it('closes a reasoning block that never gave way to content', function () {

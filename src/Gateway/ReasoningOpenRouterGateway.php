@@ -24,9 +24,9 @@ use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Providers\Provider;
 use Laravel\Ai\Responses\Data\FinishReason;
 use Laravel\Ai\Responses\Data\Meta;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall;
 use Laravel\Ai\Responses\Data\UrlCitation;
-use Laravel\Ai\Responses\Data\Usage;
 use Laravel\Ai\Streaming\Events\Citation as CitationEvent;
 use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\ReasoningDelta;
@@ -47,19 +47,23 @@ use Throwable;
  * Canonical OpenRouter gateway, consolidating the three app forks
  * (uqucc base + s-grade's non-stream generation-id capture).
  *
- * Deltas vs stock laravel/ai 0.10.3, all additive:
+ * Deltas vs stock laravel/ai (forked from 0.10.3, reconciled against 1.0.0),
+ * all additive:
  *  - client(): retry with linear backoff on transient statuses
  *  - validateTextResponse(): null-safe (OpenRouter can 200 with empty body)
  *  - buildStepBody(): injects the catalog's server-side routing (`models`
  *    chain, `provider.max_price` cap); withholds tools on the final step and
  *    injects an answer-now nudge (a tool call emitted on the final step would
  *    be silently discarded by TextGenerationLoop)
- *  - mapAttachments(): maps audio to `input_audio` content parts (stock only
- *    knows images and documents, and throws on every Audio subclass)
+ *  - mapAttachments(): maps audio to `input_audio` content parts (0.10.3
+ *    stock threw on every Audio subclass; 1.0 stock maps audio too, but its
+ *    format lookup throws on a mime it does not list — retiring this
+ *    override is the planned gateway diet)
  *  - parseTextResponse(): captures generation id + exact cost (non-streamed)
- *  - processTextStream(): copy of the stock method with reasoning re-emission
- *    (stock drops delta.reasoning), generation-id + cost capture, and a
- *    time-to-first-token stamp at the first reasoning/text token
+ *  - processTextStream(): copy of the stock 0.10.3 method with reasoning
+ *    re-emission (1.0 stock now emits reasoning too), generation-id + cost
+ *    capture, the markup-leak filter, and a time-to-first-token stamp at the
+ *    first reasoning/text token
  *  - generateTextStep()/generateStreamStep(): circuit-breaker guard before
  *    the request, success/failure recording around it
  *  - overloadedStatusCodes(): widened from [503] so post-retry 5xx failures
@@ -272,9 +276,9 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             } elseif ($this->shouldRetryLeak()) {
                 $this->excludeLeakingProviderOnce($step);
 
-                $retry = yield from parent::generateStreamStep(
+                $retry = yield from $this->withinSameStep(parent::generateStreamStep(
                     $invocationId, $provider, $model, $instructions, $messages, $tools, $schema, $options, $timeout, $stepContext,
-                );
+                ));
 
                 if (! $retry instanceof StepResponse) {
                     return $retry;
@@ -293,14 +297,17 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         $this->flagWrapUp($reason, $provider, $model, $stepContext);
 
         // The wire text must equal the merged step text the SDK persists, so
-        // the paragraph break between narration and answer is yielded too.
+        // the paragraph break between narration and answer is yielded too —
+        // and the wrap-up's own StreamStart is swallowed, because the SDK's
+        // TextDelta::combine() cuts steps at StreamStart and joins them with
+        // a blank line of its own, which would double this one.
         $separator = StepGuard::separator($step);
 
         if ($separator !== '') {
             yield (new TextDelta($this->generateEventId(), $this->generateEventId(), $separator, time()))->withInvocationId($invocationId);
         }
 
-        $wrapUp = yield from parent::generateStreamStep(
+        $wrapUp = yield from $this->withinSameStep(parent::generateStreamStep(
             $invocationId,
             $provider,
             $model,
@@ -311,9 +318,31 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             $options,
             $timeout,
             StepGuard::wrapUpContext($stepContext),
-        );
+        ));
 
         return $wrapUp instanceof StepResponse ? StepGuard::merge($step, $wrapUp) : $step;
+    }
+
+    /**
+     * Delegate a re-request the guard runs INSIDE the current step (a leak
+     * retry, a wrap-up) minus its StreamStart. laravel/ai 1.0 treats every
+     * StreamStart as a step boundary — TextDelta::combine() joins the text
+     * on either side with a blank line, and the Vercel protocol closes the
+     * step — so passing it through would split one step in two and make the
+     * persisted text diverge from the wire and from the merged StepResponse.
+     *
+     * @param  Generator<int, StreamEvent, mixed, StepResponse|null>  $stream
+     * @return Generator<int, StreamEvent, mixed, StepResponse|null>
+     */
+    protected function withinSameStep(Generator $stream): Generator
+    {
+        foreach ($stream as $event) {
+            if (! $event instanceof StreamStart) {
+                yield $event;
+            }
+        }
+
+        return $stream->getReturn();
     }
 
     /**
@@ -389,7 +418,9 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             meta: $step->meta,
             structured: $step->structured,
             continuationToken: $step->continuationToken,
-            providerContentBlocks: $step->providerContentBlocks,
+            replayBlocks: $step->replayBlocks,
+            reasoning: $step->reasoning,
+            providerToolCalls: $step->providerToolCalls,
         ))->inspected(true, $step->leakedMarkup, $step->providerName)->withRawResponse($step->raw);
     }
 
@@ -500,13 +531,14 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     /**
      * Statuses that convert into ProviderOverloadedException — and therefore
      * fail over to the next model in a declared chain — once the client's
-     * own retries are exhausted. Stock only maps 503.
+     * own retries are exhausted. Stock 1.0 maps 502/503/504/520/522/524; the
+     * kit default adds 500 and 529.
      *
      * @return list<int>
      */
     protected function overloadedStatusCodes(): array
     {
-        return $this->config['failover']['overloaded_statuses'] ?? [500, 502, 503, 504, 529];
+        return $this->config['failover']['overloaded_statuses'] ?? [500, 502, 503, 504, 520, 522, 524, 529];
     }
 
     /**
@@ -787,8 +819,10 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             meta: $step->meta,
             structured: $step->structured,
             continuationToken: $step->continuationToken,
-            providerContentBlocks: $step->providerContentBlocks,
+            replayBlocks: $step->replayBlocks,
             pendingApprovals: $step->pendingApprovals,
+            reasoning: $step->reasoning,
+            providerToolCalls: $step->providerToolCalls,
         ))->inspected(
             $filter->leaked(),
             $filter->removed(),
@@ -806,10 +840,12 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     }
 
     /**
-     * Copy of the stock 0.10.3 method with three additive changes: reasoning
-     * re-emission (state machine below), generation-id capture, and exact
-     * cost capture. Everything else — including the citation block the old
-     * app forks accidentally dropped — is stock.
+     * Copy of the stock 0.10.3 method with additive changes: reasoning
+     * re-emission (state machine below), generation-id capture, exact cost
+     * capture and the markup-leak filter. Everything else — including the
+     * citation block the old app forks accidentally dropped — is stock.
+     * Reconciled against 1.0.0: its only changes were reasoning emission
+     * (ported: the `reasoning_details` fallback) and TextUsage.
      *
      * @return Generator<int, StreamEvent, mixed, StepResponse|null>
      */
@@ -914,9 +950,14 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
                 $reasoningId = '';
             }
 
-            // Emit the reasoning the stock gateway drops (OpenRouter uses the
-            // "reasoning" delta field; DeepSeek-style "reasoning_content" too).
+            // Re-emit reasoning: OpenRouter's "reasoning" delta field,
+            // DeepSeek-style "reasoning_content", and — as stock 1.0 does —
+            // the text of "reasoning_details" when neither is present.
             $reasoning = $delta['reasoning'] ?? $delta['reasoning_content'] ?? null;
+
+            if (! is_string($reasoning) || $reasoning === '') {
+                $reasoning = $this->reasoningTextIn($delta['reasoning_details'] ?? []);
+            }
 
             if (is_string($reasoning) && $reasoning !== '') {
                 if (! $inReasoning) {
@@ -1094,7 +1135,7 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             text: $currentText,
             toolCalls: $toolCalls,
             finishReason: $this->extractFinishReason(['finish_reason' => $finishReason ?? '']),
-            usage: $usage ?? new Usage(0, 0),
+            usage: $usage ?? new TextUsage(0, 0),
             meta: new Meta($provider->name(), $streamModel),
         ))->inspected($leakFilter->leaked(), $leakFilter->removed(), $providerName);
     }
