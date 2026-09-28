@@ -4,6 +4,7 @@ namespace Saad\AiKit\Gateway;
 
 use Illuminate\Contracts\Events\Dispatcher;
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Ai\Ai;
 use Laravel\Ai\Providers\OpenRouterProvider;
@@ -18,6 +19,34 @@ class GatewayServiceProvider extends ServiceProvider
         ));
 
         $this->app->singleton(SpendCollector::class, fn (Application $app) => $app->make(ContextSpendCollector::class));
+
+        $this->app->bind(GenerationCostResolver::class, function (Application $app) {
+            $config = $app['config']->get('ai-kit.spend', []);
+            $provider = $app['config']->get('ai.providers.'.($config['provider'] ?? 'openrouter'), []);
+
+            return new GenerationCostResolver(
+                $app->make(HttpFactory::class),
+                $provider['key'] ?? null,
+                $provider['url'] ?? 'https://openrouter.ai/api/v1',
+                windowSeconds: (float) ($config['sync_window_seconds'] ?? 6),
+                backoffMs: array_values(array_map('intval', $config['sync_backoff_ms'] ?? [500, 1000, 1500, 3000])),
+                requestTimeoutSeconds: (int) ($config['request_timeout_seconds'] ?? 3),
+            );
+        });
+
+        // Apps bind their own handler (debit a stopped turn, record a failed
+        // one); bindIf so the order the providers register in never matters.
+        $this->app->bindIf(InterruptedSpendHandler::class, NullInterruptedSpendHandler::class);
+
+        $this->app->bind(InterruptedSpend::class, fn (Application $app) => new InterruptedSpend(
+            $app->make(SpendCollector::class),
+            $app->make(GenerationCostResolver::class),
+            $app,
+            $app['cache']->store(
+                $app['config']->get('ai-kit.spend.cache_store') ?? $app['config']->get('ai-kit.safety.cache_store'),
+            ),
+            $app['config']->get('ai-kit.spend', []),
+        ));
 
         $this->app->singleton(ModelCircuitBreaker::class, function (Application $app) {
             $config = $app['config']->get('ai-kit.gateway.circuit_breaker', []);

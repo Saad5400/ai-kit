@@ -61,6 +61,22 @@ class ContextSpendCollector implements SpendCollector
         ))));
     }
 
+    public function recordPendingGeneration(string $generationId): void
+    {
+        Context::push($this->pendingGenerationIdsKey(), $generationId);
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function pendingGenerationIds(): array
+    {
+        return array_values(array_diff(
+            array_values(array_unique(Context::get($this->pendingGenerationIdsKey(), []))),
+            $this->generationIds(),
+        ));
+    }
+
     /**
      * Clear all captured values. Call before starting a turn so a previous
      * call in the same request never leaks into the next capture.
@@ -72,6 +88,7 @@ class ContextSpendCollector implements SpendCollector
             $this->nonStreamCostsKey(),
             $this->generationIdsKey(),
             $this->nonStreamGenerationIdsKey(),
+            $this->pendingGenerationIdsKey(),
         ]);
     }
 
@@ -107,5 +124,10 @@ class ContextSpendCollector implements SpendCollector
     public function nonStreamGenerationIdsKey(): string
     {
         return "{$this->prefix}.openrouter_non_stream_generation_ids";
+    }
+
+    public function pendingGenerationIdsKey(): string
+    {
+        return "{$this->prefix}.openrouter_pending_generation_ids";
     }
 }

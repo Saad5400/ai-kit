@@ -184,6 +184,53 @@ public function maxSteps(): int
 
 **Narration is process, client-side.** `groupSegments()` now files text that is followed by a tool call anywhere later in the turn into the process disclosure — «لنبحث أولاً» was a step in the work, and as a reply bubble it made a silent turn read as the whole answer. Only text after the last tool call is the reply; cards still split groups; `ProcessGroup.items` may hold `TextSegment` (both components render it as a quiet narration line); the wire is unchanged and `groupSegments(segments, { narration: 'text' })` restores the old rendering.
 
+## Stopped and failed turns: interrupted spend
+
+The usage module writes a row (and feeds the budget) only for turns that complete or pause. A turn the user **stops**, or that **fails** mid-stream, writes none, and the step it cut off never received the `usage.cost` OpenRouter sends on its final chunk — yet OpenRouter bills it. Left alone, a single-step answer stopped a second before its end is free. Owner ruling 2026-09-28: a stopped turn is debited at the actual provider cost up to the stop; a failed turn stays free, but its cost counts toward the daily budget.
+
+**What the kit does.** The gateway records every step that does not complete (a stop thrown in, an error frame, a dropped connection): priced like any step when its cost already arrived, otherwise as a *pending* generation — `SpendCollector::pendingGenerationIds()`, alongside `totalCost()` / `generationIds()`; an id whose step later completes is never pending. `InterruptedSpend::dispatchFor()` then settles the turn: it drains the collector, records what was already priced on the budget, prices each pending generation from `GET /api/v1/generation?id=` (`data.total_cost`, with the key of the laravel/ai provider in `ai-kit.spend.provider`) inside a short bounded window (`sync_window_seconds`, 6), and queues `ResolveInterruptedSpend` for the rest. The job takes one look per id per attempt, one attempt per entry of `retry_delays_seconds` (10, 30, 90, 180, 300), and on the last one gives up with a warning — never an exception. Every priced generation is budgeted through `BudgetGuard::recordOnce()` keyed per generation id (the already-priced part per turn), so retries and redeliveries never count twice.
+
+**What the app does.** Call `dispatchFor()` once at the end of every stopped or failed turn — with the turn's own id and whatever the handler needs (queue-serialisable) — and bind a handler:
+
+```php
+use Saad\AiKit\Gateway\InterruptedSpend;
+
+if ($outcome->cancelled || $outcome->failed) {
+    InterruptedSpend::dispatchFor($turnId, [
+        'outcome' => $outcome->cancelled ? 'stopped' : 'failed',
+        'user_id' => $user->id,
+    ]);
+}
+```
+
+```php
+use Saad\AiKit\Gateway\InterruptedSpendHandler;
+
+class DebitInterruptedTurn implements InterruptedSpendHandler
+{
+    public function resolved(string $turnId, float $costUsd, array $generationIds, array $context): void
+    {
+        if (($context['outcome'] ?? null) !== 'stopped') {
+            return; // a failed turn is free; the kit already counted it toward the budget
+        }
+
+        $credits = app(CreditCalculator::class)->creditsForCostUsd($costUsd);
+
+        // Its own key: the turn's main debit (debit:turn:{id}) may exist already.
+        app(CreditDebitor::class)->debit(User::find($context['user_id']), $credits, [
+            'turn_id' => $turnId, 'cost_usd' => $costUsd, 'generation_ids' => $generationIds,
+        ], "debit:turn:{$turnId}:interrupted");
+    }
+}
+
+// AppServiceProvider::register()
+$this->app->bind(InterruptedSpendHandler::class, DebitInterruptedTurn::class);
+```
+
+The handler runs **at most once** per turn id and generation set, only with a cost above zero, and after the budget is recorded — on the spot when the fast path priced everything, otherwise from the job (on give-up with whatever did price). `$costUsd` is everything the turn spent that **no usage row metered**: the steps it completed before the stop or failure plus the step that was cut off. Spend already metered through usage rows (a vision pre-pass, a helper call) is not in it, so the app's main debit and this one never overlap — keep them under separate idempotency keys (`debit:turn:{turnId}` and `debit:turn:{turnId}:interrupted`). A handler that throws is reported and retried by the queue; the debit must be idempotent on the app side anyway. `dispatchFor()` returns an `InterruptedSpendReport` (settled / pending / resolved cost, `handled`, `queued`) for logging; nothing depends on reading it.
+
+Config (`ai-kit.spend`): `resolve_interrupted` (true; false skips the pricing — no HTTP, no job — while spend already priced is still recorded and handed over), `provider`, `record_budget`, `sync_window_seconds`, `sync_backoff_ms`, `request_timeout_seconds`, `retry_delays_seconds`, `connection` / `queue` for the job, `cache_store` for the once-guard (null = the safety store). Known gap: a pending generation from a laravel/ai *provider failover* attempt is dropped when the next provider completes the turn (its usage row drains the collector).
+
 ## Approval forms
 
 An approval card describes its own form. `ClassifiedTool::fields()` declares the arguments a tool wants rendered a particular way; everything it leaves out is inferred from the pending value (`bool` → boolean, `int|float` → number, a string with a newline or over 120 chars → textarea, an array → readonly, otherwise text), and any argument named `id` or `*_id` is readonly because it addresses the record the write lands on:

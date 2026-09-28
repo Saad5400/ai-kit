@@ -938,6 +938,40 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Interrupted spend
+    |--------------------------------------------------------------------------
+    |
+    | A turn the user stops, or that fails mid-stream, writes no usage row,
+    | and the step it cut off never received its `usage.cost`. OpenRouter
+    | still bills it; `InterruptedSpend::dispatchFor($turnId, $context)`
+    | prices it afterwards from `GET /generation?id=` (the key of the
+    | laravel/ai provider named by `provider`), records it on the daily
+    | budget (`record_budget`, keyed per generation id) and hands the total
+    | to the app's `InterruptedSpendHandler`. `sync_window_seconds` bounds
+    | the fast path at the end of the turn (retries at `sync_backoff_ms`);
+    | whatever is still unpriced goes to the queued ResolveInterruptedSpend,
+    | one attempt per `retry_delays_seconds` entry, then it gives up with a
+    | warning. `resolve_interrupted` false skips the pricing (no HTTP, no
+    | job) — spend already priced is still recorded and handed over. The
+    | once-guard lives in `cache_store` (null = the safety cache store).
+    |
+    */
+
+    'spend' => [
+        'resolve_interrupted' => true,
+        'provider' => 'openrouter',
+        'record_budget' => true,
+        'sync_window_seconds' => 6,
+        'sync_backoff_ms' => [500, 1000, 1500, 3000],
+        'request_timeout_seconds' => 3,
+        'retry_delays_seconds' => [10, 30, 90, 180, 300],
+        'connection' => null,
+        'queue' => null,
+        'cache_store' => null,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Safety
     |--------------------------------------------------------------------------
     |

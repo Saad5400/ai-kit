@@ -14,6 +14,8 @@ use Laravel\Ai\Streaming\Events\TextEnd;
 use Laravel\Ai\Streaming\Events\TextStart;
 use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
 use Saad\AiKit\Gateway\InspectedStepResponse;
+use Saad\AiKit\Gateway\SpendCollector;
+use Saad\AiKit\Streaming\TurnCancelledException;
 use Saad\AiKit\Tests\Support\GatewayFactory;
 use Saad\AiKit\Tests\Support\OpenRouterSse;
 
@@ -197,15 +199,58 @@ it('keeps the latest generation id seen across the stream', function () {
     expect(Context::get('ai.openrouter_generation_ids'))->toBe(['gen-final']);
 });
 
-it('records no generation id or cost for a step that ended on an error frame', function () {
+it('prices a step that ended on an error frame after its cost arrived (OpenRouter billed it)', function () {
     GatewayFactory::streamed(GatewayFactory::gateway(), [
         OpenRouterSse::chunk(['content' => 'partial'], id: 'gen-failed'),
         OpenRouterSse::usageFrame(['prompt_tokens' => 1, 'completion_tokens' => 1, 'cost' => 0.02], id: 'gen-failed'),
         ['id' => 'gen-failed', 'error' => ['code' => 500, 'message' => 'boom']],
     ]);
 
-    expect(Context::get('ai.openrouter_generation_ids'))->toBeNull()
-        ->and(Context::get('ai.openrouter_costs'))->toBeNull();
+    expect(Context::get('ai.openrouter_generation_ids'))->toBe(['gen-failed'])
+        ->and(Context::get('ai.openrouter_costs'))->toBe([0.02])
+        ->and(app(SpendCollector::class)->pendingGenerationIds())->toBe([]);
+});
+
+it('records a step cut off by an error frame before its cost as a pending generation', function () {
+    GatewayFactory::streamed(GatewayFactory::gateway(), [
+        OpenRouterSse::chunk(['content' => 'partial'], id: 'gen-cut'),
+        ['id' => 'gen-cut', 'error' => ['code' => 502, 'message' => 'Provider returned error']],
+    ]);
+
+    $spend = app(SpendCollector::class);
+
+    expect($spend->pendingGenerationIds())->toBe(['gen-cut'])
+        ->and($spend->generationIds())->toBe([])
+        ->and($spend->totalCost())->toBe(0.0);
+});
+
+it('records a step whose consumer threw in mid-stream (a stop) as a pending generation', function () {
+    $gateway = GatewayFactory::gateway();
+
+    $generator = (new ReflectionMethod($gateway, 'processTextStream'))->invoke($gateway, 'inv-test', GatewayFactory::provider(), 'test/model', OpenRouterSse::stream([
+        OpenRouterSse::chunk(['content' => 'Hel'], id: 'gen-stopped'),
+        OpenRouterSse::chunk(['content' => 'lo'], id: 'gen-stopped'),
+        OpenRouterSse::usageFrame(['prompt_tokens' => 1, 'completion_tokens' => 2, 'cost' => 0.5], id: 'gen-stopped'),
+    ]));
+
+    $generator->current();
+
+    expect(fn () => $generator->throw(new TurnCancelledException))->toThrow(TurnCancelledException::class);
+
+    $spend = app(SpendCollector::class);
+
+    // The usage frame was never read: no cost, one pending id.
+    expect($spend->pendingGenerationIds())->toBe(['gen-stopped'])
+        ->and($spend->totalCost())->toBe(0.0);
+});
+
+it('records nothing for a step cut off before its first chunk', function () {
+    GatewayFactory::streamed(GatewayFactory::gateway(), [
+        ['error' => ['code' => 502, 'message' => 'Provider returned error']],
+    ]);
+
+    expect(app(SpendCollector::class)->pendingGenerationIds())->toBe([])
+        ->and(app(SpendCollector::class)->generationIds())->toBe([]);
 });
 
 it('reads the cost off a usage block riding on the final choice chunk', function () {
