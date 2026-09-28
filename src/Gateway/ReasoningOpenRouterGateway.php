@@ -4,18 +4,13 @@ namespace Saad\AiKit\Gateway;
 
 use Generator;
 use Illuminate\Contracts\Events\Dispatcher;
-use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\RequestException;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Laravel\Ai\Contracts\Providers\TextProvider;
 use Laravel\Ai\Contracts\Tool;
 use Laravel\Ai\Exceptions\AiException;
 use Laravel\Ai\Exceptions\FailoverableException;
-use Laravel\Ai\Files\Audio;
-use Laravel\Ai\Files\Base64Audio;
 use Laravel\Ai\Gateway\OpenRouter\OpenRouterGateway;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Gateway\StepResponse;
@@ -23,20 +18,10 @@ use Laravel\Ai\Gateway\TextGenerationOptions;
 use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Providers\Provider;
 use Laravel\Ai\Responses\Data\FinishReason;
-use Laravel\Ai\Responses\Data\Meta;
-use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall;
-use Laravel\Ai\Responses\Data\UrlCitation;
-use Laravel\Ai\Streaming\Events\Citation as CitationEvent;
-use Laravel\Ai\Streaming\Events\Error;
-use Laravel\Ai\Streaming\Events\ReasoningDelta;
-use Laravel\Ai\Streaming\Events\ReasoningEnd;
-use Laravel\Ai\Streaming\Events\ReasoningStart;
 use Laravel\Ai\Streaming\Events\StreamEvent;
 use Laravel\Ai\Streaming\Events\StreamStart;
 use Laravel\Ai\Streaming\Events\TextDelta;
-use Laravel\Ai\Streaming\Events\TextEnd;
-use Laravel\Ai\Streaming\Events\TextStart;
 use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
 use Laravel\Ai\Tools\ToolNameResolver;
 use Saad\AiKit\Catalog\ModelRouting;
@@ -47,30 +32,29 @@ use Throwable;
  * Canonical OpenRouter gateway, consolidating the three app forks
  * (uqucc base + s-grade's non-stream generation-id capture).
  *
- * Deltas vs stock laravel/ai (forked from 0.10.3, reconciled against 1.0.0),
- * all additive:
+ * Deltas vs stock laravel/ai 1.0, all additive and none a copy of vendor
+ * logic:
  *  - client(): retry with linear backoff on transient statuses
  *  - validateTextResponse(): null-safe (OpenRouter can 200 with empty body)
  *  - buildStepBody(): injects the catalog's server-side routing (`models`
  *    chain, `provider.max_price` cap); withholds tools on the final step and
  *    injects an answer-now nudge (a tool call emitted on the final step would
  *    be silently discarded by TextGenerationLoop)
- *  - mapAttachments(): maps audio to `input_audio` content parts (0.10.3
- *    stock threw on every Audio subclass; 1.0 stock maps audio too, but its
- *    format lookup throws on a mime it does not list — retiring this
- *    override is the planned gateway diet)
+ *  - audioFormat(): tolerant of the mimes stock's exact-match list throws on
  *  - parseTextResponse(): captures generation id + exact cost (non-streamed)
- *  - processTextStream(): copy of the stock 0.10.3 method with reasoning
- *    re-emission (1.0 stock now emits reasoning too), generation-id + cost
- *    capture, the markup-leak filter, and a time-to-first-token stamp at the
- *    first reasoning/text token
+ *  - processTextStream()/parseServerSentEvents(): stock's stream loop over a
+ *    tapped body — each chunk is read for generation id, cost and upstream,
+ *    DeepSeek `reasoning_content` is renamed to `reasoning`, the first token
+ *    stamps TTFT, and `content` passes the markup-leak filter before stock
+ *    sees it
  *  - generateTextStep()/generateStreamStep(): circuit-breaker guard before
- *    the request, success/failure recording around it
- *  - overloadedStatusCodes(): widened from [503] so post-retry 5xx failures
- *    convert to FailoverableException and move chains to the next model
+ *    the request, success/failure recording around it, and the step guard
+ *    (leak salvage/retry, wrap-up)
+ *  - overloadedStatusCodes(): stock's list plus 500/529, so post-retry 5xx
+ *    failures convert to FailoverableException and fail over
  *
- * processTextStream is the only wholesale copy; the drift-guard test pins the
- * vendor sources it was copied from and fails when upstream changes them.
+ * The drift-guard test pins the vendor sources these hooks ride on and
+ * fails when upstream changes them.
  */
 class ReasoningOpenRouterGateway extends OpenRouterGateway
 {
@@ -410,18 +394,11 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
 
         TurnContext::flag('markup_salvaged', true);
 
-        return (new InspectedStepResponse(
-            text: $step->text,
-            toolCalls: $calls,
-            finishReason: FinishReason::ToolCalls,
-            usage: $step->usage,
-            meta: $step->meta,
-            structured: $step->structured,
-            continuationToken: $step->continuationToken,
-            replayBlocks: $step->replayBlocks,
-            reasoning: $step->reasoning,
-            providerToolCalls: $step->providerToolCalls,
-        ))->inspected(true, $step->leakedMarkup, $step->providerName)->withRawResponse($step->raw);
+        $salvaged = InspectedStepResponse::from($step);
+        $salvaged->toolCalls = $calls;
+        $salvaged->finishReason = FinishReason::ToolCalls;
+
+        return $salvaged->inspected(true, $step->leakedMarkup, $step->providerName);
     }
 
     /**
@@ -509,9 +486,10 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     }
 
     /**
-     * Only provider-health failures move the breaker: failoverable errors,
-     * connection failures, and 5xx responses. Client errors (bad request,
-     * auth) say nothing about the model being down.
+     * Only provider-health failures move the breaker: failoverable errors
+     * (stock wraps connection failures, 429/402 and the overloaded statuses
+     * into those) and any other 5xx. Client errors (bad request, auth) say
+     * nothing about the model being down.
      */
     protected function recordStepFailure(string $providerName, string $model, Throwable $exception): void
     {
@@ -520,7 +498,6 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         }
 
         $unhealthy = $exception instanceof FailoverableException
-            || $exception instanceof ConnectionException
             || ($exception instanceof RequestException && $exception->response?->status() >= 500);
 
         if ($unhealthy) {
@@ -531,14 +508,17 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     /**
      * Statuses that convert into ProviderOverloadedException — and therefore
      * fail over to the next model in a declared chain — once the client's
-     * own retries are exhausted. Stock 1.0 maps 502/503/504/520/522/524; the
-     * kit default adds 500 and 529.
+     * own retries are exhausted: stock 1.0's list (502/503/504/520/522/524)
+     * plus the configured additions (default 500 and 529).
      *
      * @return list<int>
      */
     protected function overloadedStatusCodes(): array
     {
-        return $this->config['failover']['overloaded_statuses'] ?? [500, 502, 503, 504, 520, 522, 524, 529];
+        return array_values(array_unique([
+            ...parent::overloadedStatusCodes(),
+            ...($this->config['failover']['overloaded_statuses'] ?? [500, 529]),
+        ]));
     }
 
     /**
@@ -670,93 +650,27 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     }
 
     /**
-     * Map attachments to Chat Completions content parts, adding the audio
-     * case stock does not have.
-     *
-     * OpenRouter carries audio on the chat endpoint as an `input_audio` part,
-     * but stock MapsAttachments knows only images and documents and throws on
-     * every `Files\Audio` subclass — which is why apps that wanted audio (and
-     * the segments and cost that come with a chat completion) dropped to raw
-     * HTTP instead of going through an agent. Non-audio attachments are handed
-     * to the stock mapper one at a time, so its mapping and its throw on a
-     * genuinely unsupported type are unchanged, and order is preserved.
+     * OpenRouter's `input_audio.format` — a bare container token ("mp3",
+     * "webm"), never a mime type. Stock 1.0 maps every audio attachment to
+     * `input_audio` itself but matches exact mimes and throws on anything
+     * else, which rejects what browsers and finfo really produce:
+     * `audio/webm;codecs=opus` (MediaRecorder), `video/webm` (finfo on the
+     * same recording), `audio/mpga`. Parameters are dropped, audio/* and
+     * video/* subtypes map through the alias list or pass through as their
+     * own token for the provider to judge, and a mime that names no
+     * container falls back to mp3 — stock's own default for a missing mime.
      */
-    protected function mapAttachments(Collection $attachments): array
+    protected function audioFormat(?string $mimeType): string
     {
-        return $attachments->map(function (mixed $attachment): array {
-            $audio = $this->mapAudioAttachment($attachment);
+        $mime = strtolower(trim(explode(';', (string) $mimeType)[0]));
 
-            if ($audio !== null) {
-                return $audio;
-            }
+        [$type, $subtype] = array_pad(explode('/', $mime, 2), 2, '');
 
-            return array_values(parent::mapAttachments(collect([$attachment])))[0];
-        })->values()->all();
-    }
-
-    /**
-     * Build the `input_audio` part for an audio attachment, or null when the
-     * attachment is not audio and belongs to the stock mapper.
-     *
-     * Every source ends up inline base64: OpenRouter has no URL form for
-     * audio, so a remote or stored file is fetched here rather than passed
-     * through the way a remote document is.
-     *
-     * @return array{type: string, input_audio: array{data: string, format: string}}|null
-     */
-    protected function mapAudioAttachment(mixed $attachment): ?array
-    {
-        if ($attachment instanceof Audio) {
-            $mime = $attachment->mimeType();
-
-            return $this->audioPart(
-                $attachment instanceof Base64Audio ? $attachment->base64 : base64_encode($attachment->content()),
-                is_string($mime) ? $mime : null,
-                $attachment->name(),
-            );
+        if (! in_array($type, ['audio', 'video'], true) || $subtype === '') {
+            return 'mp3';
         }
 
-        if ($attachment instanceof UploadedFile && str_starts_with($attachment->getClientMimeType(), 'audio/')) {
-            return $this->audioPart(
-                base64_encode($attachment->get()),
-                $attachment->getClientMimeType(),
-                $attachment->getClientOriginalName(),
-            );
-        }
-
-        return null;
-    }
-
-    /**
-     * @return array{type: string, input_audio: array{data: string, format: string}}
-     */
-    protected function audioPart(string $base64, ?string $mime, ?string $name): array
-    {
         return [
-            'type' => 'input_audio',
-            'input_audio' => [
-                'data' => $base64,
-                'format' => $this->inputAudioFormat($mime, $name),
-            ],
-        ];
-    }
-
-    /**
-     * Derive OpenRouter's `format` — a bare container token ("mp3", "wav"),
-     * never a mime type — from the attachment's mime, falling back to its
-     * filename extension. `mp3` is the last resort: it is one of the two
-     * formats OpenRouter documents everywhere, and the one a browser recorder
-     * or a phone upload most often produces.
-     *
-     * Stock's `audioFormat()` covers the same mimes but belongs to the
-     * transcription endpoint and throws on anything outside its list; a chat
-     * attachment can legitimately arrive with no mime at all (a stored blob,
-     * a base64 string), so the fallbacks live here and an unrecognized
-     * container passes through as its own token for the provider to reject.
-     */
-    protected function inputAudioFormat(?string $mime, ?string $name): string
-    {
-        $aliases = [
             'mpeg' => 'mp3',
             'mpga' => 'mp3',
             'mp4' => 'm4a',
@@ -767,24 +681,9 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
             'x-pn-wav' => 'wav',
             'x-flac' => 'flac',
             'x-aac' => 'aac',
+            'x-aiff' => 'aiff',
             'oga' => 'ogg',
-        ];
-
-        $mime = strtolower(trim(explode(';', (string) $mime)[0]));
-
-        // Only an audio/* mime says anything about the container; a generic
-        // application/octet-stream must not become format "octet-stream".
-        $subtype = str_starts_with($mime, 'audio/') ? substr($mime, 6) : '';
-
-        $extension = strtolower(pathinfo((string) $name, PATHINFO_EXTENSION));
-
-        foreach ([$subtype, $extension] as $candidate) {
-            if ($candidate !== '') {
-                return $aliases[$candidate] ?? $candidate;
-            }
-        }
-
-        return 'mp3';
+        ][$subtype] ?? $subtype;
     }
 
     /**
@@ -811,23 +710,14 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         $filter = $this->markupLeakFilter();
         $text = $filter->push($step->text).$filter->flush();
 
-        return (new InspectedStepResponse(
-            text: $text,
-            toolCalls: $step->toolCalls,
-            finishReason: $step->finishReason,
-            usage: $step->usage,
-            meta: $step->meta,
-            structured: $step->structured,
-            continuationToken: $step->continuationToken,
-            replayBlocks: $step->replayBlocks,
-            pendingApprovals: $step->pendingApprovals,
-            reasoning: $step->reasoning,
-            providerToolCalls: $step->providerToolCalls,
-        ))->inspected(
+        $inspected = InspectedStepResponse::from($step);
+        $inspected->text = $text;
+
+        return $inspected->inspected(
             $filter->leaked(),
             $filter->removed(),
             is_string($data['provider'] ?? null) ? $data['provider'] : null,
-        )->withRawResponse($step->raw);
+        );
     }
 
     /**
@@ -840,12 +730,10 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     }
 
     /**
-     * Copy of the stock 0.10.3 method with additive changes: reasoning
-     * re-emission (state machine below), generation-id capture, exact cost
-     * capture and the markup-leak filter. Everything else — including the
-     * citation block the old app forks accidentally dropped — is stock.
-     * Reconciled against 1.0.0: its only changes were reasoning emission
-     * (ported: the `reasoning_details` fallback) and TextUsage.
+     * Stock 1.0's stream loop, run over a tapped body ({@see tapChunk()}),
+     * then the step's spend is recorded and the response re-wrapped with
+     * what the tap saw. An error frame ends stock's loop with null; that
+     * step records nothing, as it bills nothing.
      *
      * @return Generator<int, StreamEvent, mixed, StepResponse|null>
      */
@@ -855,289 +743,109 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         string $model,
         $streamBody,
     ): Generator {
-        $messageId = $this->generateEventId();
-        $streamModel = $model;
-        $streamStartEmitted = false;
-        $textStartEmitted = false;
-        $currentText = '';
-        $toolCalls = [];
-        $pendingToolCalls = [];
-        $usage = null;
-        $finishReason = null;
+        $tap = new StreamTap($streamBody, $this->markupLeakFilter());
 
-        // Fork state: reasoning re-emission + spend capture + leak guard.
-        $reasoningId = '';
-        $inReasoning = false;
-        $generationId = '';
-        $openRouterCost = null;
-        $providerName = null;
-        $leakFilter = $this->markupLeakFilter();
+        $step = yield from parent::processTextStream($invocationId, $provider, $model, $tap);
 
-        foreach ($this->parseServerSentEvents($streamBody) as $data) {
-            // Every chunk carries the generation id; keep the latest.
-            if (isset($data['id']) && is_string($data['id']) && $data['id'] !== '') {
-                $generationId = $data['id'];
-            }
-
-            // OpenRouter names the upstream it routed to on every chunk; a
-            // retry after a markup leak excludes that provider.
-            if (isset($data['provider']) && is_string($data['provider']) && $data['provider'] !== '') {
-                $providerName = $data['provider'];
-            }
-
-            if (isset($data['error'])) {
-                yield (new Error(
-                    $this->generateEventId(),
-                    $data['error']['code'] ?? 'unknown_error',
-                    $data['error']['message'] ?? 'Unknown error',
-                    false,
-                    time(),
-                ))->withInvocationId($invocationId);
-
-                return null;
-            }
-
-            $choice = $data['choices'][0] ?? null;
-
-            if (! $choice) {
-                if (isset($data['usage'])) {
-                    $usage = $this->extractUsage($data);
-                    $openRouterCost = $this->extractOpenRouterCost($data) ?? $openRouterCost;
-                }
-
-                continue;
-            }
-
-            $delta = $choice['delta'] ?? [];
-
-            // Handle error finish reason from OpenRouter...
-            if (($choice['finish_reason'] ?? null) === 'error') {
-                $error = $choice['error'] ?? [];
-
-                yield (new Error(
-                    $this->generateEventId(),
-                    (string) ($error['code'] ?? 'provider_error'),
-                    $error['message'] ?? 'An upstream provider error occurred.',
-                    false,
-                    time(),
-                ))->withInvocationId($invocationId);
-
-                return null;
-            }
-
-            if (! $streamStartEmitted) {
-                $streamStartEmitted = true;
-                $streamModel = $data['model'] ?? $model;
-
-                yield (new StreamStart(
-                    $this->generateEventId(),
-                    $provider->name(),
-                    $streamModel,
-                    time(),
-                ))->withInvocationId($invocationId);
-            }
-
-            // Close the reasoning block as soon as visible output begins.
-            if ($inReasoning && ((isset($delta['content']) && $delta['content'] !== '') || isset($delta['tool_calls']))) {
-                $inReasoning = false;
-
-                yield (new ReasoningEnd(
-                    $this->generateEventId(),
-                    $reasoningId,
-                    time(),
-                ))->withInvocationId($invocationId);
-
-                $reasoningId = '';
-            }
-
-            // Re-emit reasoning: OpenRouter's "reasoning" delta field,
-            // DeepSeek-style "reasoning_content", and — as stock 1.0 does —
-            // the text of "reasoning_details" when neither is present.
-            $reasoning = $delta['reasoning'] ?? $delta['reasoning_content'] ?? null;
-
-            if (! is_string($reasoning) || $reasoning === '') {
-                $reasoning = $this->reasoningTextIn($delta['reasoning_details'] ?? []);
-            }
-
-            if (is_string($reasoning) && $reasoning !== '') {
-                if (! $inReasoning) {
-                    $inReasoning = true;
-                    $reasoningId = $this->generateEventId();
-
-                    TurnContext::stampTtftOnce();
-
-                    yield (new ReasoningStart(
-                        $this->generateEventId(),
-                        $reasoningId,
-                        time(),
-                    ))->withInvocationId($invocationId);
-                }
-
-                yield (new ReasoningDelta(
-                    $this->generateEventId(),
-                    $reasoningId,
-                    $reasoning,
-                    time(),
-                ))->withInvocationId($invocationId);
-            }
-
-            // Content runs through the leak filter first: a marker and
-            // everything after it is swallowed (kept for salvage), a tail
-            // that might begin a marker is held for the next chunk, and a
-            // step whose text is nothing but markup never opens a text block.
-            $visible = isset($delta['content']) && $delta['content'] !== ''
-                ? $leakFilter->push($delta['content'])
-                : '';
-
-            if ($visible !== '') {
-                if (! $textStartEmitted) {
-                    $textStartEmitted = true;
-
-                    TurnContext::stampTtftOnce();
-
-                    yield (new TextStart(
-                        $this->generateEventId(),
-                        $messageId,
-                        time(),
-                    ))->withInvocationId($invocationId);
-                }
-
-                $currentText .= $visible;
-
-                yield (new TextDelta(
-                    $this->generateEventId(),
-                    $messageId,
-                    $visible,
-                    time(),
-                ))->withInvocationId($invocationId);
-            }
-
-            if (isset($delta['tool_calls'])) {
-                foreach ($delta['tool_calls'] as $tcDelta) {
-                    $idx = $tcDelta['index'];
-
-                    if (! isset($pendingToolCalls[$idx])) {
-                        $pendingToolCalls[$idx] = [
-                            'id' => $tcDelta['id'] ?? '',
-                            'name' => $tcDelta['function']['name'] ?? '',
-                            'arguments' => '',
-                        ];
-                    }
-
-                    if (isset($tcDelta['function']['arguments'])) {
-                        $pendingToolCalls[$idx]['arguments'] .= $tcDelta['function']['arguments'];
-                    }
-                }
-            }
-
-            if (isset($delta['annotations'])) {
-                foreach ($delta['annotations'] as $annotation) {
-                    if (($annotation['type'] ?? '') === 'url_citation') {
-                        $urlCitation = $annotation['url_citation'] ?? [];
-
-                        yield (new CitationEvent(
-                            $this->generateEventId(),
-                            $messageId,
-                            new UrlCitation(
-                                $urlCitation['url'] ?? '',
-                                $urlCitation['title'] ?? null,
-                                isset($urlCitation['start_index']) ? (int) $urlCitation['start_index'] : null,
-                                isset($urlCitation['end_index']) ? (int) $urlCitation['end_index'] : null,
-                            ),
-                            time(),
-                        ))->withInvocationId($invocationId);
-                    }
-                }
-            }
-
-            if (isset($choice['finish_reason']) && $choice['finish_reason'] !== null) {
-                $finishReason = $choice['finish_reason'];
-            }
-
-            if (isset($data['usage'])) {
-                $usage = $this->extractUsage($data);
-                $openRouterCost = $this->extractOpenRouterCost($data) ?? $openRouterCost;
-            }
+        if (! $step instanceof StepResponse) {
+            return $step;
         }
 
-        // Close a reasoning block that never gave way to content/tools.
-        if ($inReasoning) {
-            yield (new ReasoningEnd(
-                $this->generateEventId(),
-                $reasoningId,
-                time(),
-            ))->withInvocationId($invocationId);
+        // One push per step; the loop's tool rounds stream again and push their own.
+        if ($tap->generationId !== null) {
+            $this->spend->recordGenerationId($tap->generationId, streamed: true);
         }
 
-        // Release a tail the filter was still holding (a `<` that never
-        // became a marker), then close the text block.
-        $tail = $leakFilter->flush();
+        if ($tap->cost !== null) {
+            $this->spend->recordCost($tap->cost, streamed: true);
+        }
+
+        return InspectedStepResponse::from($step)->inspected($tap->filter->leaked(), $tap->filter->removed(), $tap->upstream);
+    }
+
+    /**
+     * Stock SSE parsing; a tapped body additionally has every chunk passed
+     * through {@see tapChunk()}, and the tail the leak filter still held
+     * when the stream ended (a `<` that never became a marker) is released
+     * as one final content chunk, so stock emits it ahead of its TextEnd.
+     */
+    protected function parseServerSentEvents($streamBody): Generator
+    {
+        if (! $streamBody instanceof StreamTap) {
+            return yield from parent::parseServerSentEvents($streamBody);
+        }
+
+        foreach (parent::parseServerSentEvents($streamBody->body) as $data) {
+            yield $this->tapChunk($streamBody, $data);
+        }
+
+        $tail = $streamBody->filter->flush();
 
         if ($tail !== '') {
-            if (! $textStartEmitted) {
-                $textStartEmitted = true;
+            yield ['choices' => [['delta' => ['content' => $tail]]]];
+        }
+    }
 
-                yield (new TextStart(
-                    $this->generateEventId(),
-                    $messageId,
-                    time(),
-                ))->withInvocationId($invocationId);
+    /**
+     * Read one decoded chunk and rewrite its delta before stock's loop sees
+     * it: generation id, upstream provider and exact cost are captured;
+     * DeepSeek-style `reasoning_content` becomes `reasoning` (stock reads
+     * only `reasoning` and `reasoning_details`); the first reasoning or
+     * visible text token stamps time-to-first-token; and `content` runs
+     * through the markup-leak filter — a marker and everything after it is
+     * swallowed (kept for salvage), a tail that might begin one is held,
+     * so a step that is nothing but markup never opens a text block.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function tapChunk(StreamTap $tap, array $data): array
+    {
+        if (is_string($data['id'] ?? null) && $data['id'] !== '') {
+            $tap->generationId = $data['id'];
+        }
+
+        if (is_string($data['provider'] ?? null) && $data['provider'] !== '') {
+            $tap->upstream = $data['provider'];
+        }
+
+        if (isset($data['usage'])) {
+            $tap->cost = $this->extractOpenRouterCost($data) ?? $tap->cost;
+        }
+
+        if (! is_array($data['choices'][0]['delta'] ?? null)) {
+            return $data;
+        }
+
+        $delta = $data['choices'][0]['delta'];
+
+        $reasoning = $delta['reasoning'] ?? null;
+
+        if ((! is_string($reasoning) || $reasoning === '') && is_string($delta['reasoning_content'] ?? null)) {
+            $delta['reasoning'] = $reasoning = $delta['reasoning_content'];
+        }
+
+        if ((is_string($reasoning) && $reasoning !== '') || $this->reasoningTextIn($delta['reasoning_details'] ?? []) !== '') {
+            TurnContext::stampTtftOnce();
+        }
+
+        if (is_string($delta['content'] ?? null) && $delta['content'] !== '') {
+            $delta['content'] = $tap->filter->push($delta['content']);
+
+            if ($delta['content'] !== '') {
+                TurnContext::stampTtftOnce();
+            } elseif (! isset($delta['tool_calls'])) {
+                // Content arrived even though none of it is visible yet, so
+                // the reasoning block still ends here, as it always has.
+                // Stock closes it on non-empty content OR a `tool_calls`
+                // key; an empty list closes it without adding a call.
+                $delta['tool_calls'] = [];
             }
-
-            $currentText .= $tail;
-
-            yield (new TextDelta(
-                $this->generateEventId(),
-                $messageId,
-                $tail,
-                time(),
-            ))->withInvocationId($invocationId);
         }
 
-        if ($textStartEmitted) {
-            yield (new TextEnd(
-                $this->generateEventId(),
-                $messageId,
-                time(),
-            ))->withInvocationId($invocationId);
-        }
+        $data['choices'][0]['delta'] = $delta;
 
-        if (filled($pendingToolCalls) && $finishReason === 'tool_calls') {
-            foreach (array_values($pendingToolCalls) as $pending) {
-                $toolCall = new ToolCall(
-                    $pending['id'] ?? '',
-                    $pending['name'] ?? '',
-                    json_decode($pending['arguments'] ?? '{}', true) ?? [],
-                    $pending['id'] ?? null,
-                );
-
-                $toolCalls[] = $toolCall;
-
-                yield (new ToolCallEvent(
-                    $this->generateEventId(),
-                    $toolCall,
-                    time(),
-                ))->withInvocationId($invocationId);
-            }
-        }
-
-        // One push per step; the loop's tool rounds call processTextStream
-        // again and push their own.
-        if ($generationId !== '') {
-            $this->spend->recordGenerationId($generationId, streamed: true);
-        }
-
-        if ($openRouterCost !== null) {
-            $this->spend->recordCost($openRouterCost, streamed: true);
-        }
-
-        return (new InspectedStepResponse(
-            text: $currentText,
-            toolCalls: $toolCalls,
-            finishReason: $this->extractFinishReason(['finish_reason' => $finishReason ?? '']),
-            usage: $usage ?? new TextUsage(0, 0),
-            meta: new Meta($provider->name(), $streamModel),
-        ))->inspected($leakFilter->leaked(), $leakFilter->removed(), $providerName);
+        return $data;
     }
 
     /**

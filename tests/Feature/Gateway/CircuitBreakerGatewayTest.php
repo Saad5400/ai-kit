@@ -2,6 +2,7 @@
 
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Support\Facades\Http;
+use Laravel\Ai\Exceptions\ProviderConnectionException;
 use Laravel\Ai\Exceptions\ProviderOverloadedException;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Messages\UserMessage;
@@ -155,4 +156,33 @@ it('records a completed stream as a success', function () {
     iterator_to_array(streamStep($gateway));
 
     expect($breaker->isOpen('openrouter', 'test/model'))->toBeFalse();
+});
+
+it('records a connection failure, which stock 1.0 raises as a failoverable exception', function () {
+    Http::fake(['*' => Http::failedConnection()]);
+
+    [$gateway, $breaker] = gatewayWithBreaker(threshold: 1);
+
+    expect(fn () => textStep($gateway))->toThrow(ProviderConnectionException::class)
+        ->and($breaker->isOpen('openrouter', 'test/model'))->toBeTrue();
+});
+
+it('keeps stock overloaded statuses when the config lists only additions', function () {
+    Http::fake(['*' => Http::response('down', 520)]);
+
+    $gateway = GatewayFactory::gateway([
+        'retry' => ['attempts' => 1],
+        'failover' => ['overloaded_statuses' => [529]],
+    ]);
+
+    expect(fn () => textStep($gateway))->toThrow(ProviderOverloadedException::class);
+});
+
+it('does not count a client error against the breaker', function () {
+    Http::fake(['*' => Http::response('bad request', 400)]);
+
+    [$gateway, $breaker] = gatewayWithBreaker(threshold: 1);
+
+    expect(fn () => textStep($gateway))->toThrow(RequestException::class)
+        ->and($breaker->isOpen('openrouter', 'test/model'))->toBeFalse();
 });

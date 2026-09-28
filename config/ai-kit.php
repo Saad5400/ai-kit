@@ -85,10 +85,10 @@ return [
         // are exhausted — the trigger for laravel/ai's own provider failover.
         // Model-level fallbacks no longer run here: a catalog entry's
         // `fallbacks` ride into the request as OpenRouter's `models` array
-        // and fail over upstream. A superset of stock laravel/ai 1.0's list
-        // (502/503/504 + Cloudflare's 520/522/524), adding 500 and 529.
+        // and fail over upstream. These are ADDED to stock laravel/ai 1.0's
+        // list (502/503/504 + Cloudflare's 520/522/524), which always applies.
         'failover' => [
-            'overloaded_statuses' => [500, 502, 503, 504, 520, 522, 524, 529],
+            'overloaded_statuses' => [500, 529],
         ],
 
         // Enough step failures inside the window open the circuit for the
