@@ -282,3 +282,4 @@ recommendation at decision time.
 | M2 dual-write reconciliation week skipped | Accepted (history imported as `cost_source: imported`) | One-time reconciliation of `ai_usage_events` vs the OpenRouter dashboard instead |
 | M1 clean-week soak gate ignored | Superseded by rollout rule #15 | Gates live at app-migration boundaries (clean-prod window before the next app) |
 | AskUser absent from milestones | Restore | Re-added to PLAN.md alongside the approvals rework |
+| laravel/ai 1.0 store (kit PR #19): with `persist_tool_traces` off, a failed turn keeps its error in meta | #7 refinement, ruled by the coordinator 2026-09-28 (not an owner ruling) | Traces off = meta dropped **except an encrypted `error` string on failed turns** (1.0 records failed turns; the error says why the turn stopped, it is not a trace of what it did) |

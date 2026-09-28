@@ -7,7 +7,12 @@ use Illuminate\Console\Command;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Laravel\Ai\Enums\MessageStatus;
+use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Conversations\Events\ConversationsPruning;
+use Saad\AiKit\Conversations\StoredSteps;
+use Saad\AiKit\Conversations\TurnState;
+use Saad\AiKit\Conversations\UndecryptableConversationContent;
 
 /**
  * Deletes conversations (and their messages) idle longer than the retention
@@ -114,10 +119,34 @@ class PruneConversationsCommand extends Command
     }
 
     /**
-     * Strip tool traces (attachments, tool calls/results, meta, the pause
-     * marker) from message rows older than the trace window. Usage stays —
-     * aggregate numbers, no user content. Runs in id-chunks like the delete
-     * pass; a row already stripped matches nothing and is never rewritten.
+     * Strip tool traces from message rows older than the trace window: the
+     * row keeps the text the user saw (as ONE content-only step) and its
+     * usage — aggregate numbers, no user content — while attachments,
+     * meta (all but a failed turn's `error`), tool calls with their
+     * results, reasoning and replay blocks go. The
+     * 0.10 trace columns, still present until the phase-B migration drops
+     * them, are emptied too.
+     *
+     * `steps` is sealed, so the rewrite is per row: reveal, reduce, re-seal
+     * the way the bound store writes. The one `paused` row that is still its
+     * conversation's newest assistant row is skipped — its calls are what a
+     * resume needs, and under laravel/ai 1.0 it is the only pause that can
+     * resume. An abandoned pause (a newer assistant row exists) is stripped
+     * like any other row; it keeps its `paused` status. Runs in id-chunks like the delete pass.
+     *
+     * Candidates are rows with anything non-empty in attachments, meta, the
+     * legacy columns — or `steps`: a 1.0 row can carry its traces in `steps`
+     * alone (meta `'[]'`, e.g. a row converted from a 0.10 row with no
+     * meta). Sealed steps cannot be told apart in SQL, so an assistant row
+     * with non-empty steps is read and, when its steps carry nothing past
+     * the text and every other column is already empty, left untouched — a
+     * stripped row is never rewritten, only re-read. A row whose `steps` is
+     * still NULL (not converted yet) keeps it NULL for the backfill, and a
+     * row whose sealed steps this app key cannot decrypt is left alone
+     * entirely (reported, never overwritten with its own ciphertext). A
+     * failed turn keeps its `meta.error` (sealed), so a stopped turn still
+     * reads as stopped; a row whose meta is that error alone has nothing
+     * left to strip.
      */
     protected function pruneToolTraces(): void
     {
@@ -132,36 +161,89 @@ class PruneConversationsCommand extends Command
 
         $connection = DB::connection(config('ai.conversations.connection'));
         $messagesTable = config('ai.conversations.tables.messages', 'agent_conversation_messages');
+        $schema = $connection->getSchemaBuilder();
+
+        $legacy = array_values(array_filter(
+            ['tool_calls', 'tool_results'],
+            fn (string $column): bool => $schema->hasColumn($messagesTable, $column),
+        ));
+        $hasApprovalState = $schema->hasColumn($messagesTable, 'approval_state');
+        $hasStatus = $schema->hasColumn($messagesTable, 'status');
+        $encrypt = ConversationContent::encryptsAtRest();
 
         $stripped = 0;
+        $undecryptable = 0;
+        $after = null;
 
         while (true) {
-            $ids = $connection->table($messagesTable)
+            $rows = $connection->table($messagesTable)
                 ->where('created_at', '<', $cutoff)
-                ->where(fn ($query) => $query
-                    ->where('attachments', '!=', '[]')
-                    ->orWhere('tool_calls', '!=', '[]')
-                    ->orWhere('tool_results', '!=', '[]')
-                    ->orWhere('meta', '!=', '[]')
-                    ->orWhereNotNull('approval_state'))
+                ->when($hasStatus, fn ($query) => $query->where(fn ($query) => $query
+                    ->where('status', '!=', MessageStatus::Paused->value)
+                    // An abandoned pause: a newer assistant row exists in its
+                    // conversation, and under 1.0 only the newest can resume.
+                    ->orWhereExists(fn ($newer) => $newer->selectRaw('1')
+                        ->from($messagesTable.' as newer')
+                        ->whereColumn('newer.conversation_id', $messagesTable.'.conversation_id')
+                        ->where('newer.role', 'assistant')
+                        ->whereColumn('newer.id', '>', $messagesTable.'.id'))))
+                ->when($after !== null, fn ($query) => $query->where('id', '>', $after))
+                ->where(function ($query) use ($legacy, $hasApprovalState) {
+                    $query->where('attachments', '!=', '[]')->orWhere('meta', '!=', '[]')
+                        ->orWhere(fn ($query) => $query->where('role', 'assistant')
+                            ->whereNotNull('steps')
+                            ->whereNotIn('steps', ['', '[]']));
+
+                    foreach ($legacy as $column) {
+                        $query->orWhere($column, '!=', '[]');
+                    }
+
+                    if ($hasApprovalState) {
+                        $query->orWhereNotNull('approval_state');
+                    }
+                })
                 ->orderBy('id')
                 ->limit($chunkSize)
-                ->pluck('id')
-                ->all();
+                ->get(['id', 'role', 'content', 'steps', 'attachments', 'meta', ...$legacy, ...($hasApprovalState ? ['approval_state'] : [])]);
 
-            if ($ids === []) {
+            if ($rows->isEmpty()) {
                 break;
             }
 
-            $stripped += $connection->table($messagesTable)
-                ->whereIn('id', $ids)
-                ->update([
-                    'attachments' => '[]',
-                    'tool_calls' => '[]',
-                    'tool_results' => '[]',
-                    'meta' => '[]',
-                    'approval_state' => null,
-                ]);
+            foreach ($rows as $row) {
+                try {
+                    $decoded = $row->steps === null ? null : ConversationContent::revealJsonStrict($row->steps);
+                } catch (UndecryptableConversationContent) {
+                    $undecryptable++;
+
+                    continue;
+                }
+
+                if ($decoded !== null && ! StoredSteps::carriesTraces($decoded) && $this->carriesNothingElse($row, $legacy, $hasApprovalState)) {
+                    continue;
+                }
+
+                $steps = match (true) {
+                    $decoded === null => null,
+                    $row->role !== 'assistant' => '[]',
+                    default => json_encode(StoredSteps::contentOnly(
+                        $decoded,
+                        ConversationContent::reveal((string) $row->content),
+                    )),
+                };
+
+                $stripped += $connection->table($messagesTable)
+                    ->where('id', $row->id)
+                    ->update([
+                        'attachments' => '[]',
+                        'meta' => $this->strippedMeta($row->meta, $encrypt),
+                        ...($steps === null ? [] : ['steps' => $encrypt ? ConversationContent::concealJson($steps) : $steps]),
+                        ...array_fill_keys($legacy, '[]'),
+                        ...($hasApprovalState ? ['approval_state' => null] : []),
+                    ]);
+            }
+
+            $after = $rows->last()->id;
         }
 
         if ($stripped > 0) {
@@ -171,6 +253,52 @@ class PruneConversationsCommand extends Command
                 max(1, (int) $traceDays),
             ));
         }
+
+        if ($undecryptable > 0) {
+            $this->warn(sprintf(
+                'Left %d messages untouched: their steps do not decrypt with this app key (restore it via APP_PREVIOUS_KEYS and re-run).',
+                $undecryptable,
+            ));
+        }
+    }
+
+    /**
+     * Whether a candidate row's non-steps columns hold nothing to strip.
+     *
+     * @param  list<string>  $legacy
+     */
+    protected function carriesNothingElse(object $row, array $legacy, bool $hasApprovalState): bool
+    {
+        foreach (['attachments', ...$legacy] as $column) {
+            if (! in_array($row->{$column}, [null, '', '[]'], true)) {
+                return false;
+            }
+        }
+
+        if (! in_array($row->meta, [null, '', '[]'], true) && array_keys(ConversationContent::revealJson($row->meta)) !== ['error']) {
+            return false;
+        }
+
+        return ! $hasApprovalState || $row->approval_state === null;
+    }
+
+    /**
+     * The meta a stripped row keeps: nothing, except a failed turn's
+     * `error` — it is what tells a reader why the turn ended (a stop reads
+     * as {@see TurnState::Stopped} by it), not a
+     * trace of what the turn did. Sealed the way the bound store writes it.
+     */
+    protected function strippedMeta(?string $meta, bool $encrypt): string
+    {
+        $error = ConversationContent::revealJson($meta)['error'] ?? null;
+
+        if (! is_string($error)) {
+            return '[]';
+        }
+
+        $json = (string) json_encode(['error' => $error]);
+
+        return $encrypt ? (string) ConversationContent::concealJson($json) : $json;
     }
 
     /**

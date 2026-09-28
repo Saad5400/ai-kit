@@ -69,6 +69,6 @@ it('lets a test force page boundaries and the stale window', function () {
     $buffer->tail('turn-1', after: 3, maxSeconds: 0, staleMessage: 'stale');
     $out = ob_get_clean();
 
-    expect($out)->toBe("id: 4\nevent: error\ndata: {\"message\":\"stale\"}\n\n")
+    expect($out)->toBe("id: 4\nevent: error\ndata: {\"message\":\"stale\",\"code\":\"stale\"}\n\n")
         ->and($buffer->status('turn-1'))->toBe('failed');
 });

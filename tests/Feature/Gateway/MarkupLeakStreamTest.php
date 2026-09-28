@@ -1,13 +1,19 @@
 <?php
 
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\Http;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Messages\UserMessage;
+use Laravel\Ai\Streaming\Events\ReasoningDelta;
+use Laravel\Ai\Streaming\Events\ReasoningEnd;
+use Laravel\Ai\Streaming\Events\ReasoningStart;
 use Laravel\Ai\Streaming\Events\StreamStart;
 use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\TextEnd;
 use Laravel\Ai\Streaming\Events\TextStart;
+use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
 use Saad\AiKit\Gateway\InspectedStepResponse;
+use Saad\AiKit\Support\TurnContext;
 use Saad\AiKit\Tests\Support\GatewayFactory;
 use Saad\AiKit\Tests\Support\OpenRouterSse;
 
@@ -89,4 +95,75 @@ it('strips the leak on the non-streamed path as well', function () {
         ->and($step->text)->toBe('Checking. ')
         ->and($step->markupLeaked)->toBeTrue()
         ->and($step->providerName)->toBe('DeepSeek');
+});
+
+it('releases a held tail as text ahead of TextEnd when no marker followed', function () {
+    $events = [];
+    $step = GatewayFactory::streamed(GatewayFactory::gateway(), [
+        OpenRouterSse::chunk(['content' => 'x <']),
+        OpenRouterSse::chunk([], finishReason: 'stop'),
+    ], $events);
+
+    $deltas = array_values(array_map(fn ($e) => $e->delta, array_filter($events, fn ($e) => $e instanceof TextDelta)));
+
+    expect(array_map(get_class(...), $events))->toBe([StreamStart::class, TextStart::class, TextDelta::class, TextDelta::class, TextEnd::class])
+        ->and($deltas)->toBe(['x ', '<'])
+        ->and($step->text)->toBe('x <')
+        ->and($step->markupLeaked)->toBeFalse();
+});
+
+it('opens the text block for a tail that was the only content, after closing reasoning', function () {
+    $events = [];
+    $step = GatewayFactory::streamed(GatewayFactory::gateway(), [
+        OpenRouterSse::chunk(['reasoning' => 'hmm']),
+        OpenRouterSse::chunk(['content' => '<'], finishReason: 'stop'),
+    ], $events);
+
+    expect(array_map(get_class(...), $events))->toBe([
+        StreamStart::class,
+        ReasoningStart::class,
+        ReasoningDelta::class,
+        ReasoningEnd::class,
+        TextStart::class,
+        TextDelta::class,
+        TextEnd::class,
+    ])->and($step->text)->toBe('<');
+});
+
+it('emits the released tail before the step tool calls', function () {
+    $events = [];
+    $step = GatewayFactory::streamed(GatewayFactory::gateway(), [
+        OpenRouterSse::chunk(['content' => 'Calling <']),
+        OpenRouterSse::chunk(['tool_calls' => [['index' => 0, 'id' => 'call_1', 'function' => ['name' => 'lookup', 'arguments' => '{}']]]], finishReason: 'tool_calls'),
+    ], $events);
+
+    expect(array_map(get_class(...), $events))->toBe([
+        StreamStart::class,
+        TextStart::class,
+        TextDelta::class,
+        TextDelta::class,
+        TextEnd::class,
+        ToolCallEvent::class,
+    ])->and($step->text)->toBe('Calling <')
+        ->and($step->toolCalls)->toHaveCount(1);
+});
+
+it('never stamps ttft for a step that was nothing but markup', function () {
+    TurnContext::stampStart('inv-test');
+
+    GatewayFactory::streamed(GatewayFactory::gateway(), [
+        providerChunk(['content' => '<|DSML|tool_calls><|DSML|invoke name="x"></|DSML|invoke>'], finishReason: 'stop'),
+    ]);
+
+    expect(Context::get(TurnContext::TTFT_KEY))->toBeNull();
+});
+
+it('stamps ttft at a DeepSeek reasoning_content token', function () {
+    TurnContext::stampStart('inv-test');
+
+    GatewayFactory::streamed(GatewayFactory::gateway(), [
+        OpenRouterSse::chunk(['reasoning_content' => 'thinking']),
+    ]);
+
+    expect(Context::get(TurnContext::TTFT_KEY))->toBeInt();
 });

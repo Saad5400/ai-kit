@@ -2,9 +2,9 @@
 
 namespace Saad\AiKit\Streaming;
 
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall;
 use Laravel\Ai\Responses\Data\ToolResult;
-use Laravel\Ai\Responses\Data\Usage;
 use Laravel\Ai\Streaming\Events\Error;
 
 /**
@@ -29,5 +29,12 @@ class StreamResult
     /** @var list<ToolResult> */
     public array $toolResults = [];
 
-    public ?Usage $usage = null;
+    public ?TextUsage $usage = null;
+
+    /**
+     * The conversation a turn that did not complete was stored in (see
+     * {@see StoredConversation}) — set on the failed path, null otherwise.
+     * A completed turn's id comes from the vendor response as always.
+     */
+    public ?string $conversationId = null;
 }

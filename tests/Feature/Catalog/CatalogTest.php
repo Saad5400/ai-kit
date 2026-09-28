@@ -1,6 +1,6 @@
 <?php
 
-use Laravel\Ai\Responses\Data\Usage;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Saad\AiKit\Catalog\Catalog;
 use Saad\AiKit\Catalog\CatalogServiceProvider;
 use Saad\AiKit\Catalog\CatalogSource;
@@ -58,7 +58,7 @@ it('estimates a display-only cost from declared prices and returns null when pri
     $unpriced = new ModelDefinition('m', inputUsdPerMillion: 1.0);
 
     // Reasoning tokens are already inside completion_tokens on OpenRouter.
-    $usage = new Usage(promptTokens: 500_000, completionTokens: 100_000, reasoningTokens: 90_000);
+    $usage = new TextUsage(inputTokens: 500_000, outputTokens: 100_000, reasoningTokens: 90_000);
 
     expect($priced->displayCostEstimateUsd($usage))->toEqualWithDelta(1.5, 0.0000001)
         ->and($unpriced->displayCostEstimateUsd($usage))->toBeNull();

@@ -1,8 +1,9 @@
 <?php
 
+use Laravel\Ai\Exceptions\StreamErrorException;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall as ToolCallData;
 use Laravel\Ai\Responses\Data\ToolResult as ToolResultData;
-use Laravel\Ai\Responses\Data\Usage;
 use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\ReasoningDelta;
 use Laravel\Ai\Streaming\Events\StreamEnd;
@@ -30,13 +31,13 @@ beforeEach(function () {
 it('folds text deltas into delta events and a terminal done', function () {
     $this->mapper->doneUsing(fn ($result) => [
         'text' => $result->text,
-        'completion_tokens' => $result->usage?->completionTokens,
+        'completion_tokens' => $result->usage?->outputTokens,
     ]);
 
     $result = $this->mapper->run([
         fakeDelta('Hel'),
         fakeDelta('lo'),
-        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+        new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
     ], $this->emit);
 
     expect($this->events)->toBe([
@@ -49,12 +50,12 @@ it('folds text deltas into delta events and a terminal done', function () {
 
 it('sums usage across multi-step stream ends', function () {
     $result = $this->mapper->run([
-        new StreamEnd('s1', 'tool_use', new Usage(promptTokens: 10, completionTokens: 2), 1),
-        new StreamEnd('s2', 'stop', new Usage(promptTokens: 15, completionTokens: 3), 2),
+        new StreamEnd('s1', 'tool_use', new TextUsage(inputTokens: 10, outputTokens: 2), 1),
+        new StreamEnd('s2', 'stop', new TextUsage(inputTokens: 15, outputTokens: 3), 2),
     ], $this->emit);
 
-    expect($result->usage->promptTokens)->toBe(25)
-        ->and($result->usage->completionTokens)->toBe(5);
+    expect($result->usage->inputTokens)->toBe(25)
+        ->and($result->usage->outputTokens)->toBe(5);
 });
 
 it('emits error and stops without a done on a stream error', function () {
@@ -68,7 +69,7 @@ it('emits error and stops without a done on a stream error', function () {
 
     expect($this->events)->toBe([
         ['delta', ['text' => 'partial']],
-        ['error', ['message' => 'حدث خطأ أثناء توليد الرد.']],
+        ['error', ['message' => 'حدث خطأ أثناء توليد الرد.', 'code' => 'stream_error']],
     ])->and($result->failed)->toBeTrue()
         ->and($result->error->message)->toBe('upstream exploded');
 });
@@ -76,7 +77,7 @@ it('emits error and stops without a done on a stream error', function () {
 it('defaults the error message to the provider message', function () {
     $this->mapper->run([new Error('e1', 'provider_error', 'boom', false, 1)], $this->emit);
 
-    expect($this->events)->toBe([['error', ['message' => 'boom']]]);
+    expect($this->events)->toBe([['error', ['message' => 'boom', 'code' => 'stream_error']]]);
 });
 
 it('pipes text through closure transformers per delta', function () {
@@ -185,6 +186,30 @@ it('emits running and done tool events without arguments or results', function (
     // the status ever reach a public-facing client.
     expect(json_encode($this->events))->not->toContain('secret query')
         ->and(json_encode($this->events))->not->toContain('sensitive rows');
+});
+
+it('skips a sub-agent preliminary results: one done chip, one collected result, no hook call', function () {
+    $hooked = 0;
+
+    $result = $this->mapper
+        ->on(ToolResult::class, function (ToolResult $event, callable $emit) use (&$hooked): void {
+            $hooked++;
+            $emit('tool', ['id' => $event->toolResult->id, 'status' => 'done']);
+        })
+        ->run([
+            new ToolCall('tc1', new ToolCallData('id1', 'researcher', []), 1),
+            new ToolResult('p1', new ToolResultData('id1', 'researcher', [], 'so far'), true, null, 2, preliminary: true),
+            new ToolResult('p2', new ToolResultData('id1', 'researcher', [], 'so far, more'), true, null, 3, preliminary: true),
+            new ToolResult('tr1', new ToolResultData('id1', 'researcher', [], 'final'), true, null, 4),
+        ], $this->emit);
+
+    expect($this->events)->toBe([
+        ['tool', ['id' => 'id1', 'name' => 'researcher', 'status' => 'running']],
+        ['tool', ['id' => 'id1', 'status' => 'done']],
+        ['done', []],
+    ])->and($hooked)->toBe(1)
+        ->and($result->toolResults)->toHaveCount(1)
+        ->and($result->toolResults[0]->result)->toBe('final');
 });
 
 it('reports a failed tool on the wire', function () {
@@ -338,7 +363,7 @@ it('folds a stream into a buffered turn, with the buffer writing the one done', 
     $result = $this->mapper->runIntoBuffer([
         fakeDelta('Hel'),
         fakeDelta('lo'),
-        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+        new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
     ], $buffer, 't1', ['conversation_id' => 'c9']);
 
     $turn = $buffer->get('t1');
@@ -371,9 +396,9 @@ it('ends a buffered turn on error with no done after it', function () {
     expect($turn['status'])->toBe('failed')
         ->and($turn['events'])->toBe([
             ['seq' => 1, 'event' => 'delta', 'data' => ['text' => 'partial']],
-            ['seq' => 2, 'event' => 'error', 'data' => ['message' => 'حدث خطأ أثناء توليد الرد.']],
+            ['seq' => 2, 'event' => 'error', 'data' => ['message' => 'حدث خطأ أثناء توليد الرد.', 'code' => 'stream_error']],
         ])
-        ->and($turn['meta'])->toBe(['conversation_id' => 'c9', 'error' => 'حدث خطأ أثناء توليد الرد.'])
+        ->and($turn['meta'])->toBe(['conversation_id' => 'c9', 'error' => 'حدث خطأ أثناء توليد الرد.', 'error_code' => 'stream_error'])
         ->and($result->failed)->toBeTrue();
 });
 
@@ -383,9 +408,9 @@ it('resolves closure meta after the fold, so post-stream facts reach the termina
 
     $this->mapper->runIntoBuffer([
         fakeDelta('Hello'),
-        new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+        new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
     ], $buffer, 't1', fn (StreamResult $result): array => [
-        'completion_tokens' => $result->usage?->completionTokens,
+        'completion_tokens' => $result->usage?->outputTokens,
         'message' => ['role' => 'assistant', 'content' => $result->text],
     ]);
 
@@ -405,7 +430,7 @@ it('resolves closure meta on the failed path too', function () {
         new Error('e1', 'provider_error', 'boom', false, 1),
     ], $buffer, 't1', fn (StreamResult $result): array => ['partial' => $result->failed ? $result->text : null]);
 
-    expect($buffer->get('t1')['meta'])->toBe(['partial' => 'partial', 'error' => 'boom']);
+    expect($buffer->get('t1')['meta'])->toBe(['partial' => 'partial', 'error' => 'boom', 'error_code' => 'stream_error']);
 });
 
 it('appends reasoning and tool events to a buffered turn without extra wiring', function () {
@@ -484,6 +509,129 @@ it('emits identical event sequences inline and buffered', function (array $strea
 
     expect($replayed)->toBe($inline);
 })->with([
-    'a turn that completes' => [fn () => [fakeDelta('hi'), new StreamEnd('s1', 'stop', new Usage(completionTokens: 2), 1)]],
+    'a turn that completes' => [fn () => [fakeDelta('hi'), new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 2), 1)]],
     'a turn that fails' => [fn () => [fakeDelta('partial'), new Error('e1', 'provider_error', 'boom', false, 1)]],
 ]);
+
+it('pulls the stream once more after an error so laravel/ai can throw through its own failure path', function () {
+    $error = new Error('e1', 'provider_error', 'boom', false, 1);
+    $vendorSawThrow = false;
+
+    $result = $this->mapper->run((function () use ($error, &$vendorSawThrow): Generator {
+        yield fakeDelta('partial');
+        yield $error;
+
+        // 1.0's loop: the step ended without a response.
+        $vendorSawThrow = true;
+
+        throw new StreamErrorException($error);
+    })(), $this->emit);
+
+    expect($vendorSawThrow)->toBeTrue()
+        ->and($this->events)->toBe([
+            ['delta', ['text' => 'partial']],
+            ['error', ['message' => 'boom', 'code' => 'stream_error']],
+        ])
+        ->and($result->failed)->toBeTrue()
+        ->and($result->text)->toBe('partial');
+});
+
+it('emits the terminal error BEFORE it pulls the stream again', function () {
+    $error = new Error('e1', '502', 'boom', false, 1);
+    $seenAtPull = null;
+
+    $this->mapper->run((function () use ($error, &$seenAtPull): Generator {
+        yield $error;
+
+        $seenAtPull = array_column($this->events, 0);
+
+        throw new StreamErrorException($error);
+    })(), $this->emit);
+
+    expect($seenAtPull)->toBe(['error']);
+});
+
+it('never follows a stream that keeps yielding past its error', function () {
+    $pulls = 0;
+
+    $result = $this->mapper->run((function () use (&$pulls): Generator {
+        yield new Error('e1', 'provider_error', 'boom', false, 1);
+        $pulls++;
+        yield fakeDelta('a new step');
+        $pulls++;
+        yield fakeDelta('and another');
+    })(), $this->emit);
+
+    expect($pulls)->toBe(1)
+        ->and(array_column($this->events, 0))->toBe(['error'])
+        ->and($result->text)->toBe('');
+});
+
+it('ends a recoverable-hooked error failed when 1.0 throws on it, with one default error frame', function () {
+    $this->mapper->on(Error::class, fn (): bool => true);
+    $error = new Error('e1', '429', 'slow down', true, 1);
+
+    $result = $this->mapper->run((function () use ($error): Generator {
+        yield fakeDelta('half');
+        yield $error;
+
+        throw new StreamErrorException($error);
+    })(), $this->emit);
+
+    expect($this->events)->toBe([
+        ['delta', ['text' => 'half']],
+        ['error', ['message' => 'slow down', 'code' => 'rate_limited']],
+    ])->and($result->failed)->toBeTrue()
+        ->and($result->text)->toBe('half');
+});
+
+it('settles a hooked terminal error without a second frame when 1.0 throws on it', function () {
+    $this->mapper->on(Error::class, fn (Error $event, callable $emit) => $emit('error', ['message' => 'fatal']));
+    $error = new Error('e1', 'provider_error', 'boom', false, 1);
+
+    $result = $this->mapper->run((function () use ($error): Generator {
+        yield $error;
+
+        throw new StreamErrorException($error);
+    })(), $this->emit);
+
+    expect($this->events)->toBe([['error', ['message' => 'fatal']]])
+        ->and($result->failed)->toBeTrue();
+});
+
+it('rethrows a StreamErrorException that no error event announced', function () {
+    expect(fn () => $this->mapper->run((function (): Generator {
+        yield fakeDelta('x');
+
+        throw new StreamErrorException;
+    })(), $this->emit))->toThrow(StreamErrorException::class);
+});
+
+it('collects into a caller-supplied result that survives a throw', function () {
+    $result = new StreamResult;
+
+    try {
+        $this->mapper->run((function (): Generator {
+            yield fakeDelta('kept');
+            yield new ToolCall('tc1', new ToolCallData('call_1', 'search', [], 'call_1'), 1);
+
+            throw new RuntimeException('down');
+        })(), $this->emit, $result);
+    } catch (RuntimeException) {
+        //
+    }
+
+    expect($result->text)->toBe('kept')
+        ->and($result->toolCalls)->toHaveCount(1);
+});
+
+it('carries the error code through runIntoBuffer to the buffered terminal', function () {
+    $buffer = $this->app->make(TurnBuffer::class);
+    $buffer->start('t1');
+
+    $this->mapper->runIntoBuffer([new Error('e1', '503', 'down', false, 1)], $buffer, 't1');
+
+    expect($buffer->get('t1')['events'])->toBe([
+        ['seq' => 1, 'event' => 'error', 'data' => ['message' => 'down', 'code' => 'provider_unavailable']],
+    ])->and($buffer->get('t1')['meta']['error_code'])->toBe('provider_unavailable');
+});

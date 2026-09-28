@@ -190,11 +190,41 @@ export type DonePayload = {
 } & Record<string, unknown>
 
 /**
+ * The machine-readable reasons the kit puts on `error.code` — the role
+ * AG-UI's RUN_ERROR `code` plays (`Saad\AiKit\Streaming\ErrorCode`).
+ * Provider codes never reach the wire; they are folded into these.
+ */
+export type KnownErrorCode =
+    /** The provider reported an error inside the stream. */
+    | 'stream_error'
+    /** The provider is down, overloaded or unreachable — retrying later can work. */
+    | 'provider_unavailable'
+    /** The provider rate-limited the request. */
+    | 'rate_limited'
+    /** The kill switch stopped the turn before it spent anything. */
+    | 'killed'
+    /** The worker stopped heartbeating; the stale watchdog failed the turn. */
+    | 'stale'
+    /** Anything else that threw. */
+    | 'internal_error'
+
+/**
  * The terminal failure event. `message` is already display-ready — apps
  * replace the provider's text with a localized line via `onError()`.
+ *
+ * `code` is OPTIONAL: older servers, and an app's own `on(Error)` hook,
+ * send `message` alone, and a later kit may add codes — so branch on the
+ * known ones and treat anything else (or nothing) as a generic failure.
+ *
+ * `conversation_id` is OPTIONAL too: the conversation a failed turn was
+ * stored in, sent when the turn opened it (a failed FIRST turn). Adopt it as
+ * the thread's id, so the next message or a Retry continues that
+ * conversation instead of starting a duplicate.
  */
 export type ErrorPayload = {
     message: string
+    code?: KnownErrorCode | (string & {})
+    conversation_id?: string
 }
 
 export type DeltaEvent = { event: 'delta'; data: DeltaPayload }

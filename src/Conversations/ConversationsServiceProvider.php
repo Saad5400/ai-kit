@@ -4,6 +4,7 @@ namespace Saad\AiKit\Conversations;
 
 use Illuminate\Support\ServiceProvider;
 use Laravel\Ai\Contracts\ConversationStore;
+use Saad\AiKit\Conversations\Console\BackfillConversationStepsCommand;
 use Saad\AiKit\Conversations\Console\PruneConversationsCommand;
 
 class ConversationsServiceProvider extends ServiceProvider
@@ -31,7 +32,7 @@ class ConversationsServiceProvider extends ServiceProvider
     public function boot(): void
     {
         if ($this->app->runningInConsole()) {
-            $this->commands([PruneConversationsCommand::class]);
+            $this->commands([PruneConversationsCommand::class, BackfillConversationStepsCommand::class]);
         }
     }
 }

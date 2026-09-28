@@ -4,9 +4,10 @@ use Illuminate\Auth\GenericUser;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Context;
+use Laravel\Ai\Exceptions\StreamErrorException;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall as ToolCallData;
 use Laravel\Ai\Responses\Data\ToolResult as ToolResultData;
-use Laravel\Ai\Responses\Data\Usage;
 use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\TextDelta;
@@ -15,6 +16,7 @@ use Laravel\Ai\Streaming\Events\ToolResult;
 use Saad\AiKit\Safety\KillSwitch;
 use Saad\AiKit\Streaming\StreamEventMapper;
 use Saad\AiKit\Streaming\ToolProgress;
+use Saad\AiKit\Streaming\TurnCancelledException;
 use Saad\AiKit\Streaming\TurnRunner;
 use Saad\AiKit\Tests\Support\SpyTurnBuffer;
 
@@ -44,7 +46,7 @@ it('folds the stream into the buffer and hands the terminal back on the outcome'
         stream: fn (): array => [
             runnerDelta('Hel'),
             runnerDelta('lo'),
-            new StreamEnd('s1', 'stop', new Usage(completionTokens: 5), 1),
+            new StreamEnd('s1', 'stop', new TextUsage(outputTokens: 5), 1),
         ],
         mapper: $this->mapper,
         buffer: $this->buffer,
@@ -197,6 +199,8 @@ it('returns a failed outcome carrying the resolved message on a terminal provide
     // terminal itself. Everything before it reached the buffer.
     expect($outcome->failed)->toBeTrue()
         ->and($outcome->failure)->toBe('something went wrong')
+        ->and($outcome->failureCode)->toBe('stream_error')
+        ->and($outcome->result->text)->toBe('half')
         ->and($outcome->exception)->toBeNull()
         ->and($this->buffer->get('t1')['status'])->toBe('running')
         ->and($this->buffer->get('t1')['events'])->toBe([
@@ -220,8 +224,12 @@ it('turns a thrown exception into a failed outcome with the app message and the 
 
     expect($outcome->failed)->toBeTrue()
         ->and($outcome->failure)->toBe('a generic line')
+        ->and($outcome->failureCode)->toBe('internal_error')
         ->and($outcome->exception)->toBeInstanceOf(RuntimeException::class)
-        ->and($outcome->exception->getMessage())->toBe('secret internals');
+        ->and($outcome->exception->getMessage())->toBe('secret internals')
+        // The partial fold survives the throw.
+        ->and($outcome->result->failed)->toBeTrue()
+        ->and($outcome->result->text)->toBe('early words');
 
     // Text produced before the crash was flushed to the buffer on the way
     // out — exactly what an uncoalesced fold would have written.
@@ -349,4 +357,70 @@ it('routes progress frames to upsert keyed by call id, re-stamping the tool name
             'status' => 'done',
             'successful' => true,
         ]);
+});
+
+it('keeps the partial result when a recoverable error hook meets 1.0\'s StreamErrorException', function () {
+    $this->mapper->on(Error::class, fn (): bool => true);
+
+    $error = new Error('e1', '502', 'upstream exploded', true, 1);
+
+    $outcome = $this->runner->run(
+        turnId: 't1',
+        stream: function () use ($error): Generator {
+            yield runnerDelta('half ');
+            yield new ToolCall('tc1', new ToolCallData('call_1', 'search', [], 'call_1'), 1);
+            yield new ToolResult('tr1', new ToolResultData('call_1', 'search', [], 'hit', 'call_1'), true, null, 1);
+            yield $error;
+
+            throw new StreamErrorException($error);
+        },
+        mapper: $this->mapper,
+        buffer: $this->buffer,
+    );
+
+    expect($outcome->failed)->toBeTrue()
+        ->and($outcome->exception)->toBeNull()
+        ->and($outcome->failure)->toBe('upstream exploded')
+        ->and($outcome->failureCode)->toBe('provider_unavailable')
+        ->and($outcome->result->text)->toBe('half ')
+        ->and($outcome->result->toolCalls)->toHaveCount(1)
+        ->and($outcome->result->toolResults)->toHaveCount(1);
+});
+
+it('codes a kill-switched turn', function () {
+    app(KillSwitch::class)->engage('assistant');
+
+    $outcome = $this->runner->run('t1', fn (): array => [], $this->mapper, $this->buffer, feature: 'assistant');
+
+    expect($outcome->failureCode)->toBe('killed');
+});
+
+it('throws a stop into a generator stream so its own failure path runs, and still completes as cancelled', function () {
+    $this->buffer->cancel('t1');
+
+    $caught = null;
+    $pulledPastStop = false;
+
+    $outcome = $this->runner->run(
+        turnId: 't1',
+        stream: function () use (&$caught, &$pulledPastStop): Generator {
+            try {
+                yield runnerDelta('only');
+                $pulledPastStop = true;
+                yield runnerDelta('never');
+            } catch (Throwable $e) {
+                $caught = $e;
+
+                throw $e;
+            }
+        },
+        mapper: $this->mapper,
+        buffer: $this->buffer,
+    );
+
+    expect($outcome->cancelled)->toBeTrue()
+        ->and($outcome->failed)->toBeFalse()
+        ->and($outcome->result->text)->toBe('only')
+        ->and($caught)->toBeInstanceOf(TurnCancelledException::class)
+        ->and($pulledPastStop)->toBeFalse();
 });

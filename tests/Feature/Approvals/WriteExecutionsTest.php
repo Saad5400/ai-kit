@@ -31,7 +31,10 @@ it('enforces exactly-once via the unique key', function () {
     $ledger->claim('turn-1', 0, 'update_widget');
 
     try {
-        $ledger->claim('turn-1', 0, 'update_widget');
+        // Inside a transaction, as claim() is meant to be called: on Postgres
+        // the violation aborts the transaction it happens in, and the
+        // savepoint keeps the test's own transaction usable.
+        DB::transaction(fn () => $ledger->claim('turn-1', 0, 'update_widget'));
         $this->fail('Expected a unique-key violation.');
     } catch (QueryException $exception) {
         expect(WriteExecutions::isUniqueViolation($exception))->toBeTrue();

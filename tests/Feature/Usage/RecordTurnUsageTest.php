@@ -6,73 +6,23 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Laravel\Ai\AiManager;
-use Laravel\Ai\Contracts\Agent;
 use Laravel\Ai\Events\AgentFailedOver;
-use Laravel\Ai\Events\AgentPrompted;
-use Laravel\Ai\Events\AgentStreamed;
 use Laravel\Ai\Events\PromptingAgent;
 use Laravel\Ai\Exceptions\RateLimitedException;
-use Laravel\Ai\Promptable;
-use Laravel\Ai\Prompts\AgentPrompt;
-use Laravel\Ai\Responses\AgentResponse;
-use Laravel\Ai\Responses\Data\Meta;
-use Laravel\Ai\Responses\Data\Usage;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Saad\AiKit\Gateway\SpendCollector;
 use Saad\AiKit\Support\TurnContext;
+use Saad\AiKit\Tests\Support\UsageTurns;
 use Saad\AiKit\Usage\Events\TurnUsageRecorded;
 use Saad\AiKit\Usage\TurnSpend;
 use Saad\AiKit\Usage\UsageEvent;
 
 uses(RefreshDatabase::class);
 
-function usageAgent(): Agent
-{
-    return new class implements Agent
-    {
-        use Promptable;
-
-        public function instructions(): string
-        {
-            return 'test agent';
-        }
-    };
-}
-
-/**
- * @return array{0: AgentPrompted, 1: AgentResponse}
- */
-function promptedEvent(bool $streamed = false, ?Usage $usage = null, ?string $invocationId = null): array
-{
-    $invocationId ??= (string) Str::uuid7();
-    $agent = usageAgent();
-
-    $prompt = new AgentPrompt(
-        $agent,
-        'hello',
-        [],
-        app(AiManager::class)->textProvider('openrouter'),
-        'test/model',
-        invocationId: $invocationId,
-    );
-
-    $response = new AgentResponse(
-        $invocationId,
-        'response text',
-        $usage ?? new Usage(promptTokens: 100, completionTokens: 25, reasoningTokens: 5),
-        new Meta(provider: 'openrouter', model: 'test/model'),
-    );
-
-    $event = $streamed
-        ? new AgentStreamed($invocationId, $prompt, $response)
-        : new AgentPrompted($invocationId, $prompt, $response);
-
-    return [$event, $response];
-}
-
 it('records a usage row when an agent turn completes', function () {
     Event::fake([TurnUsageRecorded::class]);
 
-    [$event] = promptedEvent();
+    [$event] = UsageTurns::prompted();
 
     event($event);
 
@@ -92,8 +42,29 @@ it('records a usage row when an agent turn completes', function () {
     Event::assertDispatched(TurnUsageRecorded::class, fn (TurnUsageRecorded $e) => $e->usage->is($row));
 });
 
+// laravel/ai 1.0 reports the breakdown counts as null when a provider does
+// not send them; the columns are NOT NULL, and the insert runs inside
+// rescue(), so a null would silently cost the turn its usage row.
+it('records unreported cache and reasoning counts as zero, not a lost row', function () {
+    Event::fake([TurnUsageRecorded::class]);
+
+    [$event] = UsageTurns::prompted(usage: new TextUsage(inputTokens: 40, outputTokens: 8));
+
+    event($event);
+
+    $row = UsageEvent::sole();
+
+    expect($row->prompt_tokens)->toBe(40)
+        ->and($row->completion_tokens)->toBe(8)
+        ->and($row->cache_read_input_tokens)->toBe(0)
+        ->and($row->cache_write_input_tokens)->toBe(0)
+        ->and($row->reasoning_tokens)->toBe(0);
+
+    Event::assertDispatched(TurnUsageRecorded::class);
+});
+
 it('marks streamed turns as streamed', function () {
-    [$event] = promptedEvent(streamed: true);
+    [$event] = UsageTurns::prompted(streamed: true);
 
     event($event);
 
@@ -106,7 +77,7 @@ it('records the collector cost and generation ids, draining by default', functio
     $collector->recordCost(0.001, false);
     $collector->recordGenerationId('gen-1', true);
 
-    [$event] = promptedEvent(streamed: true);
+    [$event] = UsageTurns::prompted(streamed: true);
 
     event($event);
 
@@ -124,7 +95,7 @@ it('leaves the collector intact when drain_spend is off', function () {
     $collector = app(SpendCollector::class);
     $collector->recordCost(0.002, true);
 
-    [$event] = promptedEvent(streamed: true);
+    [$event] = UsageTurns::prompted(streamed: true);
 
     event($event);
 
@@ -141,7 +112,7 @@ it('records no cost at all when the provider reported none, never estimating fro
         'test/model' => ['input_usd_per_million' => 1.0, 'output_usd_per_million' => 10.0],
     ]);
 
-    [$event] = promptedEvent(usage: new Usage(promptTokens: 1_000_000, completionTokens: 100_000));
+    [$event] = UsageTurns::prompted(usage: new TextUsage(inputTokens: 1_000_000, outputTokens: 100_000));
 
     event($event);
 
@@ -154,7 +125,7 @@ it('records no cost at all when the provider reported none, never estimating fro
 });
 
 it('records duration and ttft from the turn context and clears the stamps', function () {
-    [$event] = promptedEvent();
+    [$event] = UsageTurns::prompted();
 
     event(new PromptingAgent($event->invocationId, $event->prompt));
     Context::add(TurnContext::TTFT_KEY, 123);
@@ -171,12 +142,12 @@ it('records duration and ttft from the turn context and clears the stamps', func
 });
 
 it('records conversation and participant when present', function () {
-    [$event, $response] = promptedEvent();
+    [$event, $response] = UsageTurns::prompted();
 
-    $participant = new class
-    {
-        public string $id = 'session-abc';
-    };
+    // A named class: an anonymous one's name carries a NUL byte, which
+    // Postgres refuses to store in a text column.
+    $participant = new stdClass;
+    $participant->id = 'session-abc';
 
     $response->withinConversation('11111111-1111-1111-1111-111111111111', $participant);
 
@@ -192,18 +163,20 @@ it('records conversation and participant when present', function () {
 it('labels the turn from the feature context key', function () {
     Context::add('ai-kit.feature', 'assistant');
 
-    [$event] = promptedEvent();
+    [$event] = UsageTurns::prompted();
 
     event($event);
 
     expect(UsageEvent::sole()->feature)->toBe('assistant');
 });
 
-it('records a failed_over row per abandoned attempt', function () {
-    Context::add(TurnContext::CURRENT_INVOCATION_KEY, $invocationId = (string) Str::uuid7());
+it('records a failed_over row per abandoned attempt, keyed by the event invocation id', function () {
+    // A stale context value must not win over the id the event carries.
+    Context::add(TurnContext::CURRENT_INVOCATION_KEY, (string) Str::uuid7());
 
     event(new AgentFailedOver(
-        usageAgent(),
+        $invocationId = (string) Str::uuid7(),
+        UsageTurns::agent(),
         app(AiManager::class)->textProvider('openrouter'),
         'test/model',
         RateLimitedException::forProvider('openrouter'),
@@ -221,7 +194,7 @@ it('records a failed_over row per abandoned attempt', function () {
 it('never breaks the turn when recording fails', function () {
     Schema::drop('ai_usage_events');
 
-    [$event] = promptedEvent();
+    [$event] = UsageTurns::prompted();
 
     event($event);
 

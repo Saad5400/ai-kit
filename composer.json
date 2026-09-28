@@ -6,11 +6,11 @@
     "keywords": ["laravel", "ai", "mcp", "openrouter"],
     "require": {
         "php": "^8.4",
-        "illuminate/contracts": "^12.0|^13.0",
-        "illuminate/database": "^12.0|^13.0",
-        "illuminate/support": "^12.0|^13.0",
-        "laravel/ai": "~0.10.0",
-        "laravel/mcp": "~0.9.0",
+        "illuminate/contracts": "^12.62|^13.15",
+        "illuminate/database": "^12.62|^13.15",
+        "illuminate/support": "^12.62|^13.15",
+        "laravel/ai": "^1.0",
+        "laravel/mcp": "^1.0",
         "symfony/process": "^7.0"
     },
     "require-dev": {

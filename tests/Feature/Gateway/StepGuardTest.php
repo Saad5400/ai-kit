@@ -13,7 +13,9 @@ use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Responses\Data\FinishReason;
 use Laravel\Ai\Responses\Data\ToolCall;
 use Laravel\Ai\Responses\Data\ToolResult;
+use Laravel\Ai\Streaming\Events\Error;
 use Laravel\Ai\Streaming\Events\StreamEnd;
+use Laravel\Ai\Streaming\Events\StreamStart;
 use Laravel\Ai\Streaming\Events\TextDelta;
 use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
 use Laravel\Ai\Streaming\Events\ToolResult as ToolResultEvent;
@@ -158,8 +160,8 @@ it('appends a tool-less wrap-up when a step after tool results comes back blank'
         ->and(wireText($events))->toBe('You have two courses.')
         ->and($step->text)->toBe('You have two courses.')
         ->and($step->finishReason)->toBe(FinishReason::Stop)
-        ->and($step->usage->promptTokens)->toBe(17)
-        ->and($step->usage->completionTokens)->toBe(5)
+        ->and($step->usage->inputTokens)->toBe(17)
+        ->and($step->usage->outputTokens)->toBe(5)
         ->and(TurnContext::flags())->toBe(['wrap_up' => 'blank_final']);
 });
 
@@ -238,6 +240,11 @@ it('appends an answer when the final step still ended in tool calls, keeping the
         ->and($step->finishReason)->toBe(FinishReason::ToolCalls)
         ->and($step->text)->toBe("Let me check one more thing.\n\nI ran out of steps; here is what I found so far.")
         ->and(wireText($events))->toBe($step->text)
+        // What the SDK persists: TextDelta::combine() cuts steps at each
+        // StreamStart, so the wrap-up's own must not reach the stream — it
+        // would add a second blank line on top of the separator.
+        ->and(TextDelta::combine($events))->toBe($step->text)
+        ->and(array_filter($events, fn ($e) => $e instanceof StreamStart))->toHaveCount(1)
         ->and(array_filter($events, fn ($e) => $e instanceof ToolCallEvent))->toHaveCount(1)
         ->and(TurnContext::flags())->toBe(['wrap_up' => 'step_exhaustion']);
 });
@@ -258,6 +265,36 @@ it('honors the exhaustion toggle', function () {
     guardedStream(guardedGateway(['final_step' => ['withhold_tools' => false]], ['wrap_up' => ['on_exhaustion' => false]]), afterToolMessages(), [lookupTool()], finalStep: true);
 
     expect(Http::recorded())->toHaveCount(1);
+});
+
+/** A wrap-up that streams some text, then OpenRouter's mid-stream error frame. */
+function erroringWrapUpStream(): string
+{
+    return OpenRouterSse::body([
+        guardChunk(['content' => 'Done: I fou']),
+        ['id' => 'gen-wrap', 'error' => ['code' => 502, 'message' => 'Provider returned error']],
+    ]);
+}
+
+it('fails the step when a blank-final wrap-up errors mid-stream, instead of passing the blank step off as a success', function () {
+    Http::fake(['*' => Http::sequence()->push(blankStream())->push(erroringWrapUpStream())]);
+
+    [$events, $step] = guardedStream(guardedGateway(), afterToolMessages(), [lookupTool()]);
+
+    // null makes stock's loop throw StreamErrorException on the next pull.
+    expect($step)->toBeNull()
+        ->and(array_filter($events, fn ($e) => $e instanceof Error))->toHaveCount(1)
+        ->and(wireText($events))->toBe('Done: I fou');
+});
+
+it('fails the step when a step-exhaustion wrap-up errors, so its tool calls never run', function () {
+    Http::fake(['*' => Http::sequence()->push(toolCallStream('Let me check one more thing.'))->push(erroringWrapUpStream())]);
+
+    [$events, $step] = guardedStream(guardedGateway(['final_step' => ['withhold_tools' => false]]), afterToolMessages(), [lookupTool()], finalStep: true);
+
+    // Returning the pre-wrap-up step would hand the loop its tool call to run after the wire said `error`.
+    expect($step)->toBeNull()
+        ->and(TurnContext::flags())->toBe(['wrap_up' => 'step_exhaustion']);
 });
 
 it('resolves the wrap-up instruction from the closure seam first', function () {
@@ -338,6 +375,8 @@ it('retries a leaked step once, excluding the upstream that leaked', function ()
         ->and($bodies[2]['provider']['ignore'] ?? null)->toBeNull()
         ->and(wireText($events))->toBe('Checking. ')
         ->and($step->text)->toBe('Checking. ')
+        ->and(TextDelta::combine($events))->toBe($step->text)
+        ->and(array_filter($events, fn ($e) => $e instanceof StreamStart))->toHaveCount(1)
         ->and($step->toolCalls)->toHaveCount(1)
         ->and($step->markupLeaked)->toBeFalse()
         ->and(TurnContext::flags())->toBe(['markup_leak' => true, 'markup_retried' => true]);
@@ -425,10 +464,10 @@ it('ends a budget-exhausted loop on a real answer: tools withheld on the last st
         ->and($bodies[0])->toHaveKey('tools')
         ->and($bodies[1])->not->toHaveKey('tools')
         ->and($bodies[2])->not->toHaveKey('tools')
-        // The SDK's persisted text: it joins each message id's text with a
+        // The SDK's persisted text: it joins each step's text with a
         // paragraph break, so the narration and the wrap-up read as two paragraphs.
         ->and(TextDelta::combine($events))->toBe("لنبحث أولاً عن مقرراتك.\n\nYou have two courses: A and B.")
         ->and(array_filter($events, fn ($e) => $e instanceof ToolResultEvent))->toHaveCount(1)
-        ->and($end->usage->promptTokens)->toBe(3 + 7 + 10)
+        ->and($end->usage->inputTokens)->toBe(3 + 7 + 10)
         ->and(TurnContext::flags())->toBe(['wrap_up' => 'blank_final']);
 });

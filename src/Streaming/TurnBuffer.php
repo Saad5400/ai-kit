@@ -236,6 +236,9 @@ class TurnBuffer
 
     /**
      * Mark the turn failed: append the terminal `error {message}` and stop.
+     * `$code` adds the kit's machine-readable reason to the frame
+     * (`error {message, code}`, see {@see ErrorCode}) and to the record's
+     * meta as `error_code`; left null, the frame is exactly as before.
      * No `done` follows — a failed turn has no completion payload to carry,
      * and emitting both would leave clients guessing which one ended the
      * turn. The failure is also recorded in the record's meta.
@@ -249,17 +252,30 @@ class TurnBuffer
      * ship elsewhere. Default OFF: the contract above is what the kit
      * promises unless an app asks for otherwise.
      *
+     * `$conversationId` names the conversation the failed turn was stored
+     * in ({@see TurnOutcome::$conversationId}): the frame becomes
+     * `error {message, code?, conversation_id}` and the record's meta gains
+     * `conversation_id` (unless `$meta` already sets one), so a client whose
+     * FIRST turn failed continues that thread on its next message or Retry.
+     *
      * @param  array<string, mixed>  $meta
      */
-    public function fail(string $turnId, string $message, array $meta = [], bool $trailingDone = false): void
+    public function fail(string $turnId, string $message, array $meta = [], bool $trailingDone = false, ?string $code = null, ?string $conversationId = null): void
     {
-        $this->append($turnId, 'error', ['message' => $message]);
+        $frame = ['message' => $message]
+            + ($code === null ? [] : ['code' => $code])
+            + ($conversationId === null ? [] : ['conversation_id' => $conversationId]);
+
+        $this->append($turnId, 'error', $frame);
 
         if ($trailingDone) {
             $this->append($turnId, 'done', []);
         }
 
-        $this->complete($turnId, 'failed', $meta + ['error' => $message]);
+        $this->complete($turnId, 'failed', $meta
+            + ['error' => $message]
+            + ($code === null ? [] : ['error_code' => $code])
+            + ($conversationId === null ? [] : ['conversation_id' => $conversationId]));
     }
 
     /**
@@ -430,6 +446,7 @@ class TurnBuffer
                         $staleMessage ?? __('ai-kit::streaming.stale'),
                         ['stale' => true],
                         $this->staleTrailingDone,
+                        ErrorCode::STALE,
                     );
 
                     // Drain the terminal we just wrote, deadline or not.

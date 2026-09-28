@@ -2,6 +2,7 @@
 
 namespace Saad\AiKit\Gateway;
 
+use Laravel\Ai\Concerns\JoinsReasoning;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Gateway\StepResponse;
 use Laravel\Ai\Messages\AssistantMessage;
@@ -42,6 +43,8 @@ use Laravel\Ai\Responses\Data\FinishReason;
  */
 class StepGuard
 {
+    use JoinsReasoning;
+
     public const STEP_EXHAUSTION = 'step_exhaustion';
 
     public const BLANK_FINAL = 'blank_final';
@@ -153,8 +156,10 @@ class StepGuard
             meta: $retry->meta,
             structured: $retry->structured,
             continuationToken: $retry->continuationToken,
-            providerContentBlocks: $retry->providerContentBlocks,
+            replayBlocks: $retry->replayBlocks,
             pendingApprovals: $retry->pendingApprovals,
+            reasoning: $keepFirstText ? static::joinReasoning([$first->reasoning, $retry->reasoning]) : $retry->reasoning,
+            providerToolCalls: $retry->providerToolCalls,
         );
 
         if ($retry instanceof InspectedStepResponse) {
@@ -184,8 +189,10 @@ class StepGuard
             meta: $step->meta,
             structured: $step->structured,
             continuationToken: $wrapUp->continuationToken ?? $step->continuationToken,
-            providerContentBlocks: $step->providerContentBlocks,
+            replayBlocks: $step->replayBlocks,
             pendingApprovals: $step->pendingApprovals,
+            reasoning: static::joinReasoning([$step->reasoning, $wrapUp->reasoning]),
+            providerToolCalls: [...$step->providerToolCalls, ...$wrapUp->providerToolCalls],
         );
 
         if ($step instanceof InspectedStepResponse) {

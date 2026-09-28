@@ -8,7 +8,11 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Context;
+use IteratorAggregate;
+use Laravel\Ai\Responses\StreamableAgentResponse;
+use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\StreamEvent;
+use Laravel\Ai\Streaming\Events\ToolApprovalRequest;
 use Saad\AiKit\Safety\KillSwitch;
 use Throwable;
 
@@ -49,6 +53,25 @@ use Throwable;
  * outcome is `cancelled` with the partial text — a stop is a completed
  * short turn, not an error. Stops landing INSIDE a tool are ToolProgress's
  * job, not this generator's.
+ *
+ * What a stop leaves IN STORAGE: laravel/ai 1.0 has no cancel of its own,
+ * and a stream the consumer walks away from runs neither `then()` nor
+ * `catch()` — the turn, its user message and every tool it already ran
+ * would leave no row. So the generator does not just walk away: it throws
+ * a {@see TurnCancelledException} into the provider stream at the point it
+ * stopped, which is laravel/ai's own failure path — RememberConversation
+ * stores the turn as a `failed` row with its completed steps (plus the
+ * interrupted step's partial text, {@see InterruptedTurns}) and
+ * `meta.error` = TurnCancelledException::MESSAGE, the marker an app reads
+ * to show "stopped" rather than "failed". The exception is caught right
+ * back here; the wire and the outcome are unchanged. (Behind a
+ * multi-provider failover list the throw lands in the outer failover
+ * stream, which has no conversation hooks; that stop is not stored.)
+ *
+ * FAILURES keep what the turn produced: `result` on a failed outcome is
+ * the partial fold — the text and tools before a provider error in the
+ * stream, and before a throw (a 502 raised as an exception) alike. The
+ * outcome's `failureCode` carries the kit's {@see ErrorCode}.
  *
  * THE SINK routes non-terminal events to {@see TurnBuffer::append()},
  * except `tool` frames carrying `progress`, which go to
@@ -97,6 +120,8 @@ class TurnRunner
         $guard = Auth::guard();
         $previousUser = null;
         $swapped = false;
+        $result = null;
+        $provider = null;
 
         // ONE outer try/finally owns every cleanup from here on — the
         // ToolProgress unbind and the guard restore run on EVERY exit
@@ -110,7 +135,7 @@ class TurnRunner
             // the model calls actually happen; nothing has streamed yet and
             // no provider connection is opened.
             if ($this->killSwitch?->engaged($feature)) {
-                return TurnOutcome::failed(new StreamResult, (string) __('ai-kit::safety.killed'));
+                return TurnOutcome::failed(new StreamResult, (string) __('ai-kit::safety.killed'), code: ErrorCode::KILLED);
             }
 
             // Label every model call this turn makes so the usage rows are
@@ -132,12 +157,13 @@ class TurnRunner
 
             $done = null;
             $error = null;
+            $errorCode = null;
             $cancelled = false;
 
             /** @var array<string, string> $toolNames */
             $toolNames = [];
 
-            $sink = function (string $event, array $data) use ($buffer, $turnId, &$done, &$error, &$toolNames): void {
+            $sink = function (string $event, array $data) use ($buffer, $turnId, &$done, &$error, &$errorCode, &$toolNames): void {
                 if ($event === 'done') {
                     $done = $data;
 
@@ -146,6 +172,7 @@ class TurnRunner
 
                 if ($event === 'error') {
                     $error = (string) ($data['message'] ?? '');
+                    $errorCode = is_string($data['code'] ?? null) ? $data['code'] : null;
 
                     return;
                 }
@@ -171,21 +198,32 @@ class TurnRunner
 
             ToolProgress::bind($turnId, $sink, $buffer);
 
-            $result = $mapper->runBuffered(
-                $this->untilCancelled($stream(), $buffer, $turnId, $cancelled),
+            // Collected into from outside the fold so a THROW mid-turn still
+            // leaves the text and tools the turn produced on the outcome.
+            $result = new StreamResult;
+
+            $provider = $stream();
+
+            $mapper->runBuffered(
+                $this->untilCancelled($provider, $buffer, $turnId, $cancelled),
                 $sink,
+                $result,
             );
 
             if ($result->failed) {
                 return TurnOutcome::failed(
                     $result,
                     $error !== null && $error !== '' ? $error : $resolveFailure(null),
+                    code: $errorCode ?? ($result->error !== null ? ErrorCode::forError($result->error) : ErrorCode::STREAM_ERROR),
+                    conversationId: StoredConversation::idOf($provider),
                 );
             }
 
-            return TurnOutcome::completed($result, $done, $cancelled);
+            // A stop is stored as a failed row and never runs the vendor's
+            // then(): name its conversation too.
+            return TurnOutcome::completed($result, $done, $cancelled, $cancelled ? StoredConversation::idOf($provider) : null);
         } catch (Throwable $e) {
-            return TurnOutcome::failed(new StreamResult, $resolveFailure($e), $e);
+            return TurnOutcome::failed($result ?? new StreamResult, $resolveFailure($e), $e, ErrorCode::forException($e), StoredConversation::idOf($provider));
         } finally {
             ToolProgress::unbind();
 
@@ -203,7 +241,8 @@ class TurnRunner
      * The poll is throttled to one cache read per second (never a per-token
      * hammer), and every poll also touches the buffer's heartbeat, so a
      * turn that streams without appending anything visible still reads as
-     * alive to the stale watchdog.
+     * alive to the stale watchdog. A stop settles the provider stream
+     * through {@see interrupt()} before the generator ends.
      *
      * @param  iterable<StreamEvent>  $stream
      * @return Generator<StreamEvent>
@@ -212,10 +251,37 @@ class TurnRunner
     {
         $lastCheck = 0.0;
 
-        foreach ($stream as $event) {
-            yield $event;
+        // Iterated by hand (rather than through the aggregate) so a stop can
+        // throw into the very generator the vendor is suspended in.
+        $events = $stream instanceof IteratorAggregate ? $stream->getIterator() : $stream;
 
-            if ($this->now() - $lastCheck < 1000.0) {
+        // Once the run has reached its end (the final StreamEnd) or its
+        // pause (a ToolApprovalRequest — the approval card is already on
+        // the client), a stop is too late to mean anything: the vendor is
+        // about to store the turn as completed or paused, and throwing in
+        // now would store it as a stopped `failed` row instead — a finished
+        // answer without its usage, or a pause the client already shows.
+        $ending = false;
+
+        foreach ($events as $event) {
+            try {
+                yield $event;
+            } catch (Throwable $e) {
+                // Thrown in by the fold (a stream yielding past its settled
+                // error): forward it to the vendor generator, so its failure
+                // path runs, then let it propagate back to the fold.
+                if ($events instanceof Generator && $events->valid()) {
+                    $events->throw($e);
+                }
+
+                throw $e;
+            }
+
+            if ($event instanceof StreamEnd || $event instanceof ToolApprovalRequest) {
+                $ending = true;
+            }
+
+            if ($ending || $this->now() - $lastCheck < 1000.0) {
                 continue;
             }
 
@@ -226,8 +292,43 @@ class TurnRunner
             if ($buffer->isCancelled($turnId)) {
                 $cancelled = true;
 
+                $this->interrupt($stream, $events, $event);
+
                 return;
             }
+        }
+    }
+
+    /**
+     * Settle a stopped provider stream through laravel/ai's failure path so
+     * the turn is stored (see the class doc), instead of abandoning it.
+     * The interrupted step's partial text is recorded first, the
+     * {@see TurnCancelledException} is thrown in at the vendor's yield and
+     * comes straight back out; anything else the vendor's persistence
+     * throws on the way is reported, never allowed to turn a stop into a
+     * failure.
+     *
+     * @param  iterable<StreamEvent>  $stream
+     * @param  iterable<StreamEvent>  $events
+     */
+    protected function interrupt(iterable $stream, iterable $events, StreamEvent $last): void
+    {
+        if (! $events instanceof Generator || ! $events->valid()) {
+            return;
+        }
+
+        $invocationId = $stream instanceof StreamableAgentResponse ? $stream->invocationId : $last->invocationId;
+
+        if ($invocationId !== null && app()->bound(InterruptedTurns::class)) {
+            app(InterruptedTurns::class)->sealTracked($invocationId);
+        }
+
+        try {
+            $events->throw(new TurnCancelledException);
+        } catch (TurnCancelledException) {
+            // The vendor's catch ran and rethrew it — the expected exit.
+        } catch (Throwable $e) {
+            report($e);
         }
     }
 

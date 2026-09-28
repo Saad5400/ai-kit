@@ -29,10 +29,10 @@ function attachmentParts(array $attachments): array
     return array_slice($body['messages'][0]['content'], 1);
 }
 
-function derivedFormat(?string $mime, ?string $name): string
+function derivedFormat(?string $mime): string
 {
-    return (new ReflectionMethod(GatewayFactory::gateway(), 'inputAudioFormat'))
-        ->invoke(GatewayFactory::gateway(), $mime, $name);
+    return (new ReflectionMethod(GatewayFactory::gateway(), 'audioFormat'))
+        ->invoke(GatewayFactory::gateway(), $mime);
 }
 
 it('maps base64 audio to an input_audio part', function () {
@@ -41,8 +41,8 @@ it('maps base64 audio to an input_audio part', function () {
     expect($parts)->toBe([[
         'type' => 'input_audio',
         'input_audio' => [
-            'data' => base64_encode('fake-mp3-bytes'),
             'format' => 'mp3',
+            'data' => base64_encode('fake-mp3-bytes'),
         ],
     ]]);
 });
@@ -54,8 +54,8 @@ it('inlines a local audio file as base64', function () {
     $parts = attachmentParts([Audio::fromPath($path, 'audio/wav')]);
 
     expect($parts[0]['input_audio'])->toBe([
-        'data' => base64_encode('fake-wav-bytes'),
         'format' => 'wav',
+        'data' => base64_encode('fake-wav-bytes'),
     ]);
 
     unlink($path);
@@ -78,8 +78,8 @@ it('maps an uploaded audio file', function () {
     expect($parts[0])->toBe([
         'type' => 'input_audio',
         'input_audio' => [
-            'data' => base64_encode('fake-ogg-bytes'),
             'format' => 'ogg',
+            'data' => base64_encode('fake-ogg-bytes'),
         ],
     ]);
 })->skip(fn () => ! str_starts_with(
@@ -117,7 +117,7 @@ it('still throws on an attachment type nothing supports', function () {
 })->throws(InvalidArgumentException::class, 'Unsupported attachment type');
 
 it('derives the format from an audio mime type', function (string $mime, string $expected) {
-    expect(derivedFormat($mime, null))->toBe($expected);
+    expect(derivedFormat($mime))->toBe($expected);
 })->with([
     ['audio/mpeg', 'mp3'],
     ['audio/mp3', 'mp3'],
@@ -133,21 +133,36 @@ it('derives the format from an audio mime type', function (string $mime, string 
     ['audio/flac', 'flac'],
     ['audio/x-flac', 'flac'],
     ['AUDIO/MPEG; codecs=mp3', 'mp3'],
+    ['audio/aiff', 'aiff'],
+    ['audio/x-aiff', 'aiff'],
+    ['audio/aac', 'aac'],
 ]);
 
-it('falls back to the filename extension when the mime says nothing', function () {
-    expect(derivedFormat(null, 'lecture.WAV'))->toBe('wav')
-        ->and(derivedFormat('application/octet-stream', 'clip.m4a'))->toBe('m4a')
-        ->and(derivedFormat(null, 'https://example.com/audio/clip.ogg'))->toBe('ogg');
+it('tolerates the mimes stock 1.0 throws on', function (?string $mime, string $expected) {
+    expect(derivedFormat($mime))->toBe($expected);
+})->with([
+    'MediaRecorder webm/opus' => ['audio/webm;codecs=opus', 'webm'],
+    'spaced codecs parameter' => ['audio/webm; codecs="opus"', 'webm'],
+    'finfo on a webm recording' => ['video/webm', 'webm'],
+    'finfo on an m4a' => ['video/mp4', 'm4a'],
+    'mpga' => ['audio/mpga', 'mp3'],
+    'unlisted container passes through' => ['audio/opus', 'opus'],
+    'generic binary' => ['application/octet-stream', 'mp3'],
+    'no mime at all' => [null, 'mp3'],
+    'empty mime' => ['', 'mp3'],
+]);
+
+it('maps a MediaRecorder webm/opus attachment instead of throwing', function () {
+    $parts = attachmentParts([Audio::fromBase64('YXVkaW8=', 'audio/webm;codecs=opus')]);
+
+    expect($parts)->toBe([[
+        'type' => 'input_audio',
+        'input_audio' => ['format' => 'webm', 'data' => 'YXVkaW8='],
+    ]]);
 });
 
-it('defaults to mp3 when neither mime nor name says anything', function () {
-    expect(derivedFormat(null, null))->toBe('mp3')
-        ->and(derivedFormat('application/octet-stream', 'recording'))->toBe('mp3');
-});
-
-it('reads the format off a base64 audio with no mime through the extension', function () {
+it('defaults a base64 audio with no mime to mp3, as stock does', function () {
     $parts = attachmentParts([(new Base64Audio('YXVkaW8='))->as('interview.flac')]);
 
-    expect($parts[0]['input_audio']['format'])->toBe('flac');
+    expect($parts[0]['input_audio']['format'])->toBe('mp3');
 });

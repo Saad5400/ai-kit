@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Http;
 use Laravel\Ai\Exceptions\AiException;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Messages\UserMessage;
+use Saad\AiKit\Catalog\ModelDefinition;
 use Saad\AiKit\Catalog\ModelRouting;
 use Saad\AiKit\Tests\Support\GatewayFactory;
 use Saad\AiKit\Tests\Support\OpenRouterSse;
@@ -107,4 +108,42 @@ it('honors a disabled retry policy', function () {
     }
 
     Http::assertSentCount(1);
+});
+
+// laravel/ai 1.0 moved reasoning onto StepResponse; the gateway's inspected
+// re-wrap must carry it or a non-streamed turn silently loses its thinking.
+it('keeps the non-streamed reasoning through the inspected re-wrap', function () {
+    $body = OpenRouterSse::completion();
+    $body['choices'][0]['message']['reasoning'] = 'The user said hi.';
+
+    Http::fake(['*' => Http::response($body)]);
+
+    expect(runTextStep()->reasoning)->toBe('The user said hi.');
+});
+
+// 1.0 renamed prompt/completion to input/output and made them INCLUSIVE of
+// cached and reasoning tokens. OpenRouter's prompt_tokens/completion_tokens
+// always were inclusive, so for this gateway the numbers must not move: the
+// usage row's prompt_tokens and the display estimate are unchanged from 0.10.
+it('reports OpenRouter token counts unchanged: inclusive input/output, breakdown beside them', function () {
+    Http::fake(['*' => Http::response(OpenRouterSse::completion(usage: [
+        'prompt_tokens' => 1_000,
+        'completion_tokens' => 300,
+        'prompt_tokens_details' => ['cached_tokens' => 600],
+        'completion_tokens_details' => ['reasoning_tokens' => 200],
+        'cost' => 0.001,
+    ]))]);
+
+    $usage = runTextStep()->usage;
+
+    $model = new ModelDefinition('test/model', inputUsdPerMillion: 1.0, outputUsdPerMillion: 10.0);
+
+    expect($usage->inputTokens)->toBe(1_000)
+        ->and($usage->outputTokens)->toBe(300)
+        ->and($usage->cacheReadInputTokens)->toBe(600)
+        ->and($usage->cacheWriteInputTokens)->toBeNull()
+        ->and($usage->reasoningTokens)->toBe(200)
+        ->and($usage->uncachedInputTokens())->toBe(400)
+        // 1_000 × $1/M + 300 × $10/M — full counts, cached input at the base rate.
+        ->and($model->displayCostEstimateUsd($usage))->toEqualWithDelta(0.004, 1e-12);
 });

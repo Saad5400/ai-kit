@@ -69,7 +69,7 @@ One turn is one SSE stream of `event: NAME\ndata: {json}\n\n` frames, written by
 | `question` | `{kind, id, question, options?}` | An `AskUser` pause — answered, not approved. `options` carries 2–4 suggested answers when the model proposed any. |
 | `citations` | `{items}` | Post-stream, from a `beforeDone` hook. |
 | `done` | app-assembled | **Terminal.** |
-| `error` | `{message}` | **Terminal** — no `done` ever follows it. |
+| `error` | `{message, code?}` | **Terminal** — no `done` ever follows it. `code` is the kit's machine-readable reason (`stream_error`, `provider_unavailable`, `rate_limited`, `killed`, `stale`, `internal_error` — `Streaming\ErrorCode`, AG-UI's RUN_ERROR `code` role). Optional: a code-less frame is still valid, and a client treats an unknown code as a generic failure. |
 
 A turn ends with exactly one terminal event. Buffered frames are led by an `id:` line carrying the sequence number to resume from. Pre-flight failures are plain JSON at 503/429/422/402, discriminated client-side by `Content-Type`.
 
@@ -93,7 +93,18 @@ $untilCancelled = function (iterable $stream) use ($buffer, $turnId): Generator 
 $mapper->runIntoBuffer($untilCancelled($stream), $buffer, $turnId, $meta);
 ```
 
-A cancelled stream simply ends, so the fold takes its normal exit and the turn finishes on `done` with whatever it produced — a stop is a completed short turn, not an error. (`TurnBuffer::fail()` takes a fourth argument to append an empty `done` after `error`, for clients that hang their whole teardown off `done`. Off by default; the terminal contract above is what the kit promises.)
+A cancelled stream simply ends, so the fold takes its normal exit and the turn finishes on `done` with whatever it produced — a stop is a completed short turn, not an error. (`TurnBuffer::fail()` takes a fourth argument to append an empty `done` after `error`, for clients that hang their whole teardown off `done`. Off by default; the terminal contract above is what the kit promises.) This hand-rolled generator only stops the stream; `TurnRunner`'s own cancel generator also gets the stopped turn STORED — see below.
+
+**Failed and stopped turns are stored** (owner ruling 2026-09-28: a failed turn shows in history as a failed message, with its partial text, for the app's retry button). laravel/ai 1.0 stores a dead run itself — RememberConversation's catch writes an assistant row with `status: failed`, `meta.error` and the steps it completed, every tool that already ran included — but only when the failure propagates through its generator. The kit makes sure it does, and tops up what it keeps:
+
+- **A provider error inside the stream** (OpenRouter's `{"error":…}` frame, its usual mid-stream 502): the mapper emits `error` at once, then pulls the stream once more — 1.0 throws `StreamErrorException` on that pull, which runs the vendor's failure path. The expected throw is settled inside the fold (the wire already has its one terminal); walking away at the error, as before, left the vendor generator suspended so nothing was stored. An `on(Error)` hook that returns `true` meets the same throw on its next pull; the fold then ends failed with the default `error` frame, keeping the partial result.
+- **A throw** (a 502 raised as an exception): unchanged on the wire; `TurnRunner`'s failed outcome now keeps the partial `StreamResult` (text, tool calls, results) instead of an empty one — pass your own result to `run()` / `runBuffered()` (`$into`) to get the same on the inline path.
+- **A stop** (`TurnRunner`): 1.0 has no cancel, and an abandoned stream runs neither `then()` nor `catch()`. So the runner throws a `TurnCancelledException` into the stream where it stopped and catches it right back: the vendor stores the turn as a `failed` row with `meta.error === TurnCancelledException::MESSAGE` (`TurnState::of($status, $meta)` — or `TurnCancelledException::marks($meta)` — tells a stop from a failure), and the outcome is still `cancelled` + `done`. Behind a multi-provider failover list the throw lands in the outer failover stream, which carries no conversation hooks, so such a stop is not stored.
+- **A step-guard wrap-up that errors** (the answer-now completion after a blank final step or step exhaustion, dying mid-stream): the whole step fails — the guard returns no step, stock throws on the next pull, and the turn is stored failed with the wrap-up's partial text. Before, the pre-wrap-up step was passed off as a success after the wire said `error` (its tool calls could even run) and nothing was stored. As defence in depth, a stream that keeps yielding past its settled error gets a `StreamErrorException` thrown into it (through `TurnRunner`'s stop generator too) rather than being walked away from.
+- **A stop that lands too late** — after the run's final `StreamEnd` or its `ToolApprovalRequest` — is ignored: the turn is stored completed (with its usage row) or paused (the card the client already shows), never as a stopped `failed` row.
+- **The circuit breaker** counts a step that ended on an in-stream provider error the kit reads as `provider_unavailable` / `rate_limited` as a failure; only a step that returned a response counts as a success (other in-stream errors move nothing). A mid-stream 502 storm now opens the breaker.
+- **The conversation a failed first turn opened.** A completed turn's id reaches the app through the vendor's `then()`, which a failed or stopped turn never runs, so a client whose FIRST turn failed would start a duplicate thread on its next message or Retry. `TurnOutcome::$conversationId` (and `StreamResult::$conversationId`) names the conversation the turn was stored in — only once its row exists — and `TurnBuffer::fail(..., conversationId: $outcome->conversationId)` puts it on the frame as `error {message, code?, conversation_id}` and on the record meta as `conversation_id`; `runIntoBuffer()` does this itself. A stopped turn's outcome (`cancelled`) carries it too — put it in your `done`/finish meta. Clients adopt `conversation_id` from the error frame (`ErrorPayload.conversation_id?` in `js/core/events.ts`). On the inline `run()` path the `error` frame goes out before the vendor stores the turn, so read `$result->conversationId` after `run()` returns and send it in whatever frame your client reads last.
+- **`InterruptedTurns`** (`streaming.remember_interrupted_turns`, default on) closes the two gaps stock leaves: the step that died mid-stream is added with the partial text the user already saw (no tool calls — none of them ran), and a turn that died in its FIRST step — for which stock stores nothing, not even the user's message — gets an empty step so the user row and a `failed` assistant row are written. Stock replays a failed row safely: a blank step as nothing, a partial one as the assistant text.
 
 ## Long turns
 
@@ -142,13 +153,13 @@ $outcome = app(TurnRunner::class)->run(
 );
 
 if ($outcome->failed) {
-    $buffer->fail($turnId, $outcome->failure, $meta);      // the APP writes the terminal…
+    $buffer->fail($turnId, $outcome->failure, $meta, code: $outcome->failureCode);   // the APP writes the terminal…
 } else {
     $buffer->finish($turnId, $donePayload, $meta);         // …because its payload only exists after the fold
 }
 ```
 
-`TurnOutcome` carries the `StreamResult`, `cancelled` and `failed` as independent axes (a stop is a completed short turn with partial text, never an error), the resolved `failure` line, the `exception` when a throw ended the turn, and the mapper's assembled `done` payload for apps that build on it. What stays app-side, deliberately: model/user resolution, prompt assembly, metering, per-turn spend reset (catodemy's `TurnProviderSpend` is an app-level accumulator; the kit has no equivalent to reset), and — above all — the terminal event, because a completion payload (credit outcome, grounding, persisted message id) only exists app-side and only after the fold. `runIntoBuffer()` remains for apps that want the terminal written for them.
+`TurnOutcome` carries the `StreamResult` (partial on a failure — never emptied by a throw), `cancelled` and `failed` as independent axes (a stop is a completed short turn with partial text, never an error), the resolved `failure` line and its `failureCode`, the `exception` when a throw ended the turn, and the mapper's assembled `done` payload for apps that build on it. What stays app-side, deliberately: model/user resolution, prompt assembly, metering, per-turn spend reset (catodemy's `TurnProviderSpend` is an app-level accumulator; the kit has no equivalent to reset), and — above all — the terminal event, because a completion payload (credit outcome, grounding, persisted message id) only exists app-side and only after the fold. `runIntoBuffer()` remains for apps that want the terminal written for them.
 
 Three `streaming` config keys tune all of this — `page_size` (64), `stale_after_seconds` (300), `stale_trailing_done` (false) — and the provider wires them into the `TurnBuffer` it binds. The client half is `resumeTurn()`: see *Resuming a long turn* under the frontend layer.
 
@@ -204,6 +215,18 @@ $decisions = ResumeDecisions::fromClient(
 
 return $agent->continue($decisions);      // guarded arguments only
 ```
+
+**Check ownership before you resume.** Since laravel/ai 1.0, `storeApprovalResults()` finds the paused turn by conversation id ALONE — it no longer scopes the lookup to the participant, and neither does the kit's store. Whoever reaches `continue($conversationId, …)->prompt($decisions)` runs the paused tool. Authorize first, with the store's own check:
+
+```php
+use Laravel\Ai\Models\Conversation;
+
+abort_unless(app(ConversationStore::class)->conversationBelongsTo(
+    $conversationId, Conversation::participantType($user), Conversation::participantKey($user),
+), 404);
+```
+
+(`ConversationOwnership::owns()` is a deprecated alias of this for one release.) A resume whose decisions name no pending call throws `ApprovalMismatchException` **and fails the paused turn in place** (`status = failed`, stock 1.0 behaviour, kept on purpose). Guarding stale and double-tapped decisions is the app's job, BEFORE the agent runs: build them with `ResumeDecisions::fromClient($input, $cards->editGuard($pending))` from the server's `StoredApprovals::pending()` set — the edit guard throws on an id that is not pending, so a second tap or a stale card never reaches the agent and never fails the pause.
 
 Resuming on a queue? A closure cannot travel in a job payload, so guard in the request and dispatch the plain result — `ResumeDecisions::guarded($input, $cards->editGuard($pending))` returns the same client-shaped decisions with every edit reconciled, having round-tripped them through `fromClient()` so an unreadable shape throws in the request rather than in the job. The job then resumes with a bare `fromClient($guarded)`.
 
@@ -386,6 +409,33 @@ It ships **source TypeScript with no build step**, so the consuming app's bundle
 optimizeDeps: { exclude: ['@saad5400/ai-kit'] },
 ssr: { noExternal: ['@saad5400/ai-kit'] },   // Inertia SSR builds
 ```
+
+## Upgrading to laravel/ai 1.0 (conversation store)
+
+laravel/ai 1.0 stores a turn as `steps` (one entry per round trip, each tool result on its call) plus a `status` (`completed` / `paused` / `failed`) instead of `tool_calls` / `tool_results` / `approval_state`. The kit's `EncryptedConversationStore` now writes that schema, sealed: `content`, `attachments`, `steps` and `meta` are ciphertext at rest (`usage` and `status` stay plaintext). A resumed pause folds into the row it paused on; a run that throws is stored as a `failed` turn with `meta.error`.
+
+**The migration.** `move_agent_conversation_messages_onto_steps` ships with the kit and runs with your normal `php artisan migrate` (pgsql and sqlite). It adds `steps` / `status`, makes `tool_calls` / `tool_results` nullable, rebuilds `participant_index` with `agent`, and converts every existing row — decrypting the 0.10 columns and sealing `steps` / `meta` the way the bound store writes them (and always sealed when the source row was ciphertext: an app that turned encryption off never has once-encrypted data decrypted at rest by a migration; such a row's `content` is ciphertext to the vendor store anyway). Unlike upstream's backfill it **keeps pending approvals**: a call still pending becomes a `paused` row that `pendingApprovalsFor()` returns and a resume completes. Memory stays bounded on long threads (rows convert one at a time).
+
+- **What it writes.** `steps`, `status`, and `meta` (rewritten without `reasoning` / `provider_content_blocks` / `provider_steps`, which move into steps or are dropped). `tool_calls`, `tool_results` and `approval_state` are never written, so a worker still on the 0.10 code keeps reading them mid-deploy.
+- **What a rollback to the 0.10 code degrades.** Rows converted here lose `meta.reasoning` and the paused turn's raw provider blocks to the old reader (a paused turn replays through the generic path). Rows WRITTEN by 1.0 carry nothing in the 0.10 columns: the old code sees their text only — no tool calls or results — cannot see or resume a 1.0 pause (`approval_state` is NULL), and shows a failed turn as a normal reply.
+- **Undecryptable rows are left alone.** A row whose ciphertext this app key cannot decrypt (the key rotated without `APP_PREVIOUS_KEYS`) keeps `steps` NULL and every other column exactly as it was; so does every unconverted row of a conversation whose tool results cannot be decrypted. The migration logs their ids (and prints them when run from a console) and still succeeds; the command below prints them and exits non-zero. Restore the key and re-run it.
+- **The deploy window.** A worker still on the 0.10 code writes rows with `steps` NULL, and may answer a converted pause in the legacy columns. The encrypted store heals a conversation on first read (history, `pendingApprovalsFor()`, a resume) — converting those rows and folding the late results onto the pause — and the command does the same in bulk:
+
+```bash
+php artisan ai-kit:backfill-conversation-steps   # idempotent; run once the deploy settles
+```
+
+- **Phase B** (a later release) drops the 0.10 columns and makes `steps` NOT NULL. It MUST refuse to run while any row still has `steps` NULL — those are exactly the rows above that could not be converted, and dropping the columns would lose them for good.
+
+**App changes.**
+
+- Reading message rows directly: `tool_calls` / `tool_results` / `approval_state` are frozen legacy data now. Read `steps` through `ConversationContent::revealJson($row->steps)` (the vendor `ConversationMessage` model's `array` casts cannot read ciphertext — they yield null), `content` through `ConversationContent::reveal()`, and `status` plain. Or use the store: `paginateConversationMessages()` hands out decrypted `StoredMessage`s (`toolCalls()`, `toolResults()`, `steps`, `status`).
+- A pending call is a stored call with `approval_reason` and no `result` (`PendingApproval::isPending()`). `StoredApprovals::pending()` is now a wrapper over the store's `pendingApprovalsFor()`: only the NEWEST turn's pause counts (a pause the user walked away from is settled as denied by the next run). Its `$connection` argument is ignored.
+- Transcripts: expect ONE assistant row per turn, including turns that paused and resumed, and `failed` rows (filter on `status` if you hide them).
+- Rendering how a turn ended: `Saad\AiKit\Conversations\TurnState::of($row->status, $row->meta)` returns `TurnState::Completed` / `Paused` / `Failed` / `Stopped` (string values `completed` / `paused` / `failed` / `stopped`). 1.0 stores a turn the user stopped as `failed`; `Stopped` is that row, recognised by `meta.error === TurnCancelledException::MESSAGE` — show it as stopped, not as an error with a retry button. `$meta` can be the decoded array or the raw column (sealed or plaintext, as the store wrote it — traces off still keeps the error); `TurnState::ofMessage($storedMessage)` classifies what `paginateConversationMessages()` hands out, and `->interrupted()` is true for `Failed` and `Stopped`. Under the encrypted store a failed or stopped row is sealed like any other (`content` / `steps` / `meta` ciphertext, `meta.error` included), so read `meta` through the helper or `ConversationContent::revealJson()`, never with a SQL JSON operator.
+- `ConversationOwnership` is deprecated — use `conversationBelongsTo()` and see "Check ownership before you resume" above.
+- With `persist_tool_traces` off, an assistant row keeps a content-only step (1.0 replays assistant text from `steps`); meta keeps only a failed turn's `error`.
+- `ai-kit:prune-conversations` strips traces out of the sealed `steps` row by row (keeping the text), and also empties the legacy columns. A row whose traces live only in `steps` (meta and attachments `'[]'`) is stripped too; one that is already content-only is re-read but never rewritten. It skips only a `paused` row that is still its conversation's newest assistant row (the one pause 1.0 can resume); an abandoned pause is stripped like any other row. A row with `steps` still NULL keeps it NULL for the backfill, and a row whose `steps` does not decrypt is left untouched and counted in a warning. A failed turn keeps its sealed `meta.error`, so a stopped turn still reads as `TurnState::Stopped` after stripping.
 
 ## Upgrading to v0.9.0
 

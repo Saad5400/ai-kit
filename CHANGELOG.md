@@ -3,6 +3,188 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.14.0 — 2026-09-28
+
+laravel/ai 1.0. Compatibility with `laravel/ai ^1.0` + `laravel/mcp ^1.0` (1.0 conflicts with
+mcp < 1.0), in one release: the compatibility fixes, the conversation store (which the rest is
+not usable without), failed and stopped turns stored through 1.0's own failure path, and the
+gateway diet. See the README, "Upgrading to laravel/ai 1.0 (conversation store)".
+
+### Compatibility
+
+- Usage: `RecordTurnUsage` read the removed `promptTokens`/`completionTokens` inside
+  `rescue()`, so under 1.0 every turn silently lost its usage row and `TurnUsageRecorded`.
+  It now reads `inputTokens`/`outputTokens` into the SAME columns (`prompt_tokens`, ...), and
+  the now-nullable cache/reasoning counts record as 0. For OpenRouter the numbers do not move:
+  its `prompt_tokens`/`completion_tokens` were always inclusive, which is what 1.0 now means.
+- `ModelDefinition::displayCostEstimateUsd()` prices the inclusive counts, one rate per side
+  (cached input at the base rate — `cache_read_usd_per_million` stays app metadata, #26d).
+- `RecordFailover` keys its row on `AgentFailedOver::$invocationId` (0.11+) instead of a
+  context lookup.
+- Gateway: `replayBlocks:` (was `providerContentBlocks:`), and `reasoning:` +
+  `providerToolCalls:` carried through the inspected re-wrap, salvage, leak retry and wrap-up
+  merge, so a non-streamed step no longer drops 1.0's reasoning. Streamed reasoning also falls
+  back to `reasoning_details` text, as stock 1.0 does.
+- Step guard: a leak retry / wrap-up no longer yields its own `StreamStart`. 1.0's
+  `TextDelta::combine()` splits steps at `StreamStart`, so the wrap-up persisted
+  `narration\n\n\n\nanswer` while the wire said `narration\n\nanswer`; wire, persisted text
+  and the merged step now agree.
+- Streaming: `StreamResult::$usage` is `?TextUsage`; `StreamEventMapper` skips a sub-agent's
+  PRELIMINARY `ToolResult`s (no `tool done` frame, no hook, not collected).
+- `failover.overloaded_statuses` default widened to include stock 1.0's 520/522/524.
+- Drift guard re-pinned against v1.0.0.
+- Tests: `WriteExecutionsTest`'s unique-violation case claims inside a transaction (as
+  `claim()` is documented), so it also passes on Postgres.
+- Tests: the usage suites' `promptedEvent()` moved to `Tests\Support\UsageTurns`, so
+  `TurnFlagsTest` runs alone and under `--parallel`.
+
+### Conversation store
+
+The encrypted store on 1.0's `steps` / `status` schema, plus the migration that moves existing
+rows onto it.
+
+- **Migration** `2026_09_28_000000_move_agent_conversation_messages_onto_steps` (phase A): adds
+  `steps` (nullable for now) + `status`, makes `tool_calls` / `tool_results` nullable, rebuilds
+  `participant_index` with `agent`, and backfills in chunks — encryption-aware (decrypts the 0.10
+  columns, re-seals `steps` / `meta` as the bound store writes them), idempotent (only NULL
+  `steps`), and, unlike upstream, keeping still-pending approvals as `paused` rows. The 0.10
+  columns stay for old workers mid-deploy; phase B drops them in a later release. Guarded;
+  pgsql and sqlite.
+- New `ai-kit:backfill-conversation-steps` re-runs the backfill for rows an old worker wrote
+  after the migration, and folds results an old worker recorded onto converted pauses. The
+  encrypted store does the same per conversation on first read (self-heal).
+- Backfill safety: a row whose ciphertext does not decrypt (APP_KEY rotated without
+  `APP_PREVIOUS_KEYS`) is left untouched with `steps` NULL and reported by id (migration: log +
+  console; command: output, non-zero exit) instead of being overwritten; `steps` / `meta` stay
+  sealed whenever the source was ciphertext; invalid UTF-8 is substituted, never written as an
+  empty column; the UPDATE re-checks `steps IS NULL`; memory is bounded per conversation
+  (id + results pre-pass, rows streamed). Phase B must refuse to drop the legacy columns while
+  any row has `steps` NULL.
+- `EncryptedConversationStore` rewritten onto 1.0: reads through the vendor's `decoded()` /
+  `userMessageFrom()` seams; the three vendor methods that UPDATE rows (`resumePausedRow`,
+  `forgetReplayBlocks`, `storeApprovalResults`) and `paginateConversationMessages` are mirrored
+  with sealing. `content`, `attachments`, `steps`, `meta` (incl. a failed turn's `error`) are
+  ciphertext at rest. The overrides 1.0 made redundant (`getLatestConversationMessages`,
+  `existingToolResultIds`, `pausedCallIds`) and the protected `encrypt` / `encryptJson` /
+  `decrypt` / `decryptRecord` helpers are gone. Traces off now writes a content-only step.
+- `ConversationContent` gains `revealJson()`, `conceal()`, `concealJson()`, `encryptsAtRest()`;
+  new `StoredSteps` (the steps shape + the content-only reduction) and `StepsBackfill`.
+- `StoredApprovals::pending()` wraps the store's `pendingApprovalsFor()` — newest turn only;
+  the constructor's `$connection` is ignored.
+- `ConversationOwnership` deprecated in favour of the store's `conversationBelongsTo()`; it
+  delegates there when a participant type is given. README now warns that 1.0's
+  `storeApprovalResults()` no longer scopes to the participant — authorize before resuming —
+  and that a mismatched resume fails the pause in place (stock 1.0, kept): apps guard stale
+  decisions with the `ResumeDecisions` edit guard before the agent runs.
+- Traces off keeps a failed turn's encrypted `meta.error` (DECISIONS.md deviation ledger, #7).
+- `ai-kit:prune-conversations` strips traces per row out of the sealed `steps` (keeping the
+  text as one step) and empties the legacy columns too. It skips only a `paused` row that is
+  still its conversation's newest assistant row; abandoned pauses are stripped.
+  Candidates now include rows whose traces live ONLY in `steps` (meta and attachments `'[]'`,
+  e.g. converted from a 0.10 row with no meta), which the old `attachments` / `meta` / legacy
+  filter never picked; already content-only rows are re-read and skipped, never rewritten. A
+  row with `steps` still NULL keeps it NULL (the backfill converts it; phase B's guard still
+  sees it), and a row whose `steps` does not decrypt is left untouched and counted in a warning
+  instead of being overwritten with its own ciphertext as text.
+- Drift guard: per-method pins on every vendor store method the kit mirrors or rides, plus a
+  count of the vendor's UPDATE sites.
+- Tests: full agent turns through the kit gateway (pause, resume folding into one row, failed
+  turn, traces off, mismatched decisions) and the migration against 0.10-shaped encrypted rows.
+  `AI_KIT_TEST_DB_URL` runs the suite on Postgres.
+
+### Failed and stopped turns
+
+- Streaming: failed and stopped turns are STORED (owner ruling 2026-09-28). The mapper no
+  longer walks away at an in-stream provider `Error`: it emits `error` and pulls once more,
+  so 1.0 throws `StreamErrorException` through RememberConversation's catch and a `failed`
+  row with the completed steps (tools that ran included) and `meta.error` is written. Before,
+  the vendor generator was left suspended and the turn left no row. A recoverable `on(Error)`
+  hook meets the same throw and now ends failed with one default `error` frame.
+- `TurnRunner`: a failed outcome keeps the partial `StreamResult` on a throw too (was
+  `new StreamResult`); a stop throws `TurnCancelledException` into the stream so the stopped
+  turn is stored (`status: failed`, `meta.error === TurnCancelledException::MESSAGE`) while
+  the outcome stays `cancelled` + `done`. `run()` / `runBuffered()` take an optional `$into`.
+- `InterruptedTurns` (`streaming.remember_interrupted_turns`, default on): the step that died
+  mid-stream is stored with its partial text, and a turn that died in its first step — which
+  stock stores nothing for — keeps the user row and a `failed` assistant row.
+- Wire: `error {message, code?}` — an optional machine-readable `code` (`Streaming\ErrorCode`:
+  `stream_error`, `provider_unavailable`, `rate_limited`, `killed`, `stale`, `internal_error`),
+  in PHP and `js/core/events.ts` (`ErrorPayload.code?`). `TurnBuffer::fail(..., code:)`,
+  `TurnOutcome::$failureCode`; the record meta gains `error_code`. Code-less frames stay valid.
+- New `Conversations\TurnState` (enum: `completed` / `paused` / `failed` / `stopped`):
+  `TurnState::of(MessageStatus|string $status, array|string|null $meta = null)` classifies a
+  stored assistant row — `$meta` decoded, or the raw column sealed or plaintext —
+  `TurnState::ofMessage(StoredMessage)`, and `->interrupted()` (failed or stopped). `stopped`
+  is a `failed` row whose `meta.error` is `TurnCancelledException::MESSAGE`.
+- Under the encrypted store a failed or stopped row is sealed like any other: `content`,
+  `steps` and `meta` (with `error`) are ciphertext; a resume that dies folds into its paused row
+  sealed; the self-heal converts an old worker's rows before a failed turn's history loads.
+  With traces off the row keeps one content-only step and `meta = {error}` (sealed), so a stop
+  stays recognisable.
+- Drift guard: pins `Middleware/RememberConversation.php`, `Gateway/RunContext.php`,
+  `Responses/StreamableAgentResponse.php`, `Events/StepFailed.php`, `Events/AgentFailed.php` —
+  the failure path the failed / stopped turn storage rides.
+- Step guard: a wrap-up (blank final step / step exhaustion) that ends on an in-stream error now
+  fails the whole step (the guard returns null, so stock throws `StreamErrorException` and the
+  turn is stored failed with the wrap-up's partial text). It used to return the pre-wrap-up step
+  as a success after the wire said `error`: the fold stopped following the stream, the vendor
+  generator was left suspended and NOTHING was stored — not the user message, not a write that
+  had already run — and with `withhold_tools` off the exhausted step's tool calls ran.
+- Mapper: a stream that yields past its settled error gets a `StreamErrorException` thrown into
+  it (the interrupted step sealed first) instead of being walked away from; `TurnRunner`'s stop
+  generator forwards a throw from the fold into the vendor stream.
+- Circuit breaker: a step ending on an in-stream `Error` that `ErrorCode` reads as
+  `provider_unavailable` / `rate_limited` counts as a failure; only a step that returned a
+  response counts as a success. The extra pull after an error let the step complete with null
+  and reset the breaker (half-open included), so mid-stream 502 storms never opened it.
+- `TurnRunner`: no stop poll after the run's final `StreamEnd` or a `ToolApprovalRequest` — a
+  stop landing there stored a finished turn as stopped with no usage row, or turned the pause
+  the client already shows into a failed row.
+- Conversation id on the failure path: `TurnOutcome::$conversationId` /
+  `StreamResult::$conversationId` name the conversation a failed or stopped turn was stored in
+  (new `Streaming\StoredConversation::idOf()`, only once the row exists);
+  `TurnBuffer::fail(..., conversationId:)` adds `conversation_id` to the `error` frame and the
+  record meta, and `runIntoBuffer()` passes it. `js/core/events.ts`:
+  `ErrorPayload.conversation_id?`. Apps pass it through so a failed FIRST turn's next message
+  or Retry continues the stored thread instead of starting a duplicate.
+- Prune keeps a failed turn's sealed `meta.error` (a stopped turn stays `TurnState::Stopped`);
+  an error-only meta counts as nothing to strip, so such rows are not rewritten every run.
+- Tests: `FailedTurnPersistenceTest` runs on the kit's real migrations (0.10 create + phase A)
+  and the real `EncryptedConversationStore`, sealing asserted, traces off, a failed resume and
+  a failed turn on top of self-healed rows; also on Postgres via `AI_KIT_TEST_DB_URL`.
+
+### Gateway diet
+
+`ReasoningOpenRouterGateway` no longer carries any copied vendor logic: 1160 → 868 lines,
+**−237 net in `src/Gateway`** (−423 / +186, including the new 30-line `StreamTap`).
+
+- Streaming: the ~300-line copy of stock `processTextStream` is gone. Stock 1.0 now runs the
+  loop (and emits reasoning from `reasoning` / `reasoning_details` itself); the kit taps each
+  decoded chunk via a `parseServerSentEvents()` override on a `StreamTap` body: generation id,
+  `usage.cost` and upstream `provider` captured; DeepSeek `reasoning_content` renamed to
+  `reasoning`; TTFT stamped at the first reasoning / visible text token; `content` run through
+  `MarkupLeakFilter`, with the held tail released as one synthetic final chunk. A thin
+  `processTextStream()` wrapper records the spend and re-wraps the step as
+  `InspectedStepResponse` (new `InspectedStepResponse::from()`). Differentially fuzzed against
+  the old copy (20k random streams): events, text, tool calls, usage, spend and TTFT identical.
+  **One deliberate difference**: a single chunk carrying BOTH reasoning and content now closes
+  the reasoning block right after that chunk's reasoning (stock's order); the copy closed it
+  first, reopened a new block, and left it open across the text.
+- Audio: `mapAttachments()` / `mapAudioAttachment()` / `audioPart()` / `inputAudioFormat()`
+  removed — stock 1.0 maps Base64Audio, every `StorableFile` Audio and `audio/*` uploads to
+  `input_audio`. Kept: a tolerant `audioFormat()` override (parameters like
+  `;codecs=opus` dropped, `video/webm`/`video/mp4` from finfo accepted, unlisted containers pass
+  through, no container → `mp3`). Lost: the filename-extension fallback, so a Base64Audio with no
+  mime is now `mp3` (stock's default) rather than read off its name. The part's keys are now
+  `format, data` (stock order). The override also makes OpenRouter transcription tolerant.
+- Failover: `failover.overloaded_statuses` now lists ADDITIONS to stock's
+  502/503/504/520/522/524 (default `[500, 529]`); stock's list always applies. An app config that
+  narrowed the list (uqucc: `[500, 502, 503, 504, 529]`) now also fails over on 520/522/524.
+  `recordStepFailure()` drops its `ConnectionException` branch — stock wraps connection failures
+  into `ProviderConnectionException`, a `FailoverableException`.
+- Drift guard: pins now say which hook leans on which vendor behaviour; `OpenRouterGateway.php`
+  (the `audioFormat()` seam) and `StepResponse.php` (every field `from()` copies) are pinned.
+
 ## 0.13.1
 
 - Catalog: `z-ai/glm-5.3-flash` re-priced to its live rate — $0.15/$0.50 per M, DOUBLE what it

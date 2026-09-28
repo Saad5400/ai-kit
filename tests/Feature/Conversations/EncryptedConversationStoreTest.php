@@ -5,24 +5,28 @@ use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Laravel\Ai\AiManager;
-use Laravel\Ai\Approvals\PendingApproval;
 use Laravel\Ai\Contracts\Agent;
+use Laravel\Ai\Enums\MessageStatus;
+use Laravel\Ai\Files\RemoteDocument;
 use Laravel\Ai\Messages\AssistantMessage;
 use Laravel\Ai\Messages\ToolResultMessage;
+use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Promptable;
 use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Responses\AgentResponse;
 use Laravel\Ai\Responses\Data\Meta;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall;
 use Laravel\Ai\Responses\Data\ToolResult;
-use Laravel\Ai\Responses\Data\Usage;
+use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Conversations\EncryptedConversationStore;
 
 uses(RefreshDatabase::class);
 
 /**
  * These tests drive the store directly rather than the bound contract —
- * StoreBindingTest and ConversationStoreEncryptOptOutTest own the binding.
+ * StoreBindingTest and ConversationStoreEncryptOptOutTest own the binding,
+ * EncryptedStoreTurnsTest runs whole agent turns through it.
  */
 function encryptedStore(): EncryptedConversationStore
 {
@@ -42,12 +46,12 @@ function conversationsAgent(): Agent
     };
 }
 
-function conversationsPrompt(string $text = 'hello there', array $attachments = []): AgentPrompt
+function conversationsPrompt(string $text = 'hello there'): AgentPrompt
 {
     return new AgentPrompt(
         conversationsAgent(),
         $text,
-        $attachments,
+        [],
         app(AiManager::class)->textProvider('openrouter'),
         'test/model',
     );
@@ -58,7 +62,7 @@ function conversationsResponse(string $text = 'assistant reply', bool $withTools
     $response = new AgentResponse(
         (string) Str::uuid7(),
         $text,
-        new Usage(promptTokens: 10, completionTokens: 5),
+        new TextUsage(inputTokens: 10, outputTokens: 5),
         new Meta('openrouter', 'test/model'),
     );
 
@@ -72,11 +76,16 @@ function conversationsResponse(string $text = 'assistant reply', bool $withTools
     return $response;
 }
 
+function storeUserTurn(EncryptedConversationStore $store, string $conversationId, string $text, array $attachments = []): string
+{
+    return $store->storeUserMessage($conversationId, 'App\\Models\\User', '7', 'App\\Agents\\Chat', new UserMessage($text, $attachments));
+}
+
 it('encrypts message content at rest and decrypts it on read', function () {
     $store = encryptedStore();
 
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
-    $store->storeUserMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt('the user secret'));
+    storeUserTurn($store, $conversationId, 'the user secret');
     $messageId = $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt('the user secret'), conversationsResponse('the assistant secret'));
 
     expect($messageId)->toBeString();
@@ -87,7 +96,11 @@ it('encrypts message content at rest and decrypts it on read', function () {
         ->and($rows[0]->content)->not->toBe('the user secret')
         ->and($rows[1]->content)->not->toBe('the assistant secret')
         ->and(Crypt::decryptString($rows[0]->content))->toBe('the user secret')
-        ->and(Crypt::decryptString($rows[1]->content))->toBe('the assistant secret');
+        ->and(Crypt::decryptString($rows[1]->content))->toBe('the assistant secret')
+        // 1.0 replays assistant text from steps — sealed like content.
+        ->and($rows[1]->steps)->not->toContain('the assistant secret')
+        ->and(ConversationContent::revealJson($rows[1]->steps)[0]['content'])->toBe('the assistant secret')
+        ->and($rows[1]->status)->toBe(MessageStatus::Completed->value);
 
     $messages = $store->getLatestConversationMessages($conversationId, 10);
 
@@ -98,27 +111,29 @@ it('encrypts message content at rest and decrypts it on read', function () {
         ->and($messages[1]->content)->toBe('the assistant secret');
 });
 
-it('stores empty JSON for attachments and tool traces when traces are opted out', function () {
+it('stores content-only steps and empty traces when traces are opted out', function () {
     config()->set('ai-kit.conversations.persist_tool_traces', false);
 
     $store = encryptedStore();
 
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
-    $prompt = conversationsPrompt('with attachment', [['type' => 'file', 'name' => 'cv.pdf']]);
-    $store->storeUserMessage($conversationId, 'App\\Models\\User', '7', $prompt);
-    $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', $prompt, conversationsResponse(withTools: true));
+    storeUserTurn($store, $conversationId, 'with attachment', [new RemoteDocument('https://example.test/cv.pdf', 'application/pdf')]);
+    $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt(), conversationsResponse('the answer', withTools: true));
 
     [$userRow, $assistantRow] = DB::table('agent_conversation_messages')->orderBy('id')->get();
 
     expect($userRow->attachments)->toBe('[]')
-        ->and($assistantRow->tool_calls)->toBe('[]')
-        ->and($assistantRow->tool_results)->toBe('[]')
+        ->and($userRow->steps)->toBe('[]')
         ->and($assistantRow->usage)->toBe('[]')
         ->and($assistantRow->meta)->toBe('[]')
-        ->and($assistantRow->approval_state)->toBeNull();
+        ->and($assistantRow->steps)->not->toContain('the answer')
+        ->and(ConversationContent::revealJson($assistantRow->steps))->toHaveCount(1)
+        ->and(ConversationContent::revealJson($assistantRow->steps)[0])->toMatchArray(['content' => 'the answer', 'tool_calls' => []]);
+
+    expect($store->getLatestConversationMessages($conversationId, 10)->last()->content)->toBe('the answer');
 });
 
-it('persists tool traces encrypted by default, usage plaintext, and reconstructs the turn on read', function () {
+it('persists tool traces encrypted in steps, usage plaintext, and reconstructs the turn on read', function () {
     $store = encryptedStore();
 
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
@@ -126,76 +141,46 @@ it('persists tool traces encrypted by default, usage plaintext, and reconstructs
 
     $row = DB::table('agent_conversation_messages')->sole();
 
-    // Traces are at rest as ciphertext — the raw columns never leak the
-    // tool arguments or outputs — while usage stays queryable plaintext.
-    expect($row->tool_calls)->not->toContain('call_1')
-        ->and($row->tool_results)->not->toContain('tool output')
-        ->and(Crypt::decryptString($row->tool_calls))->toContain('call_1')
-        ->and(Crypt::decryptString($row->tool_results))->toContain('tool output')
-        ->and(json_decode($row->usage, true))->toMatchArray(['prompt_tokens' => 10, 'completion_tokens' => 5])
-        ->and($row->content)->not->toBe('traced reply')
+    expect($row->steps)->not->toContain('call_1')
+        ->and($row->steps)->not->toContain('tool output')
+        ->and(Crypt::decryptString($row->steps))->toContain('call_1')
+        ->and(Crypt::decryptString($row->steps))->toContain('tool output')
+        ->and($row->meta)->not->toContain('test/model')
+        ->and(ConversationContent::revealJson($row->meta))->toMatchArray(['provider' => 'openrouter', 'model' => 'test/model'])
+        ->and(json_decode($row->usage, true))->toMatchArray(['input_tokens' => 10, 'output_tokens' => 5])
         ->and(Crypt::decryptString($row->content))->toBe('traced reply');
 
     $messages = $store->getLatestConversationMessages($conversationId, 10);
 
-    expect($messages->last()->content)->toBe('traced reply')
-        ->and($messages->first()->toolCalls->first()->id)->toBe('call_1');
+    // A stepless response stores ONE step: its text and its call together.
+    expect($messages)->toHaveCount(2)
+        ->and($messages[0])->toBeInstanceOf(AssistantMessage::class)
+        ->and($messages[0]->content)->toBe('traced reply')
+        ->and($messages[0]->toolCalls->first()->id)->toBe('call_1')
+        ->and($messages[1])->toBeInstanceOf(ToolResultMessage::class)
+        ->and($messages[1]->toolResults->first()->result)->toBe('tool output');
 });
 
 it('encrypts persisted user attachments and rehydrates them on read', function () {
     $store = encryptedStore();
 
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
-    $store->storeUserMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt('look at this'));
-    $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt('look at this'), conversationsResponse('seen'));
+    storeUserTurn($store, $conversationId, 'look at this', [new RemoteDocument('https://example.test/private-cv.pdf', 'application/pdf')]);
+    storeUserTurn($store, $conversationId, 'and nothing else');
 
-    $userRow = DB::table('agent_conversation_messages')->orderBy('id')->first();
+    [$withFile, $withoutFile] = DB::table('agent_conversation_messages')->orderBy('id')->get();
 
-    // No attachments on this prompt: the empty marker stays plaintext so
-    // the vendor's emptiness checks keep working on encrypted rows.
-    expect($userRow->attachments)->toBe('[]');
+    expect($withFile->attachments)->not->toContain('private-cv')
+        // The empty marker stays plaintext so emptiness checks keep working.
+        ->and($withoutFile->attachments)->toBe('[]');
 
     $messages = $store->getLatestConversationMessages($conversationId, 10);
 
-    expect($messages)->toHaveCount(2)
-        ->and($messages[0]->content)->toBe('look at this');
-});
-
-it('keeps the approval pause marker and resume merge working on encrypted rows', function () {
-    $store = encryptedStore();
-
-    $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
-
-    $paused = new AgentResponse(
-        (string) Str::uuid7(),
-        '',
-        new Usage(promptTokens: 10, completionTokens: 5),
-        new Meta('openrouter', 'test/model'),
-    );
-    $paused->withToolCallsAndResults(collect([new ToolCall('call_9', 'DeleteThing', ['id' => 4])]), collect([]));
-    $paused->withPendingApprovals(collect([new PendingApproval('call_9', 'DeleteThing', ['id' => 4], 'destructive')]));
-
-    $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt(), $paused);
-
-    $row = DB::table('agent_conversation_messages')->sole();
-
-    expect($row->approval_state)->not->toContain('call_9')
-        ->and(Crypt::decryptString($row->approval_state))->toContain('call_9');
-
-    $store->storeApprovalResults($conversationId, 'App\\Models\\User', '7', [
-        new ToolResult('call_9', 'DeleteThing', ['id' => 4], 'deleted it'),
-    ]);
-
-    $row = DB::table('agent_conversation_messages')->sole();
-
-    expect($row->tool_results)->not->toContain('deleted it')
-        ->and(Crypt::decryptString($row->tool_results))->toContain('deleted it')
-        ->and(Crypt::decryptString($row->approval_state))->not->toContain('call_9');
-
-    $resultIds = $store->getLatestConversationMessages($conversationId, 10)
-        ->flatMap(fn ($message) => $message instanceof ToolResultMessage ? $message->toolResults->pluck('id') : collect());
-
-    expect($resultIds)->toContain('call_9');
+    expect($messages[0])->toBeInstanceOf(UserMessage::class)
+        ->and($messages[0]->content)->toBe('look at this')
+        ->and($messages[0]->attachments->first())->toBeInstanceOf(RemoteDocument::class)
+        ->and($messages[0]->attachments->first()->url)->toBe('https://example.test/private-cv.pdf')
+        ->and($messages[1]->content)->toBe('and nothing else');
 });
 
 it('reads pre-encryption plaintext rows back as-is', function () {
@@ -211,11 +196,10 @@ it('reads pre-encryption plaintext rows back as-is', function () {
         'role' => 'assistant',
         'content' => 'stored before encryption',
         'attachments' => '[]',
-        'tool_calls' => '[]',
-        'tool_results' => '[]',
+        'steps' => json_encode([['content' => 'stored before encryption', 'tool_calls' => [], 'reasoning' => '', 'replay_blocks' => [], 'provider_tool_calls' => []]]),
         'usage' => '[]',
-        'meta' => '[]',
-        'approval_state' => null,
+        'meta' => '{"provider":"openrouter"}',
+        'status' => 'completed',
         'created_at' => now(),
         'updated_at' => now(),
     ]);
@@ -239,15 +223,27 @@ it('supports string participant ids end to end', function () {
     $store = encryptedStore();
 
     $conversationId = $store->storeConversation(null, 'telegram:123456789', 'Anonymous chat');
-    $store->storeUserMessage($conversationId, null, 'telegram:123456789', conversationsPrompt('anonymous message'));
-
-    expect($store->latestConversationId('', 'telegram:123456789'))->toBeNull();
+    $store->storeUserMessage($conversationId, null, 'telegram:123456789', 'App\\Agents\\Chat', new UserMessage('anonymous message'));
 
     $row = DB::table('agent_conversations')->sole();
 
     expect($row->participant_id)->toBe('telegram:123456789')
         ->and($row->participant_type)->toBeNull()
+        ->and($store->conversationBelongsTo($conversationId, null, 'telegram:123456789'))->toBeTrue()
+        ->and($store->conversationBelongsTo($conversationId, null, 'telegram:1'))->toBeFalse()
         ->and($store->getLatestConversationMessages($conversationId, 5)->first()->content)->toBe('anonymous message');
+});
+
+it('scopes the latest conversation to the agent', function () {
+    $store = encryptedStore();
+
+    $first = $store->storeConversation('App\\Models\\User', '7', 'Chat');
+    $store->storeUserMessage($first, 'App\\Models\\User', '7', 'App\\Agents\\Chat', new UserMessage('hi chat'));
+    $second = $store->storeConversation('App\\Models\\User', '7', 'Tutor');
+    $store->storeUserMessage($second, 'App\\Models\\User', '7', 'App\\Agents\\Tutor', new UserMessage('hi tutor'));
+
+    expect($store->latestConversationId('App\\Models\\User', '7', 'App\\Agents\\Chat'))->toBe($first)
+        ->and($store->latestConversationId('App\\Models\\User', '7', 'App\\Agents\\Tutor'))->toBe($second);
 });
 
 it('honors an explicit persistToolTraces constructor override', function () {
@@ -258,5 +254,22 @@ it('honors an explicit persistToolTraces constructor override', function () {
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
     $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt(), conversationsResponse(withTools: true));
 
-    expect(Crypt::decryptString(DB::table('agent_conversation_messages')->sole()->tool_calls))->toContain('call_1');
+    expect(Crypt::decryptString(DB::table('agent_conversation_messages')->sole()->steps))->toContain('call_1');
+});
+
+it('hands out decrypted rows from paginateConversationMessages', function () {
+    $store = encryptedStore();
+
+    $conversationId = $store->storeConversation('App\\Models\\User', '7', 'My chat');
+    storeUserTurn($store, $conversationId, 'page me', [new RemoteDocument('https://example.test/a.pdf')]);
+    $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', conversationsPrompt('page me'), conversationsResponse('paged reply', withTools: true));
+
+    [$assistant, $user] = $store->paginateConversationMessages($conversationId)->items();
+
+    expect($user->content)->toBe('page me')
+        ->and($user->attachments[0]['url'])->toBe('https://example.test/a.pdf')
+        ->and($assistant->content)->toBe('paged reply')
+        ->and($assistant->meta)->toMatchArray(['provider' => 'openrouter'])
+        ->and($assistant->toolResults()[0])->toMatchArray(['id' => 'call_1', 'result' => 'tool output'])
+        ->and($assistant->usage)->toMatchArray(['input_tokens' => 10]);
 });

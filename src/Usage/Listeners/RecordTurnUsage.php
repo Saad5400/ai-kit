@@ -64,11 +64,17 @@ class RecordTurnUsage
             'provider' => $response->meta->provider ?? $event->prompt->provider()->name(),
             'model' => $model,
             'streamed' => $event instanceof AgentStreamed,
-            'prompt_tokens' => $usage->promptTokens,
-            'completion_tokens' => $usage->completionTokens,
-            'cache_write_input_tokens' => $usage->cacheWriteInputTokens,
-            'cache_read_input_tokens' => $usage->cacheReadInputTokens,
-            'reasoning_tokens' => $usage->reasoningTokens,
+            // Column names predate laravel/ai 1.0 and apps read them, so they
+            // stay. The values are 1.0's INCLUSIVE counts: input includes
+            // cached + cache-written tokens, output includes reasoning —
+            // exactly what OpenRouter's prompt/completion_tokens always
+            // reported, so the numbers did not move. The breakdown counts are
+            // null when a provider does not report them; the columns are not.
+            'prompt_tokens' => $usage->inputTokens,
+            'completion_tokens' => $usage->outputTokens,
+            'cache_write_input_tokens' => $usage->cacheWriteInputTokens ?? 0,
+            'cache_read_input_tokens' => $usage->cacheReadInputTokens ?? 0,
+            'reasoning_tokens' => $usage->reasoningTokens ?? 0,
             'cost_usd' => $cost,
             'cost_source' => $costSource,
             'generation_ids' => $generationIds !== [] ? $generationIds : null,

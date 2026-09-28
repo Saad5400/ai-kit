@@ -85,9 +85,10 @@ return [
         // are exhausted — the trigger for laravel/ai's own provider failover.
         // Model-level fallbacks no longer run here: a catalog entry's
         // `fallbacks` ride into the request as OpenRouter's `models` array
-        // and fail over upstream. Stock laravel/ai only maps 503.
+        // and fail over upstream. These are ADDED to stock laravel/ai 1.0's
+        // list (502/503/504 + Cloudflare's 520/522/524), which always applies.
         'failover' => [
-            'overloaded_statuses' => [500, 502, 503, 504, 529],
+            'overloaded_statuses' => [500, 529],
         ],
 
         // Enough step failures inside the window open the circuit for the
@@ -130,6 +131,13 @@ return [
     | only tear down on `done` (see TurnBuffer::fail()). 0 disables the
     | stale check.
     |
+    | `remember_interrupted_turns` (owner ruling 2026-09-28: a failed turn is
+    | stored and shown as a failed message) tops up what laravel/ai stores
+    | for a turn that died or was stopped: the interrupted step's partial
+    | text, and — for a turn that died in its very first step, which stock
+    | stores nothing for — the user's message plus a `failed` assistant row.
+    | See Streaming\InterruptedTurns.
+    |
     */
 
     'streaming' => [
@@ -141,6 +149,7 @@ return [
         'page_size' => 64,
         'stale_after_seconds' => 300,
         'stale_trailing_done' => false,
+        'remember_interrupted_turns' => true,
     ],
 
     /*
@@ -159,10 +168,11 @@ return [
     | bind your own). Table names and the connection follow the vendor keys
     | (`ai.conversations.tables.*`, `ai.conversations.connection`).
     |
-    | `persist_tool_traces` keeps attachments / tool_calls / tool_results /
-    | meta / the approval pause marker on message rows — ENCRYPTED by the
-    | store above (usage stays plaintext: aggregate numbers, no user
-    | content). ON by default per owner decision DECISIONS.md #7 (traces
+    | `persist_tool_traces` keeps attachments / the full `steps` (tool calls
+    | with their results, reasoning, the pending-approval markers) / meta on
+    | message rows — ENCRYPTED by the store above (usage and status stay
+    | plaintext: aggregate numbers and a state, no user content). Off, an
+    | assistant row keeps only a content-only step. ON by default per owner decision DECISIONS.md #7 (traces
     | persist encrypted with short retention); laravel/ai's Approvable
     | pause/resume — the kit's classified approval seam — reconstructs
     | paused turns from these traces, so turning this off also disables

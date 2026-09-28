@@ -6,6 +6,7 @@ it('loads the shared and default-enabled modules migrations', function () {
     expect($this->migrationNames())
         // Shared: the laravel/ai conversation tables.
         ->toContain('2026_08_17_000000_create_agent_conversations_tables')
+        ->toContain('2026_09_28_000000_move_agent_conversation_messages_onto_steps')
         // approvals => true by default.
         ->toContain('2026_08_17_000001_create_ai_write_executions_table')
         // usage => true by default.

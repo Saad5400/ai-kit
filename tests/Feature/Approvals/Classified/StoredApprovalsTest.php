@@ -5,13 +5,14 @@ use Illuminate\Support\Str;
 use Laravel\Ai\AiManager;
 use Laravel\Ai\Approvals\PendingApproval;
 use Laravel\Ai\Contracts\Agent;
+use Laravel\Ai\Messages\UserMessage;
 use Laravel\Ai\Promptable;
 use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Responses\AgentResponse;
 use Laravel\Ai\Responses\Data\Meta;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolCall;
 use Laravel\Ai\Responses\Data\ToolResult;
-use Laravel\Ai\Responses\Data\Usage;
 use Saad\AiKit\Approvals\Classified\StoredApprovals;
 use Saad\AiKit\Conversations\EncryptedConversationStore;
 
@@ -37,7 +38,7 @@ function storedApprovalsPause(array $calls, array $pending): AgentResponse
     $response = new AgentResponse(
         (string) Str::uuid7(),
         '',
-        new Usage(promptTokens: 10, completionTokens: 5),
+        new TextUsage(inputTokens: 10, outputTokens: 5),
         new Meta('openrouter', 'test/model'),
     );
 
@@ -73,7 +74,7 @@ it('reconstructs pending approvals from an encrypted paused row and drops resolv
         ->and($pending[1]->id)->toBe('call-b')
         ->and($pending[1]->reason)->toBeNull();
 
-    $store->storeApprovalResults($conversationId, 'App\\Models\\User', '7', [
+    $store->storeApprovalResults($conversationId, [
         new ToolResult('call-a', 'DeleteWidget', ['id' => 4], 'deleted'),
     ]);
 
@@ -87,7 +88,24 @@ it('returns nothing for a conversation without a pause', function () {
     $store = new EncryptedConversationStore;
 
     $conversationId = $store->storeConversation('App\\Models\\User', '7', 'Plain chat');
-    $store->storeUserMessage($conversationId, 'App\\Models\\User', '7', storedApprovalsPrompt());
+    $store->storeUserMessage($conversationId, 'App\\Models\\User', '7', 'App\\Agents\\Chat', new UserMessage('hello'));
+
+    expect((new StoredApprovals)->pending($conversationId))->toBeEmpty();
+});
+
+it('only repaints the newest turn — a pause the user walked away from has no card', function () {
+    $store = new EncryptedConversationStore;
+
+    $conversationId = $store->storeConversation('App\\Models\\User', '7', 'Walked away');
+
+    $store->storeAssistantMessage($conversationId, 'App\\Models\\User', '7', storedApprovalsPrompt(), storedApprovalsPause(
+        [new ToolCall('call-a', 'DeleteWidget', ['id' => 4])],
+        [new PendingApproval('call-a', 'DeleteWidget', ['id' => 4], 'destructive')],
+    ));
+
+    expect((new StoredApprovals)->pending($conversationId))->toHaveCount(1);
+
+    $store->storeUserMessage($conversationId, 'App\\Models\\User', '7', 'App\\Agents\\Chat', new UserMessage('never mind'));
 
     expect((new StoredApprovals)->pending($conversationId))->toBeEmpty();
 });
