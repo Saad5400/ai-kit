@@ -128,8 +128,15 @@ final class ModelDefinition
      * name is the guard rail: it used to be `estimatedCostUsd()` and it was
      * silently wired into the billing path.
      *
-     * OpenRouter counts reasoning tokens inside completion_tokens, so only
-     * prompt and completion enter the estimate.
+     * laravel/ai 1.0's counts are INCLUSIVE — `inputTokens` holds cached and
+     * cache-written tokens, `outputTokens` holds reasoning — which is what
+     * OpenRouter's `prompt_tokens` / `completion_tokens` always meant, so the
+     * estimate is one rate per side over the full counts, unchanged from
+     * 0.10. Cached input is deliberately priced at the base rate: the
+     * catalog's `cache_read_usd_per_million` is app-facing metadata the kit
+     * does not interpret (DECISIONS.md #26d), and an over-estimate is the
+     * safe direction for a display figure. Plain `Usage` (no cache
+     * breakdown) prices the same way.
      */
     public function displayCostEstimateUsd(Usage $usage): ?float
     {
@@ -137,7 +144,7 @@ final class ModelDefinition
             return null;
         }
 
-        return ($usage->promptTokens * $this->inputUsdPerMillion
-            + $usage->completionTokens * $this->outputUsdPerMillion) / 1_000_000;
+        return ($usage->inputTokens * $this->inputUsdPerMillion
+            + $usage->outputTokens * $this->outputUsdPerMillion) / 1_000_000;
     }
 }

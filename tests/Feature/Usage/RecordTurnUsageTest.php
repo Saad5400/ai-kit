@@ -16,7 +16,7 @@ use Laravel\Ai\Promptable;
 use Laravel\Ai\Prompts\AgentPrompt;
 use Laravel\Ai\Responses\AgentResponse;
 use Laravel\Ai\Responses\Data\Meta;
-use Laravel\Ai\Responses\Data\Usage;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Saad\AiKit\Gateway\SpendCollector;
 use Saad\AiKit\Support\TurnContext;
 use Saad\AiKit\Usage\Events\TurnUsageRecorded;
@@ -41,7 +41,7 @@ function usageAgent(): Agent
 /**
  * @return array{0: AgentPrompted, 1: AgentResponse}
  */
-function promptedEvent(bool $streamed = false, ?Usage $usage = null, ?string $invocationId = null): array
+function promptedEvent(bool $streamed = false, ?TextUsage $usage = null, ?string $invocationId = null): array
 {
     $invocationId ??= (string) Str::uuid7();
     $agent = usageAgent();
@@ -58,7 +58,7 @@ function promptedEvent(bool $streamed = false, ?Usage $usage = null, ?string $in
     $response = new AgentResponse(
         $invocationId,
         'response text',
-        $usage ?? new Usage(promptTokens: 100, completionTokens: 25, reasoningTokens: 5),
+        $usage ?? new TextUsage(inputTokens: 100, outputTokens: 25, reasoningTokens: 5),
         new Meta(provider: 'openrouter', model: 'test/model'),
     );
 
@@ -90,6 +90,27 @@ it('records a usage row when an agent turn completes', function () {
         ->and($row->cost_source)->toBeNull();
 
     Event::assertDispatched(TurnUsageRecorded::class, fn (TurnUsageRecorded $e) => $e->usage->is($row));
+});
+
+// laravel/ai 1.0 reports the breakdown counts as null when a provider does
+// not send them; the columns are NOT NULL, and the insert runs inside
+// rescue(), so a null would silently cost the turn its usage row.
+it('records unreported cache and reasoning counts as zero, not a lost row', function () {
+    Event::fake([TurnUsageRecorded::class]);
+
+    [$event] = promptedEvent(usage: new TextUsage(inputTokens: 40, outputTokens: 8));
+
+    event($event);
+
+    $row = UsageEvent::sole();
+
+    expect($row->prompt_tokens)->toBe(40)
+        ->and($row->completion_tokens)->toBe(8)
+        ->and($row->cache_read_input_tokens)->toBe(0)
+        ->and($row->cache_write_input_tokens)->toBe(0)
+        ->and($row->reasoning_tokens)->toBe(0);
+
+    Event::assertDispatched(TurnUsageRecorded::class);
 });
 
 it('marks streamed turns as streamed', function () {
@@ -141,7 +162,7 @@ it('records no cost at all when the provider reported none, never estimating fro
         'test/model' => ['input_usd_per_million' => 1.0, 'output_usd_per_million' => 10.0],
     ]);
 
-    [$event] = promptedEvent(usage: new Usage(promptTokens: 1_000_000, completionTokens: 100_000));
+    [$event] = promptedEvent(usage: new TextUsage(inputTokens: 1_000_000, outputTokens: 100_000));
 
     event($event);
 
@@ -199,10 +220,12 @@ it('labels the turn from the feature context key', function () {
     expect(UsageEvent::sole()->feature)->toBe('assistant');
 });
 
-it('records a failed_over row per abandoned attempt', function () {
-    Context::add(TurnContext::CURRENT_INVOCATION_KEY, $invocationId = (string) Str::uuid7());
+it('records a failed_over row per abandoned attempt, keyed by the event invocation id', function () {
+    // A stale context value must not win over the id the event carries.
+    Context::add(TurnContext::CURRENT_INVOCATION_KEY, (string) Str::uuid7());
 
     event(new AgentFailedOver(
+        $invocationId = (string) Str::uuid7(),
         usageAgent(),
         app(AiManager::class)->textProvider('openrouter'),
         'test/model',

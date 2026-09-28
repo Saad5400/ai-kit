@@ -5,7 +5,6 @@ namespace Saad\AiKit\Usage\Listeners;
 use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Str;
 use Laravel\Ai\Events\AgentFailedOver;
-use Saad\AiKit\Support\TurnContext;
 use Saad\AiKit\Usage\TraceLogger;
 use Saad\AiKit\Usage\UsageEvent;
 
@@ -15,8 +14,8 @@ use Saad\AiKit\Usage\UsageEvent;
  * declared provider failover actually earns its keep. Model-level fallbacks
  * are invisible here by design — OpenRouter resolves those inside the one
  * request, and this listener only sees laravel/ai giving up on a provider.
- * The event doesn't carry the
- * invocation id, so it is read from the turn context. These rows never fire
+ * The invocation id rides on the event itself (laravel/ai 0.11+), so the row
+ * joins its turn's other rows without a context lookup. These rows never fire
  * TurnUsageRecorded: nothing billable happened.
  */
 class RecordFailover
@@ -27,7 +26,7 @@ class RecordFailover
     {
         rescue(function () use ($event) {
             $usageEvent = UsageEvent::create([
-                'invocation_id' => Context::get(TurnContext::CURRENT_INVOCATION_KEY) ?? Str::uuid7(),
+                'invocation_id' => $event->invocationId,
                 'agent' => $event->agent::class,
                 'feature' => Context::get(config('ai-kit.usage.feature_context_key', 'ai-kit.feature')),
                 'provider' => $event->provider->name(),
