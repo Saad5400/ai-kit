@@ -3,11 +3,58 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## Unreleased — laravel/ai 1.0, part 2 (conversation store)
+
+The encrypted store on 1.0's `steps` / `status` schema, plus the migration that moves existing
+rows onto it. See the README, "Upgrading to laravel/ai 1.0 (conversation store)".
+
+- **Migration** `2026_09_28_000000_move_agent_conversation_messages_onto_steps` (phase A): adds
+  `steps` (nullable for now) + `status`, makes `tool_calls` / `tool_results` nullable, rebuilds
+  `participant_index` with `agent`, and backfills in chunks — encryption-aware (decrypts the 0.10
+  columns, re-seals `steps` / `meta` as the bound store writes them), idempotent (only NULL
+  `steps`), and, unlike upstream, keeping still-pending approvals as `paused` rows. The 0.10
+  columns stay for old workers mid-deploy; phase B drops them in a later release. Guarded;
+  pgsql and sqlite.
+- New `ai-kit:backfill-conversation-steps` re-runs the backfill for rows an old worker wrote
+  after the migration, and folds results an old worker recorded onto converted pauses. The
+  encrypted store does the same per conversation on first read (self-heal).
+- Backfill safety: a row whose ciphertext does not decrypt (APP_KEY rotated without
+  `APP_PREVIOUS_KEYS`) is left untouched with `steps` NULL and reported by id (migration: log +
+  console; command: output, non-zero exit) instead of being overwritten; `steps` / `meta` stay
+  sealed whenever the source was ciphertext; invalid UTF-8 is substituted, never written as an
+  empty column; the UPDATE re-checks `steps IS NULL`; memory is bounded per conversation
+  (id + results pre-pass, rows streamed). Phase B must refuse to drop the legacy columns while
+  any row has `steps` NULL.
+- `EncryptedConversationStore` rewritten onto 1.0: reads through the vendor's `decoded()` /
+  `userMessageFrom()` seams; the three vendor methods that UPDATE rows (`resumePausedRow`,
+  `forgetReplayBlocks`, `storeApprovalResults`) and `paginateConversationMessages` are mirrored
+  with sealing. `content`, `attachments`, `steps`, `meta` (incl. a failed turn's `error`) are
+  ciphertext at rest. The overrides 1.0 made redundant (`getLatestConversationMessages`,
+  `existingToolResultIds`, `pausedCallIds`) and the protected `encrypt` / `encryptJson` /
+  `decrypt` / `decryptRecord` helpers are gone. Traces off now writes a content-only step.
+- `ConversationContent` gains `revealJson()`, `conceal()`, `concealJson()`, `encryptsAtRest()`;
+  new `StoredSteps` (the steps shape + the content-only reduction) and `StepsBackfill`.
+- `StoredApprovals::pending()` wraps the store's `pendingApprovalsFor()` — newest turn only;
+  the constructor's `$connection` is ignored.
+- `ConversationOwnership` deprecated in favour of the store's `conversationBelongsTo()`; it
+  delegates there when a participant type is given. README now warns that 1.0's
+  `storeApprovalResults()` no longer scopes to the participant — authorize before resuming —
+  and that a mismatched resume fails the pause in place (stock 1.0, kept): apps guard stale
+  decisions with the `ResumeDecisions` edit guard before the agent runs.
+- Traces off keeps a failed turn's encrypted `meta.error` (DECISIONS.md deviation ledger, #7).
+- `ai-kit:prune-conversations` strips traces per row out of the sealed `steps` (keeping the
+  text as one step) and empties the legacy columns too. It skips only a `paused` row that is
+  still its conversation's newest assistant row; abandoned pauses are stripped.
+- Drift guard: per-method pins on every vendor store method the kit mirrors or rides, plus a
+  count of the vendor's UPDATE sites.
+- Tests: full agent turns through the kit gateway (pause, resume folding into one row, failed
+  turn, traces off, mismatched decisions) and the migration against 0.10-shaped encrypted rows.
+  `AI_KIT_TEST_DB_URL` runs the suite on Postgres.
+
 ## Unreleased — laravel/ai 1.0, part 1
 
 Compatibility with `laravel/ai ^1.0` + `laravel/mcp ^1.0` (1.0 conflicts with mcp < 1.0).
-**Not releasable on its own**: the conversation store still writes the 0.10 columns, and
-1.0's `steps`/`status` schema lands with the store rewrite in part 2.
+Released together with part 2 (the conversation store), which it is not usable without.
 
 - Usage: `RecordTurnUsage` read the removed `promptTokens`/`completionTokens` inside
   `rescue()`, so under 1.0 every turn silently lost its usage row and `TurnUsageRecorded`.

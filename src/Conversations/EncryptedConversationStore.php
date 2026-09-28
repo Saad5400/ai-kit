@@ -2,41 +2,62 @@
 
 namespace Saad\AiKit\Conversations;
 
+use Illuminate\Contracts\Pagination\CursorPaginator;
+use Illuminate\Pagination\Cursor;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Laravel\Ai\Approvals\PendingApproval;
+use Laravel\Ai\Enums\MessageStatus;
 use Laravel\Ai\Exceptions\ApprovalMismatchException;
-use Laravel\Ai\Messages\AssistantMessage;
 use Laravel\Ai\Messages\Message;
-use Laravel\Ai\Messages\ToolResultMessage;
-use Laravel\Ai\Messages\UserMessage;
+use Laravel\Ai\Prompts\AgentPrompt;
+use Laravel\Ai\Responses\AgentResponse;
+use Laravel\Ai\Responses\Data\TextUsage;
 use Laravel\Ai\Responses\Data\ToolResult;
 use Laravel\Ai\Storage\DatabaseConversationStore;
+use Laravel\Ai\Storage\StoredMessage;
+use Throwable;
 
 /**
- * Conversation store that keeps chat history private at rest.
+ * Conversation store that keeps chat history private at rest (laravel/ai 1.0
+ * `steps` / `status` schema).
  *
  * - Message content is encrypted with the app key (Crypt) before it touches
  *   the database, and decrypted on read. Decryption tolerates plaintext so
  *   rows written before encryption was enabled keep reading back.
  * - Tool traces are governed by `ai-kit.conversations.persist_tool_traces`
- *   (owner decision #7): when ON, attachments / tool calls / tool results /
- *   meta / the approval pause marker persist ENCRYPTED (usage stays
+ *   (owner decision #7). When ON, attachments / steps (tool calls with their
+ *   results, reasoning, replay blocks) / meta persist ENCRYPTED (usage stays
  *   plaintext — aggregate numbers, no user content), which is what makes
  *   laravel/ai's Approvable pause/resume usable without plaintext traces at
  *   rest; `ai-kit:prune-conversations` strips traces past the separate
- *   `trace_retention_days` window. When OFF they are stored as `'[]'`, and
- *   a resume raises ApprovalMismatchException instead of silently
- *   persisting the withheld traces.
+ *   `trace_retention_days` window. When OFF, an assistant row keeps a
+ *   content-only `steps` (1.0 replays assistant text from `steps`, not the
+ *   `content` column), attachments / usage are `'[]'` and meta keeps only a
+ *   failed turn's `error`; a resume then raises ApprovalMismatchException
+ *   instead of silently persisting the withheld traces.
  *
- * Empty markers (`'[]'`, `null`) are stored as-is — never encrypted — so
- * the vendor's SQL emptiness predicates (`tool_results != '[]'`,
- * `approval_state IS NOT NULL`) keep meaning what they say.
+ * Empty markers (`'[]'`, `null`) are stored as-is — never encrypted — so SQL
+ * emptiness predicates keep meaning what they say. `status` is never
+ * encrypted: the vendor queries it.
  *
- * The vendor read paths json_decode raw columns, so the three methods that
- * touch trace columns are reproduced here with decryption folded in; the
- * drift-guard test pins the vendor source so an upstream change to any of
- * them fails loudly instead of skewing silently.
+ * Reads go through the parent's single JSON seam, decoded(), plus
+ * userMessageFrom() for the user row's text and attachments. Writes: inserts
+ * funnel through messageAttributes(); the three vendor methods that UPDATE
+ * rows (resumePausedRow, forgetReplayBlocks, storeApprovalResults) and the
+ * one that hands raw rows out (paginateConversationMessages) are reproduced
+ * here with sealing folded in. The drift guard pins each of those vendor
+ * bodies, so an upstream change fails loudly instead of skewing silently.
+ *
+ * Self-heal (while the 0.10 columns exist): every entry point that reads a
+ * conversation first converts rows a worker still on the 0.10 code wrote
+ * after the steps migration ran, and folds results such a worker recorded
+ * onto converted pauses ({@see StepsBackfill::heal()}), so history, pending
+ * approvals and resumes see them without waiting for
+ * `ai-kit:backfill-conversation-steps`. One indexed EXISTS probe per read
+ * when there is nothing to heal; a heal failure is reported, never thrown.
  */
 class EncryptedConversationStore extends DatabaseConversationStore
 {
@@ -50,8 +71,58 @@ class EncryptedConversationStore extends DatabaseConversationStore
         parent::__construct($connection);
     }
 
+    protected ?StepsBackfill $healer = null;
+
+    protected bool $healerResolved = false;
+
     /**
-     * Build the message row attributes, encrypting content and applying the trace policy.
+     * Conversations whose heal left rows it could not decrypt: not retried
+     * (nor re-logged) for the life of this store instance.
+     *
+     * @var array<string, true>
+     */
+    protected array $unhealable = [];
+
+    /**
+     * Get the latest messages for the given conversation, healed first.
+     *
+     * @return Collection<int, Message>
+     */
+    public function getLatestConversationMessages(string $conversationId, int $limit): Collection
+    {
+        $this->heal($conversationId);
+
+        return parent::getLatestConversationMessages($conversationId, $limit);
+    }
+
+    /**
+     * Get the tool calls the newest turn is still waiting on, healed first —
+     * a pause an old worker wrote must repaint its card.
+     *
+     * @return list<PendingApproval>
+     */
+    public function pendingApprovalsFor(string $conversationId): array
+    {
+        $this->heal($conversationId);
+
+        return parent::pendingApprovalsFor($conversationId);
+    }
+
+    /**
+     * Store the assistant turn; a resume heals first so the paused row it
+     * folds into is found even when an old worker wrote it.
+     */
+    public function storeAssistantMessage(string $conversationId, ?string $participantType, string|int|null $participantId, AgentPrompt $prompt, AgentResponse $response, ?Throwable $exception = null): ?string
+    {
+        if ($prompt->hasApprovalDecisions()) {
+            $this->heal($conversationId);
+        }
+
+        return parent::storeAssistantMessage($conversationId, $participantType, $participantId, $prompt, $response, $exception);
+    }
+
+    /**
+     * Build the message row attributes, sealed under the trace policy.
      *
      * Both storeUserMessage and storeAssistantMessage funnel through this
      * parent seam, so one override covers every insert.
@@ -61,128 +132,104 @@ class EncryptedConversationStore extends DatabaseConversationStore
      */
     protected function messageAttributes(string $messageId, string $conversationId, ?string $participantType, string|int|null $participantId, mixed $now, array $attributes): array
     {
-        $attributes = parent::messageAttributes($messageId, $conversationId, $participantType, $participantId, $now, $attributes);
+        return $this->sealed(
+            parent::messageAttributes($messageId, $conversationId, $participantType, $participantId, $now, $attributes),
+            (string) ($attributes['role'] ?? 'assistant'),
+        );
+    }
 
-        $attributes['content'] = $this->encrypt($attributes['content']);
+    /**
+     * Decode a stored JSON column, decrypting it first.
+     *
+     * The parent's single read seam: `steps`, `meta` and `usage` all come
+     * through here, on every path (history, pendingApprovalsFor, pause
+     * lookup, resume merge).
+     *
+     * @return array<array-key, mixed>
+     */
+    protected function decoded(?string $json): array
+    {
+        return parent::decoded(ConversationContent::reveal($json));
+    }
 
-        if (! $this->shouldPersistToolTraces()) {
-            return array_merge($attributes, [
-                'attachments' => '[]',
-                'tool_calls' => '[]',
-                'tool_results' => '[]',
-                'usage' => '[]',
-                'meta' => '[]',
-                'approval_state' => null,
-            ]);
+    /**
+     * Rebuild a stored user turn from its decrypted text and attachments.
+     */
+    protected function userMessageFrom(object $record): Message
+    {
+        return parent::userMessageFrom($this->revealed($record));
+    }
+
+    /**
+     * Append the steps a resumed run made to the row its turn paused on —
+     * vendor logic, sealing what goes back.
+     */
+    protected function resumePausedRow(string $conversationId, object $paused, AgentPrompt $prompt, AgentResponse $response, ?Throwable $exception = null): string
+    {
+        $steps = $this->decodedSteps($paused);
+
+        if (($this->decoded($paused->meta)['provider'] ?? null) !== $response->meta->provider) {
+            $steps = $this->withoutReplayBlocks($steps);
         }
 
-        foreach (['attachments', 'tool_calls', 'tool_results', 'meta', 'approval_state'] as $column) {
-            if (array_key_exists($column, $attributes)) {
-                $attributes[$column] = $this->encryptJson($attributes[$column]);
-            }
+        if ($response->steps->isNotEmpty()) {
+            $steps = $steps->concat($this->stepsFor($prompt, $response));
         }
 
-        return $attributes;
+        if (! $response->hasPendingApprovals()) {
+            $steps = $this->withoutReplayBlocks($steps);
+        }
+
+        $now = now();
+
+        $this->table($this->messagesTable())->where('id', $paused->id)->update($this->sealed([
+            'content' => blank($response->text) ? (string) ConversationContent::reveal($paused->content) : $response->text,
+            'steps' => $steps->toJson(),
+            'usage' => json_encode(TextUsage::fromArray($this->decoded($paused->usage))->add($response->usage)),
+            'meta' => json_encode($this->mergedMeta($paused, $response, $exception)),
+            'status' => $this->statusFor($response, $exception),
+            'updated_at' => $now,
+        ], 'assistant'));
+
+        if (! $response->hasPendingApprovals()) {
+            $this->forgetReplayBlocks($conversationId);
+        }
+
+        $this->touchConversation($conversationId, $now);
+
+        return $paused->id;
     }
 
     /**
-     * Get the latest messages for the given conversation, decrypted.
-     *
-     * Vendor logic with one change: every record is decrypted BEFORE the
-     * reconstruction reads it, so tool turns, pauses and attachments
-     * rehydrate from plaintext JSON. The inherited helpers
-     * (reconstructToolTurn, rehydrateAttachments, pausedCallIds) then run
-     * unchanged on the decrypted records.
-     *
-     * @return Collection<int, Message>
+     * Drop the raw provider blocks of the paused rows a now-completed turn
+     * resumed from — vendor logic, sealing the rewritten steps.
      */
-    public function getLatestConversationMessages(string $conversationId, int $limit): Collection
+    protected function forgetReplayBlocks(string $conversationId): void
     {
-        $records = $this->table($this->messagesTable())
+        $this->table($this->messagesTable())
             ->where('conversation_id', $conversationId)
-            ->orderByDesc('id')
-            ->limit($limit)
-            ->get()
-            ->reverse()
-            ->values()
-            ->map(fn (object $record): object => $this->decryptRecord($record));
+            ->where('status', MessageStatus::Paused)
+            ->get(['id', 'steps'])
+            ->each(function (object $record): void {
+                $steps = $this->decodedSteps($record);
 
-        $resolvedCallIds = $records
-            ->flatMap(fn ($record) => collect(json_decode((string) $record->tool_results, true))->pluck('id'))
-            ->filter()
-            ->all();
-
-        return $records
-            ->flatMap(function ($record) use ($resolvedCallIds): array {
-                $toolCalls = collect(json_decode((string) $record->tool_calls, true))->values();
-                $toolResults = collect(json_decode((string) $record->tool_results, true))->values();
-
-                if ($record->role === 'user') {
-                    $attachments = $this->rehydrateAttachments($record->attachments);
-
-                    if ($attachments->isNotEmpty()) {
-                        return [new UserMessage($record->content, $attachments)];
-                    }
-
-                    return [new Message('user', $record->content)];
+                if ($steps->every(fn (array $step): bool => $step['replay_blocks'] === [])) {
+                    return;
                 }
 
-                if ($toolCalls->isNotEmpty()) {
-                    return $this->reconstructToolTurn($record, $toolCalls, $toolResults, $resolvedCallIds);
-                }
-
-                if ($toolResults->isNotEmpty()) {
-                    $messages = [new ToolResultMessage($toolResults->map(ToolResult::fromArray(...)))];
-
-                    if (filled($record->content)) {
-                        $messages[] = new AssistantMessage($record->content);
-                    }
-
-                    return $messages;
-                }
-
-                return [new AssistantMessage($record->content)];
-            })
-            ->skipWhile(fn (Message $message) => $message instanceof ToolResultMessage)
-            ->values();
+                $this->table($this->messagesTable())->where('id', $record->id)->update($this->sealed([
+                    'steps' => $this->withoutReplayBlocks($steps)->toJson(),
+                ], 'assistant'));
+            });
     }
 
     /**
-     * Get every tool-result ID recorded on the conversation's approval-paused rows, decrypting each row's results first.
+     * Durably record resolved approval results on the paused turn before the
+     * run continues — vendor logic, sealing the rewritten steps.
      *
-     * @return array<int, string>
-     */
-    protected function existingToolResultIds(string $conversationId): array
-    {
-        return $this->table($this->messagesTable())
-            ->where('conversation_id', $conversationId)
-            ->where('role', 'assistant')
-            ->whereNotNull('approval_state')
-            ->where('tool_results', '!=', '[]')
-            ->pluck('tool_results')
-            ->flatMap(fn ($results) => collect(json_decode((string) $this->decrypt($results), true))->pluck('id'))
-            ->filter()
-            ->all();
-    }
-
-    /**
-     * Get the tool-call IDs a stored row recorded as pending a decision,
-     * tolerating both encrypted and legacy plaintext markers.
-     *
-     * @return array<int, string>
-     */
-    protected function pausedCallIds(object $record): array
-    {
-        $record = clone $record;
-        $record->approval_state = $this->decrypt($record->approval_state ?? null);
-
-        return parent::pausedCallIds($record);
-    }
-
-    /**
-     * Merge a resume's resolved approval results into the paused row —
-     * vendor logic, decrypting the row before the merge and re-encrypting
-     * what goes back.
+     * Like the vendor store this looks the paused turn up by conversation id
+     * ONLY: authorize the resuming participant before passing decisions to
+     * the agent (see the README, "Resuming a paused turn").
      *
      * @param  array<int, ToolResult>  $toolResults
      *
@@ -194,55 +241,181 @@ class EncryptedConversationStore extends DatabaseConversationStore
             return;
         }
 
+        $this->heal($conversationId);
+
         $resultIds = array_map(fn (ToolResult $result) => $result->id, $toolResults);
 
         DB::connection($this->connection)->transaction(function () use ($conversationId, $toolResults, $resultIds) {
-            $row = $this->table($this->messagesTable())
-                ->where('conversation_id', $conversationId)
-                ->where('role', 'assistant')
-                ->whereNotNull('approval_state')
-                ->orderByDesc('id')
+            $paused = $this->assistantRows($conversationId)
+                ->where('status', MessageStatus::Paused)
                 ->lockForUpdate()
-                ->get()
-                ->first(fn ($record) => array_intersect($this->pausedCallIds($record), $resultIds) !== []);
+                ->get();
+
+            $row = $paused->first(fn ($record) => array_intersect($this->pausedCallIds($record), $resultIds) !== []);
 
             if ($row === null) {
-                throw new ApprovalMismatchException('The approval results do not match a paused conversation turn.', collect());
+                throw new ApprovalMismatchException(
+                    'The approval results do not match a paused conversation turn.',
+                    $paused->first() === null ? collect() : $this->pendingApprovalsIn($paused->first()),
+                );
             }
 
-            $existing = collect(json_decode((string) $this->decrypt($row->tool_results), true) ?: []);
+            $resolved = collect($toolResults)->keyBy(fn (ToolResult $result): string => $result->id);
 
-            $merged = $existing->merge(
-                collect($toolResults)->reject(fn (ToolResult $result) => $existing->contains('id', $result->id))
-            );
+            $steps = $this->decodedSteps($row)->map(function (array $step) use ($resolved): array {
+                $step['tool_calls'] = array_map(function (array $toolCall) use ($resolved): array {
+                    $result = $resolved->get($toolCall['id'] ?? '');
 
-            $pending = collect(((array) json_decode((string) $this->decrypt($row->approval_state ?? null) ?: 'null', true))['pending'] ?? [])->except($resultIds);
+                    return $result === null || PendingApproval::isAnswered($toolCall)
+                        ? $toolCall
+                        // Arguments come along because an edited approval runs the tool with different ones than the call asked for...
+                        : [...$toolCall, ...Arr::only($result->toArray(), ['arguments', 'result', 'denied', 'failed'])];
+                }, $step['tool_calls']);
+
+                return $step;
+            });
 
             $this->table($this->messagesTable())
                 ->where('id', $row->id)
-                ->update([
-                    'tool_results' => $this->encryptJson($merged->values()->toJson()),
-                    'approval_state' => $this->encryptJson(json_encode(['pending' => $pending->all()])),
-                    'updated_at' => now(),
-                ]);
+                ->update($this->sealed(['steps' => $steps->toJson(), 'updated_at' => now()], 'assistant'));
         });
     }
 
     /**
-     * Decrypt a fetched message record's protected columns in place (on a
-     * clone), tolerating legacy plaintext values throughout.
+     * Paginate the given conversation's messages, newest first, decrypted —
+     * vendor logic with each row revealed before it is decoded.
+     *
+     * @return CursorPaginator<int, StoredMessage>
      */
-    protected function decryptRecord(object $record): object
+    public function paginateConversationMessages(string $conversationId, int $perPage = 15, string $cursorName = 'cursor', Cursor|string|null $cursor = null): CursorPaginator
+    {
+        $this->heal($conversationId);
+
+        return $this->table($this->messagesTable())
+            ->where('conversation_id', $conversationId)
+            ->orderByDesc('id')
+            ->cursorPaginate($perPage, ['*'], $cursorName, $cursor)
+            ->through(fn (object $record): StoredMessage => StoredMessage::fromArray((array) $this->revealed($record)));
+    }
+
+    /**
+     * Seal a row's columns for storage under the trace policy: content
+     * encrypted, JSON columns encrypted (empty markers left plaintext), and —
+     * with traces off — an assistant row reduced to content-only steps.
+     *
+     * Only the keys present are touched, so it serves inserts and partial
+     * updates alike.
+     *
+     * @param  array<string, mixed>  $attributes  plaintext column values
+     * @return array<string, mixed>
+     */
+    protected function sealed(array $attributes, string $role): array
+    {
+        if (! $this->shouldPersistToolTraces()) {
+            $attributes = $this->withoutTraces($attributes, $role);
+        }
+
+        if (array_key_exists('content', $attributes)) {
+            $attributes['content'] = ConversationContent::conceal($attributes['content']);
+        }
+
+        foreach (['attachments', 'steps', 'meta'] as $column) {
+            if (array_key_exists($column, $attributes)) {
+                $attributes[$column] = ConversationContent::concealJson($attributes[$column]);
+            }
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * Apply the traces-off policy to plaintext row attributes.
+     *
+     * @param  array<string, mixed>  $attributes
+     * @return array<string, mixed>
+     */
+    protected function withoutTraces(array $attributes, string $role): array
+    {
+        foreach (['attachments', 'usage'] as $column) {
+            if (array_key_exists($column, $attributes)) {
+                $attributes[$column] = '[]';
+            }
+        }
+
+        if (array_key_exists('steps', $attributes)) {
+            $attributes['steps'] = $role === 'assistant'
+                ? json_encode(StoredSteps::contentOnly(
+                    parent::decoded($attributes['steps']),
+                    isset($attributes['content']) ? (string) $attributes['content'] : null,
+                ))
+                : '[]';
+        }
+
+        if (array_key_exists('meta', $attributes)) {
+            $error = parent::decoded($attributes['meta'])['error'] ?? null;
+
+            // A failed turn's error is the only meta kept: it is what tells
+            // a reader why the turn stopped, not a trace of what it did.
+            $attributes['meta'] = $error === null ? '[]' : json_encode(['error' => $error]);
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * Decrypt a fetched message record's protected columns (on a clone),
+     * tolerating legacy plaintext values throughout.
+     */
+    protected function revealed(object $record): object
     {
         $record = clone $record;
 
-        foreach (['content', 'attachments', 'tool_calls', 'tool_results', 'meta', 'approval_state'] as $column) {
-            if (property_exists($record, $column)) {
-                $record->{$column} = $this->decrypt($record->{$column});
+        foreach (['content', 'attachments', 'steps', 'meta'] as $column) {
+            if (property_exists($record, $column) && is_string($record->{$column})) {
+                $record->{$column} = ConversationContent::reveal($record->{$column});
             }
         }
 
         return $record;
+    }
+
+    /**
+     * Convert what old workers left unconverted in this conversation.
+     */
+    protected function heal(string $conversationId): void
+    {
+        try {
+            if (isset($this->unhealable[$conversationId]) || ($healer = $this->healer()) === null || ! $healer->needsHealing($conversationId)) {
+                return;
+            }
+
+            $report = $healer->heal($conversationId);
+
+            if ($report->hasUndecryptable()) {
+                $this->unhealable[$conversationId] = true;
+
+                Log::warning('[ai-kit] '.$report->undecryptableSummary(), ['conversation_id' => $conversationId]);
+            }
+        } catch (Throwable $e) {
+            report($e);
+        }
+    }
+
+    /**
+     * The backfill the self-heal runs, or null once the 0.10 columns are gone
+     * (resolved once per store instance).
+     */
+    protected function healer(): ?StepsBackfill
+    {
+        if (! $this->healerResolved) {
+            $this->healerResolved = true;
+
+            $backfill = new StepsBackfill(DB::connection($this->connection), $this->messagesTable(), encrypt: true);
+
+            $this->healer = $backfill->hasLegacyColumns() ? $backfill : null;
+        }
+
+        return $this->healer;
     }
 
     /**
@@ -252,43 +425,5 @@ class EncryptedConversationStore extends DatabaseConversationStore
     {
         return $this->persistToolTraces
             ?? (bool) config('ai-kit.conversations.persist_tool_traces', true);
-    }
-
-    /**
-     * Encrypt content for storage, leaving blank content blank.
-     *
-     * An empty string encrypts to a non-empty ciphertext, which would flip
-     * the parent's filled()/blank() checks on stored rows.
-     */
-    protected function encrypt(?string $content): ?string
-    {
-        if ($content === null || $content === '') {
-            return $content;
-        }
-
-        return Crypt::encryptString($content);
-    }
-
-    /**
-     * Encrypt a serialized JSON column, leaving empty markers plaintext so
-     * SQL emptiness predicates keep working.
-     */
-    protected function encryptJson(?string $value): ?string
-    {
-        if ($value === null || in_array($value, ['', '[]', '{}', 'null'], true)) {
-            return $value;
-        }
-
-        return Crypt::encryptString($value);
-    }
-
-    /**
-     * Decrypt a stored value, tolerating pre-encryption plaintext rows.
-     * Apps reading message rows directly use the same logic through
-     * {@see ConversationContent::reveal()}.
-     */
-    protected function decrypt(?string $value): ?string
-    {
-        return ConversationContent::reveal($value);
     }
 }

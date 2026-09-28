@@ -3,28 +3,35 @@
 namespace Saad\AiKit\Approvals\Classified;
 
 use Illuminate\Support\Collection;
-use Illuminate\Support\Facades\DB;
 use Laravel\Ai\Approvals\PendingApproval;
-use Saad\AiKit\Conversations\ConversationContent;
+use Laravel\Ai\Contracts\ConversationStore;
+use Laravel\Ai\Contracts\ResolvesPendingApprovals;
 
 /**
- * Read seam for a conversation's STILL-PENDING approvals, reconstructed from
- * the stored pause markers — what a client needs to repaint its approval /
- * question cards after a page reload, before any resume request exists.
+ * Read seam for a conversation's STILL-PENDING approvals — what a client
+ * needs to repaint its approval / question cards after a page reload, before
+ * any resume request exists.
  *
- * The vendor store stamps each paused assistant row with
- * `approval_state = {"pending": {toolCallId: reason}}` and removes ids from
- * the map as decisions resolve, so whatever remains pending IS the set of
- * undecided calls. Tool name and arguments come from the same row's
- * `tool_calls` trace — which is why persisted tool traces are a prerequisite
- * for the classified seam. Both columns decrypt through
- * {@see ConversationContent::reveal()}, so plaintext (pre-encryption) rows
- * read the same way.
+ * A thin wrapper over laravel/ai 1.0's
+ * `ResolvesPendingApprovals::pendingApprovalsFor()` on the bound store: the
+ * newest turn, when it is `paused`, contributes each stored call that carries
+ * an `approval_reason` and no result yet. The EncryptedConversationStore
+ * decrypts `steps` on that path, so encrypted and pre-encryption rows read
+ * the same way. Only the newest turn counts: a pause the user walked away
+ * from (they sent a new message instead) is settled as denied by the next
+ * run, so it has no card to repaint.
+ *
+ * Calling the store directly is equivalent; this class stays so existing
+ * call sites keep their shape (a Collection). A store that cannot resolve
+ * approvals yields none.
  *
  * Feed the result to {@see ApprovalCards::cards()} for the wire payloads.
  */
 class StoredApprovals
 {
+    /**
+     * @param  string|null  $connection  @deprecated ignored — the bound store owns its connection
+     */
     public function __construct(protected ?string $connection = null) {}
 
     /**
@@ -32,33 +39,10 @@ class StoredApprovals
      */
     public function pending(string $conversationId): Collection
     {
-        return DB::connection($this->connection)
-            ->table(config('ai.conversations.tables.messages', 'agent_conversation_messages'))
-            ->where('conversation_id', $conversationId)
-            ->where('role', 'assistant')
-            ->whereNotNull('approval_state')
-            ->orderBy('id')
-            ->get()
-            ->flatMap(function (object $row): Collection {
-                $state = json_decode(ConversationContent::reveal($row->approval_state) ?? 'null', true);
-                $pending = is_array($state) && is_array($state['pending'] ?? null) ? $state['pending'] : [];
+        $store = app(ConversationStore::class);
 
-                if ($pending === []) {
-                    return collect();
-                }
-
-                $calls = collect(json_decode(ConversationContent::reveal($row->tool_calls) ?? '[]', true) ?: [])
-                    ->keyBy('id');
-
-                return collect($pending)
-                    ->map(fn (mixed $reason, string $id): PendingApproval => new PendingApproval(
-                        $id,
-                        (string) ($calls[$id]['name'] ?? ''),
-                        (array) ($calls[$id]['arguments'] ?? []),
-                        is_string($reason) && $reason !== '' ? $reason : null,
-                    ))
-                    ->values();
-            })
-            ->values();
+        return $store instanceof ResolvesPendingApprovals
+            ? collect($store->pendingApprovalsFor($conversationId))->values()
+            : collect();
     }
 }

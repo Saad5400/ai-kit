@@ -160,10 +160,11 @@ return [
     | bind your own). Table names and the connection follow the vendor keys
     | (`ai.conversations.tables.*`, `ai.conversations.connection`).
     |
-    | `persist_tool_traces` keeps attachments / tool_calls / tool_results /
-    | meta / the approval pause marker on message rows — ENCRYPTED by the
-    | store above (usage stays plaintext: aggregate numbers, no user
-    | content). ON by default per owner decision DECISIONS.md #7 (traces
+    | `persist_tool_traces` keeps attachments / the full `steps` (tool calls
+    | with their results, reasoning, the pending-approval markers) / meta on
+    | message rows — ENCRYPTED by the store above (usage and status stay
+    | plaintext: aggregate numbers and a state, no user content). Off, an
+    | assistant row keeps only a content-only step. ON by default per owner decision DECISIONS.md #7 (traces
     | persist encrypted with short retention); laravel/ai's Approvable
     | pause/resume — the kit's classified approval seam — reconstructs
     | paused turns from these traces, so turning this off also disables
