@@ -7,7 +7,10 @@ use Illuminate\Console\Command;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Laravel\Ai\Enums\MessageStatus;
+use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Conversations\Events\ConversationsPruning;
+use Saad\AiKit\Conversations\StoredSteps;
 
 /**
  * Deletes conversations (and their messages) idle longer than the retention
@@ -114,10 +117,18 @@ class PruneConversationsCommand extends Command
     }
 
     /**
-     * Strip tool traces (attachments, tool calls/results, meta, the pause
-     * marker) from message rows older than the trace window. Usage stays —
-     * aggregate numbers, no user content. Runs in id-chunks like the delete
-     * pass; a row already stripped matches nothing and is never rewritten.
+     * Strip tool traces from message rows older than the trace window: the
+     * row keeps the text the user saw (as ONE content-only step) and its
+     * usage — aggregate numbers, no user content — while attachments, meta,
+     * tool calls with their results, reasoning and replay blocks go. The
+     * 0.10 trace columns, still present until the phase-B migration drops
+     * them, are emptied too.
+     *
+     * `steps` is sealed, so the rewrite is per row: reveal, reduce, re-seal
+     * the way the bound store writes. A `paused` row is skipped — its calls
+     * are what a resume needs. Runs in id-chunks like the delete pass; a
+     * stripped row has `'[]'` attachments and meta, matches nothing, and is
+     * never rewritten.
      */
     protected function pruneToolTraces(): void
     {
@@ -132,36 +143,63 @@ class PruneConversationsCommand extends Command
 
         $connection = DB::connection(config('ai.conversations.connection'));
         $messagesTable = config('ai.conversations.tables.messages', 'agent_conversation_messages');
+        $schema = $connection->getSchemaBuilder();
+
+        $legacy = array_values(array_filter(
+            ['tool_calls', 'tool_results'],
+            fn (string $column): bool => $schema->hasColumn($messagesTable, $column),
+        ));
+        $hasApprovalState = $schema->hasColumn($messagesTable, 'approval_state');
+        $hasStatus = $schema->hasColumn($messagesTable, 'status');
+        $encrypt = ConversationContent::encryptsAtRest();
 
         $stripped = 0;
+        $after = null;
 
         while (true) {
-            $ids = $connection->table($messagesTable)
+            $rows = $connection->table($messagesTable)
                 ->where('created_at', '<', $cutoff)
-                ->where(fn ($query) => $query
-                    ->where('attachments', '!=', '[]')
-                    ->orWhere('tool_calls', '!=', '[]')
-                    ->orWhere('tool_results', '!=', '[]')
-                    ->orWhere('meta', '!=', '[]')
-                    ->orWhereNotNull('approval_state'))
+                ->when($hasStatus, fn ($query) => $query->where('status', '!=', MessageStatus::Paused->value))
+                ->when($after !== null, fn ($query) => $query->where('id', '>', $after))
+                ->where(function ($query) use ($legacy, $hasApprovalState) {
+                    $query->where('attachments', '!=', '[]')->orWhere('meta', '!=', '[]');
+
+                    foreach ($legacy as $column) {
+                        $query->orWhere($column, '!=', '[]');
+                    }
+
+                    if ($hasApprovalState) {
+                        $query->orWhereNotNull('approval_state');
+                    }
+                })
                 ->orderBy('id')
                 ->limit($chunkSize)
-                ->pluck('id')
-                ->all();
+                ->get(['id', 'role', 'content', 'steps']);
 
-            if ($ids === []) {
+            if ($rows->isEmpty()) {
                 break;
             }
 
-            $stripped += $connection->table($messagesTable)
-                ->whereIn('id', $ids)
-                ->update([
-                    'attachments' => '[]',
-                    'tool_calls' => '[]',
-                    'tool_results' => '[]',
-                    'meta' => '[]',
-                    'approval_state' => null,
-                ]);
+            foreach ($rows as $row) {
+                $steps = $row->role === 'assistant'
+                    ? json_encode(StoredSteps::contentOnly(
+                        ConversationContent::revealJson($row->steps),
+                        ConversationContent::reveal((string) $row->content),
+                    ))
+                    : '[]';
+
+                $stripped += $connection->table($messagesTable)
+                    ->where('id', $row->id)
+                    ->update([
+                        'attachments' => '[]',
+                        'meta' => '[]',
+                        'steps' => $encrypt ? ConversationContent::concealJson($steps) : $steps,
+                        ...array_fill_keys($legacy, '[]'),
+                        ...($hasApprovalState ? ['approval_state' => null] : []),
+                    ]);
+            }
+
+            $after = $rows->last()->id;
         }
 
         if ($stripped > 0) {

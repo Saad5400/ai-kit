@@ -3,17 +3,25 @@
 namespace Saad\AiKit\Conversations;
 
 use Illuminate\Support\Facades\DB;
+use Laravel\Ai\Contracts\ConversationStore;
+use Laravel\Ai\Contracts\VerifiesConversationOwnership;
 
 /**
  * Answers "does this participant own this conversation?" — the guard every
- * app hand-rolls before serving history or accepting a follow-up turn.
+ * app runs before serving history or accepting a follow-up turn.
  *
- * Centralized because the hand-rolled versions share the same defect:
- * filtering `participant_id` alone. Participant ids are only unique per
- * type (a session id, "telegram:{chatId}", "admin:{id}", a user key can
- * collide across owner kinds), so pass the participant type whenever the
- * app has one and BOTH columns are checked. Passing null matches any type,
- * for genuinely type-less owner keys.
+ * @deprecated laravel/ai 1.0 ships this check on the store: call
+ *             `app(ConversationStore::class)->conversationBelongsTo($conversationId, $participantType, $participantId)`
+ *             (Laravel\Ai\Contracts\VerifiesConversationOwnership). This
+ *             alias stays for one release and delegates there whenever a
+ *             participant type is given.
+ *
+ * Participant ids are only unique per type (a session id, "telegram:{chatId}",
+ * "admin:{id}", a user key can collide across owner kinds), so pass the
+ * participant type whenever the app has one and BOTH columns are checked.
+ * Passing null keeps this class's legacy meaning — match ANY type — which
+ * conversationBelongsTo() does not offer (there, a null type means "an
+ * ownerless conversation"); migrate those call sites deliberately.
  */
 class ConversationOwnership
 {
@@ -27,8 +35,14 @@ class ConversationOwnership
      */
     public function owns(string $conversationId, string $participantId, ?string $participantType = null): bool
     {
+        $store = app(ConversationStore::class);
+
+        if ($participantType !== null && $store instanceof VerifiesConversationOwnership) {
+            return $store->conversationBelongsTo($conversationId, $participantType, $participantId);
+        }
+
         return DB::connection($this->connection)
-            ->table($this->conversationsTable())
+            ->table(config('ai.conversations.tables.conversations', 'agent_conversations'))
             ->where('id', $conversationId)
             ->where('participant_id', $participantId)
             ->when(
@@ -36,13 +50,5 @@ class ConversationOwnership
                 fn ($query) => $query->where('participant_type', $participantType),
             )
             ->exists();
-    }
-
-    /**
-     * Resolve the conversations table name from the vendor config keys.
-     */
-    protected function conversationsTable(): string
-    {
-        return config('ai.conversations.tables.conversations', 'agent_conversations');
     }
 }

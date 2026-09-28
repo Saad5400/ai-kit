@@ -1,10 +1,14 @@
 <?php
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Str;
+use Laravel\Ai\Enums\MessageStatus;
+use Saad\AiKit\Conversations\ConversationContent;
 use Saad\AiKit\Conversations\Events\ConversationsPruning;
+use Saad\AiKit\Conversations\StoredSteps;
 
 uses(RefreshDatabase::class);
 
@@ -32,11 +36,9 @@ function prunableConversation(int $idleDays, int $messages = 1): string
             'role' => $i % 2 === 0 ? 'user' : 'assistant',
             'content' => 'message '.$i,
             'attachments' => '[]',
-            'tool_calls' => '[]',
-            'tool_results' => '[]',
+            'steps' => $i % 2 === 0 ? '[]' : json_encode([StoredSteps::step('message '.$i)]),
             'usage' => '[]',
             'meta' => '[]',
-            'approval_state' => null,
             'created_at' => $timestamp,
             'updated_at' => $timestamp,
         ]);
@@ -94,7 +96,7 @@ it('prunes nothing by default — retention is forever until an app sets a windo
     Event::assertNotDispatched(ConversationsPruning::class);
 });
 
-it('strips tool traces past the trace window while the conversation lives on — even with retention forever', function () {
+it('empties the 0.10 trace columns past the trace window while the conversation lives on — even with retention forever', function () {
     $conversationId = prunableConversation(idleDays: 0);
 
     $oldTraced = (string) Str::uuid7();
@@ -152,6 +154,65 @@ it('strips tool traces past the trace window while the conversation lives on —
         ->and(DB::table('agent_conversations')->count())->toBe(1);
 });
 
+function tracedStepsRow(string $conversationId, int $ageDays, string $status = 'completed'): string
+{
+    $id = (string) Str::uuid7();
+
+    DB::table('agent_conversation_messages')->insert([
+        'id' => $id,
+        'conversation_id' => $conversationId,
+        'participant_type' => null,
+        'participant_id' => 'session-x',
+        'agent' => 'App\\Agent',
+        'role' => 'assistant',
+        'content' => Crypt::encryptString('Done: widget deleted.'),
+        'attachments' => '[]',
+        'steps' => Crypt::encryptString(json_encode([
+            StoredSteps::step('Let me check.', [['id' => 'call_1', 'name' => 'LookupWidget', 'arguments' => ['id' => 4], 'result' => 'secret sprocket']], 'private reasoning'),
+            StoredSteps::step('Done: widget deleted.', $status === 'paused'
+                ? [['id' => 'call_2', 'name' => 'DeleteWidget', 'arguments' => ['id' => 4], 'approval_reason' => 'destructive']]
+                : []),
+        ])),
+        'usage' => '{"input_tokens":10}',
+        'meta' => Crypt::encryptString('{"provider":"openrouter","model":"test/model"}'),
+        'status' => $status,
+        'created_at' => now()->subDays($ageDays),
+        'updated_at' => now()->subDays($ageDays),
+    ]);
+
+    return $id;
+}
+
+it('strips traces out of sealed steps past the trace window, keeping the text and re-sealing it', function () {
+    $conversationId = prunableConversation(idleDays: 0);
+
+    $old = tracedStepsRow($conversationId, ageDays: 30);
+    $paused = tracedStepsRow($conversationId, ageDays: 30, status: 'paused');
+    $fresh = tracedStepsRow($conversationId, ageDays: 2);
+    $freshSteps = DB::table('agent_conversation_messages')->where('id', $fresh)->value('steps');
+
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->expectsOutputToContain('Stripped tool traces from 1 messages')
+        ->assertSuccessful();
+
+    $row = DB::table('agent_conversation_messages')->where('id', $old)->sole();
+
+    expect(ConversationContent::revealJson($row->steps))->toBe([StoredSteps::step("Let me check.\n\nDone: widget deleted.")])
+        ->and($row->steps)->not->toContain('Let me check')
+        ->and($row->meta)->toBe('[]')
+        ->and($row->usage)->toBe('{"input_tokens":10}')
+        ->and($row->status)->toBe(MessageStatus::Completed->value)
+        ->and(ConversationContent::reveal($row->content))->toBe('Done: widget deleted.')
+        // A paused turn keeps what a resume needs; a fresh one is inside the window.
+        ->and(ConversationContent::revealJson(DB::table('agent_conversation_messages')->where('id', $paused)->value('steps'))[1]['tool_calls'])->toHaveCount(1)
+        ->and(DB::table('agent_conversation_messages')->where('id', $fresh)->value('steps'))->toBe($freshSteps);
+
+    // The stripped row matches nothing: a second run rewrites nothing.
+    $this->artisan('ai-kit:prune-conversations', ['--trace-days' => 14])
+        ->doesntExpectOutputToContain('Stripped')
+        ->assertSuccessful();
+});
+
 it('defaults the trace window to ai-kit.conversations.trace_retention_days', function () {
     config()->set('ai-kit.conversations.trace_retention_days', 3);
 
@@ -159,11 +220,11 @@ it('defaults the trace window to ai-kit.conversations.trace_retention_days', fun
 
     DB::table('agent_conversation_messages')
         ->where('conversation_id', $conversationId)
-        ->update(['tool_calls' => '[{"id":"call_9"}]', 'created_at' => now()->subDays(5)]);
+        ->update(['meta' => Crypt::encryptString('{"provider":"openrouter"}'), 'created_at' => now()->subDays(5)]);
 
     $this->artisan('ai-kit:prune-conversations')->assertSuccessful();
 
-    expect(DB::table('agent_conversation_messages')->where('conversation_id', $conversationId)->sole()->tool_calls)
+    expect(DB::table('agent_conversation_messages')->where('conversation_id', $conversationId)->sole()->meta)
         ->toBe('[]');
 });
 
