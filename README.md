@@ -69,7 +69,7 @@ One turn is one SSE stream of `event: NAME\ndata: {json}\n\n` frames, written by
 | `question` | `{kind, id, question, options?}` | An `AskUser` pause — answered, not approved. `options` carries 2–4 suggested answers when the model proposed any. |
 | `citations` | `{items}` | Post-stream, from a `beforeDone` hook. |
 | `done` | app-assembled | **Terminal.** |
-| `error` | `{message}` | **Terminal** — no `done` ever follows it. |
+| `error` | `{message, code?}` | **Terminal** — no `done` ever follows it. `code` is the kit's machine-readable reason (`stream_error`, `provider_unavailable`, `rate_limited`, `killed`, `stale`, `internal_error` — `Streaming\ErrorCode`, AG-UI's RUN_ERROR `code` role). Optional: a code-less frame is still valid, and a client treats an unknown code as a generic failure. |
 
 A turn ends with exactly one terminal event. Buffered frames are led by an `id:` line carrying the sequence number to resume from. Pre-flight failures are plain JSON at 503/429/422/402, discriminated client-side by `Content-Type`.
 
@@ -93,7 +93,14 @@ $untilCancelled = function (iterable $stream) use ($buffer, $turnId): Generator 
 $mapper->runIntoBuffer($untilCancelled($stream), $buffer, $turnId, $meta);
 ```
 
-A cancelled stream simply ends, so the fold takes its normal exit and the turn finishes on `done` with whatever it produced — a stop is a completed short turn, not an error. (`TurnBuffer::fail()` takes a fourth argument to append an empty `done` after `error`, for clients that hang their whole teardown off `done`. Off by default; the terminal contract above is what the kit promises.)
+A cancelled stream simply ends, so the fold takes its normal exit and the turn finishes on `done` with whatever it produced — a stop is a completed short turn, not an error. (`TurnBuffer::fail()` takes a fourth argument to append an empty `done` after `error`, for clients that hang their whole teardown off `done`. Off by default; the terminal contract above is what the kit promises.) This hand-rolled generator only stops the stream; `TurnRunner`'s own cancel generator also gets the stopped turn STORED — see below.
+
+**Failed and stopped turns are stored** (owner ruling 2026-09-28: a failed turn shows in history as a failed message, with its partial text, for the app's retry button). laravel/ai 1.0 stores a dead run itself — RememberConversation's catch writes an assistant row with `status: failed`, `meta.error` and the steps it completed, every tool that already ran included — but only when the failure propagates through its generator. The kit makes sure it does, and tops up what it keeps:
+
+- **A provider error inside the stream** (OpenRouter's `{"error":…}` frame, its usual mid-stream 502): the mapper emits `error` at once, then pulls the stream once more — 1.0 throws `StreamErrorException` on that pull, which runs the vendor's failure path. The expected throw is settled inside the fold (the wire already has its one terminal); walking away at the error, as before, left the vendor generator suspended so nothing was stored. An `on(Error)` hook that returns `true` meets the same throw on its next pull; the fold then ends failed with the default `error` frame, keeping the partial result.
+- **A throw** (a 502 raised as an exception): unchanged on the wire; `TurnRunner`'s failed outcome now keeps the partial `StreamResult` (text, tool calls, results) instead of an empty one — pass your own result to `run()` / `runBuffered()` (`$into`) to get the same on the inline path.
+- **A stop** (`TurnRunner`): 1.0 has no cancel, and an abandoned stream runs neither `then()` nor `catch()`. So the runner throws a `TurnCancelledException` into the stream where it stopped and catches it right back: the vendor stores the turn as a `failed` row with `meta.error === TurnCancelledException::MESSAGE` (`TurnCancelledException::marks($meta)` tells a stop from a failure), and the outcome is still `cancelled` + `done`. Behind a multi-provider failover list the throw lands in the outer failover stream, which carries no conversation hooks, so such a stop is not stored.
+- **`InterruptedTurns`** (`streaming.remember_interrupted_turns`, default on) closes the two gaps stock leaves: the step that died mid-stream is added with the partial text the user already saw (no tool calls — none of them ran), and a turn that died in its FIRST step — for which stock stores nothing, not even the user's message — gets an empty step so the user row and a `failed` assistant row are written. Stock replays a failed row safely: a blank step as nothing, a partial one as the assistant text.
 
 ## Long turns
 
@@ -142,13 +149,13 @@ $outcome = app(TurnRunner::class)->run(
 );
 
 if ($outcome->failed) {
-    $buffer->fail($turnId, $outcome->failure, $meta);      // the APP writes the terminal…
+    $buffer->fail($turnId, $outcome->failure, $meta, code: $outcome->failureCode);   // the APP writes the terminal…
 } else {
     $buffer->finish($turnId, $donePayload, $meta);         // …because its payload only exists after the fold
 }
 ```
 
-`TurnOutcome` carries the `StreamResult`, `cancelled` and `failed` as independent axes (a stop is a completed short turn with partial text, never an error), the resolved `failure` line, the `exception` when a throw ended the turn, and the mapper's assembled `done` payload for apps that build on it. What stays app-side, deliberately: model/user resolution, prompt assembly, metering, per-turn spend reset (catodemy's `TurnProviderSpend` is an app-level accumulator; the kit has no equivalent to reset), and — above all — the terminal event, because a completion payload (credit outcome, grounding, persisted message id) only exists app-side and only after the fold. `runIntoBuffer()` remains for apps that want the terminal written for them.
+`TurnOutcome` carries the `StreamResult` (partial on a failure — never emptied by a throw), `cancelled` and `failed` as independent axes (a stop is a completed short turn with partial text, never an error), the resolved `failure` line and its `failureCode`, the `exception` when a throw ended the turn, and the mapper's assembled `done` payload for apps that build on it. What stays app-side, deliberately: model/user resolution, prompt assembly, metering, per-turn spend reset (catodemy's `TurnProviderSpend` is an app-level accumulator; the kit has no equivalent to reset), and — above all — the terminal event, because a completion payload (credit outcome, grounding, persisted message id) only exists app-side and only after the fold. `runIntoBuffer()` remains for apps that want the terminal written for them.
 
 Three `streaming` config keys tune all of this — `page_size` (64), `stale_after_seconds` (300), `stale_trailing_done` (false) — and the provider wires them into the `TurnBuffer` it binds. The client half is `resumeTurn()`: see *Resuming a long turn* under the frontend layer.
 

@@ -164,17 +164,17 @@ it('fails a running turn whose heartbeat went stale and emits exactly one termin
     expect($message)->not->toBe('ai-kit::streaming.stale')
         ->and($out)->toBe(
             "id: 1\nevent: delta\ndata: {\"text\":\"partial\"}\n\n".
-            "id: 2\nevent: error\ndata: {\"message\":\"{$message}\"}\n\n"
+            "id: 2\nevent: error\ndata: {\"message\":\"{$message}\",\"code\":\"stale\"}\n\n"
         )
         ->and($lastSeq)->toBe(2)
         ->and($record['status'])->toBe('failed')
-        ->and($record['meta'])->toBe(['user_id' => 7, 'stale' => true, 'error' => $message])
+        ->and($record['meta'])->toBe(['user_id' => 7, 'stale' => true, 'error' => $message, 'error_code' => 'stale'])
         ->and(array_column($record['events'], 'event'))->toBe(['delta', 'error']);
 
     // A second tailer (or a reconnect) just drains the failure — no second terminal.
     [$out] = captureTail(fn () => $buffer->tail('t1', after: 1));
 
-    expect($out)->toBe("id: 2\nevent: error\ndata: {\"message\":\"{$message}\"}\n\n");
+    expect($out)->toBe("id: 2\nevent: error\ndata: {\"message\":\"{$message}\",\"code\":\"stale\"}\n\n");
 });
 
 it('uses the caller-supplied stale message', function () {
@@ -186,7 +186,7 @@ it('uses the caller-supplied stale message', function () {
 
     [$out] = captureTail(fn () => $buffer->tail('t1', maxSeconds: 0, staleMessage: 'انقطع الاتصال بالمساعد'));
 
-    expect($out)->toBe("id: 1\nevent: error\ndata: {\"message\":\"انقطع الاتصال بالمساعد\"}\n\n")
+    expect($out)->toBe("id: 1\nevent: error\ndata: {\"message\":\"انقطع الاتصال بالمساعد\",\"code\":\"stale\"}\n\n")
         ->and($buffer->get('t1')['meta']['error'])->toBe('انقطع الاتصال بالمساعد');
 });
 
@@ -200,7 +200,7 @@ it('trails the stale error with a done when the buffer is built for such clients
     [$out, $lastSeq] = captureTail(fn () => $buffer->tail('t1', maxSeconds: 0, staleMessage: 'stale'));
 
     expect($out)->toBe(
-        "id: 1\nevent: error\ndata: {\"message\":\"stale\"}\n\n".
+        "id: 1\nevent: error\ndata: {\"message\":\"stale\",\"code\":\"stale\"}\n\n".
         "id: 2\nevent: done\ndata: []\n\n"
     )->and($lastSeq)->toBe(2)
         ->and($buffer->status('t1'))->toBe('failed');
@@ -324,6 +324,6 @@ it('falls back to started_at when a record has no heartbeat yet', function () {
 
     [$out] = captureTail(fn () => $buffer->tail('t1', maxSeconds: 0, staleMessage: 'stale'));
 
-    expect($out)->toBe("id: 1\nevent: error\ndata: {\"message\":\"stale\"}\n\n")
+    expect($out)->toBe("id: 1\nevent: error\ndata: {\"message\":\"stale\",\"code\":\"stale\"}\n\n")
         ->and($buffer->status('t1'))->toBe('failed');
 });

@@ -131,6 +131,13 @@ return [
     | only tear down on `done` (see TurnBuffer::fail()). 0 disables the
     | stale check.
     |
+    | `remember_interrupted_turns` (owner ruling 2026-09-28: a failed turn is
+    | stored and shown as a failed message) tops up what laravel/ai stores
+    | for a turn that died or was stopped: the interrupted step's partial
+    | text, and — for a turn that died in its very first step, which stock
+    | stores nothing for — the user's message plus a `failed` assistant row.
+    | See Streaming\InterruptedTurns.
+    |
     */
 
     'streaming' => [
@@ -142,6 +149,7 @@ return [
         'page_size' => 64,
         'stale_after_seconds' => 300,
         'stale_trailing_done' => false,
+        'remember_interrupted_turns' => true,
     ],
 
     /*

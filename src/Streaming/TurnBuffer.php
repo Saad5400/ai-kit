@@ -236,6 +236,9 @@ class TurnBuffer
 
     /**
      * Mark the turn failed: append the terminal `error {message}` and stop.
+     * `$code` adds the kit's machine-readable reason to the frame
+     * (`error {message, code}`, see {@see ErrorCode}) and to the record's
+     * meta as `error_code`; left null, the frame is exactly as before.
      * No `done` follows — a failed turn has no completion payload to carry,
      * and emitting both would leave clients guessing which one ended the
      * turn. The failure is also recorded in the record's meta.
@@ -251,15 +254,15 @@ class TurnBuffer
      *
      * @param  array<string, mixed>  $meta
      */
-    public function fail(string $turnId, string $message, array $meta = [], bool $trailingDone = false): void
+    public function fail(string $turnId, string $message, array $meta = [], bool $trailingDone = false, ?string $code = null): void
     {
-        $this->append($turnId, 'error', ['message' => $message]);
+        $this->append($turnId, 'error', $code === null ? ['message' => $message] : ['message' => $message, 'code' => $code]);
 
         if ($trailingDone) {
             $this->append($turnId, 'done', []);
         }
 
-        $this->complete($turnId, 'failed', $meta + ['error' => $message]);
+        $this->complete($turnId, 'failed', $meta + ['error' => $message] + ($code === null ? [] : ['error_code' => $code]));
     }
 
     /**
@@ -430,6 +433,7 @@ class TurnBuffer
                         $staleMessage ?? __('ai-kit::streaming.stale'),
                         ['stale' => true],
                         $this->staleTrailingDone,
+                        ErrorCode::STALE,
                     );
 
                     // Drain the terminal we just wrote, deadline or not.
