@@ -335,11 +335,15 @@ class TurnRunner
      */
     protected function interrupt(iterable $stream, iterable $events, StreamEvent $last): void
     {
+        $invocationId = $stream instanceof StreamableAgentResponse ? $stream->invocationId : $last->invocationId;
+
         if (! $events instanceof Generator || ! $events->valid()) {
+            // Nothing to throw into (a plain iterator, an exhausted stream):
+            // the run is stopped all the same, and its spend still counts.
+            $this->announceStop($invocationId);
+
             return;
         }
-
-        $invocationId = $stream instanceof StreamableAgentResponse ? $stream->invocationId : $last->invocationId;
 
         if ($invocationId !== null && app()->bound(InterruptedTurns::class)) {
             app(InterruptedTurns::class)->sealTracked($invocationId);
@@ -356,6 +360,11 @@ class TurnRunner
         // laravel/ai reports no AgentFailed for it (the throw landed at the
         // response's iterator, outside its loop): announce the stop, so the
         // usage module records the stopped turn's spend.
+        $this->announceStop($invocationId);
+    }
+
+    protected function announceStop(?string $invocationId): void
+    {
         if ($invocationId !== null) {
             rescue(fn () => event(new TurnStopped($invocationId)));
         }

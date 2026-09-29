@@ -7,11 +7,12 @@ use Saad\AiKit\Usage\UsageEvent;
 /**
  * The late half of a turn's spend: the price of generations a stop or a
  * mid-stream failure cut off before their final chunk carried `usage.cost`,
- * fetched afterwards from OpenRouter. Fires AT MOST ONCE per turn, only with
- * a cost above zero, usually from the queued ResolveInterruptedSpend job —
- * so never inside the turn's own job, and never folded into the turn's
- * {@see TurnUsageRecorded} (whose debit may already have landed under
- * `debit:turn:{id}`).
+ * fetched afterwards from OpenRouter. Fires AT MOST ONCE per settled run (usage row), only with
+ * a cost above zero — normally from the queued ResolveInterruptedSpend job,
+ * after the turn's own job ended (inline, at the end of the turn, only when
+ * `spend.sync_window_seconds` > 0 priced everything there) — and never
+ * folded into the turn's {@see TurnUsageRecorded} (whose debit may already
+ * have landed under `debit:turn:{id}`).
  *
  * `$usage` is the delta's own usage row (status `resolved`, same invocation
  * id, `cost_source` = `generation_lookup`, `context.resolves` = the turn
@@ -59,12 +60,15 @@ class InterruptedSpendResolved
     }
 
     /**
-     * `debit:turn:{turnId}:interrupted` — the app's turn id when the turn ran
-     * under TurnRunner (so it sits next to the main `debit:turn:{turnId}`),
-     * else the invocation id.
+     * `debit:turn:{turnId}:interrupted:{invocationId}` — the app's turn id
+     * when the turn ran under TurnRunner (so it sits next to the main
+     * `debit:turn:{turnId}`), else the invocation id; suffixed with the
+     * settled run's invocation id, because one turn can settle more than
+     * once (a resume leg, a completed turn's cut-off sub-step) and each
+     * settlement is its own debit.
      */
     public function debitKey(): string
     {
-        return 'debit:turn:'.($this->turnId ?? $this->turn->invocation_id).':interrupted';
+        return 'debit:turn:'.($this->turnId ?? $this->turn->invocation_id).':interrupted:'.$this->turn->invocation_id;
     }
 }

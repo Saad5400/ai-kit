@@ -5,6 +5,9 @@ namespace Saad\AiKit\Usage;
 use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Contracts\Container\Container;
+use Illuminate\Queue\FailoverQueue;
+use Illuminate\Queue\NullQueue;
+use Illuminate\Queue\SyncQueue;
 use Illuminate\Support\Facades\Log;
 use Saad\AiKit\Gateway\GenerationCostResolver;
 use Saad\AiKit\Gateway\GenerationCostUnavailable;
@@ -104,7 +107,7 @@ class InterruptedSpend
             }
 
             if (! $this->queueable()) {
-                $this->gaveUp($turn, $unresolved, 0, 'the spend queue connection is `sync`, which cannot delay a retry');
+                $this->gaveUp($turn, $unresolved, 0, 'the spend queue connection cannot hold a delayed job (sync, deferred, background or null)');
                 $this->settle($job, $resolved);
 
                 return;
@@ -183,28 +186,34 @@ class InterruptedSpend
             $delta = UsageEvent::query()
                 ->where('invocation_id', $turn->invocation_id)
                 ->where('status', self::RESOLVED_STATUS)
-                ->first()
-                ?? UsageEvent::create([
-                    'invocation_id' => $turn->invocation_id,
-                    'conversation_id' => $turn->conversation_id,
-                    'participant_type' => $turn->participant_type,
-                    'participant_id' => $turn->participant_id,
-                    'agent' => $turn->agent,
-                    'feature' => $turn->feature,
-                    'provider' => $turn->provider,
-                    'model' => $turn->model,
-                    'streamed' => $turn->streamed,
-                    'cost_usd' => $cost,
-                    'cost_source' => self::COST_SOURCE,
-                    'generation_ids' => $generationIds,
-                    'status' => self::RESOLVED_STATUS,
-                    'context' => array_filter([
-                        'resolves' => $turn->getKey(),
-                        'turn_status' => $turn->status,
-                        'turn_id' => $turnId,
-                    ], fn ($value) => $value !== null),
-                    'created_at' => now(),
-                ]);
+                ->first();
+
+            // A retry that priced more than the first attempt left on the row
+            // (an earlier listener failure): the row states what the event
+            // reports.
+            $delta?->forceFill(['cost_usd' => $cost, 'generation_ids' => $generationIds])->save();
+
+            $delta ??= UsageEvent::create([
+                'invocation_id' => $turn->invocation_id,
+                'conversation_id' => $turn->conversation_id,
+                'participant_type' => $turn->participant_type,
+                'participant_id' => $turn->participant_id,
+                'agent' => $turn->agent,
+                'feature' => $turn->feature,
+                'provider' => $turn->provider,
+                'model' => $turn->model,
+                'streamed' => $turn->streamed,
+                'cost_usd' => $cost,
+                'cost_source' => self::COST_SOURCE,
+                'generation_ids' => $generationIds,
+                'status' => self::RESOLVED_STATUS,
+                'context' => array_filter([
+                    'resolves' => $turn->getKey(),
+                    'turn_status' => $turn->status,
+                    'turn_id' => $turnId,
+                ], fn ($value) => $value !== null),
+                'created_at' => now(),
+            ]);
 
             $this->container->make('events')->dispatch(
                 new InterruptedSpendResolved($delta, $turn, $turnId, $cost, $generationIds, $meta),
@@ -240,15 +249,26 @@ class InterruptedSpend
     }
 
     /**
-     * A `sync` connection runs the job inline and ignores its delay: every
-     * attempt would fire back-to-back inside the turn's own worker.
+     * Whether the spend connection can hold a delayed job for a worker. A
+     * SyncQueue (the `sync` driver, and Laravel 13's `deferred` /
+     * `background`, which extend it) runs the job in-process and ignores
+     * the delay — every attempt would fire back-to-back inside the turn's
+     * own worker; a NullQueue drops it. A failover connection is judged by
+     * its primary.
      */
     public function queueable(): bool
     {
-        $config = $this->container->make('config');
-        $connection = $this->config['connection'] ?? $config->get('queue.default');
+        try {
+            $connection = $this->container->make('queue')->connection($this->config['connection'] ?? null);
 
-        return $config->get("queue.connections.{$connection}.driver") !== 'sync';
+            for ($hops = 0; $connection instanceof FailoverQueue && $hops < 5; $hops++) {
+                $connection = $connection->manager->connection($connection->connections[0] ?? null);
+            }
+        } catch (Throwable) {
+            return false;
+        }
+
+        return ! $connection instanceof SyncQueue && ! $connection instanceof NullQueue;
     }
 
     /**

@@ -127,7 +127,7 @@ it('charges the late-priced cut-off step of a stopped turn under its own key, wi
     expect($result->isCharged())->toBeTrue()
         ->and($result->costSource)->toBe('generation_lookup');
 
-    $debitor->assertDebited($result->creditsCharged, 'debit:turn:turn-1:interrupted');
+    $debitor->assertDebited($result->creditsCharged, 'debit:turn:turn-1:interrupted:inv-1');
     expect($debitor->debits[0]['meta'])->toMatchArray(['turn_id' => 'turn-1', 'generation_ids' => ['gen-1']]);
 
     expect($meter->chargeResolved('user:1', resolvedSpend('stopped'))->status)->toBe(ChargeResult::STATUS_ALREADY_CHARGED);

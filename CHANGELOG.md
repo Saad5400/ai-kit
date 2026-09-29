@@ -26,8 +26,8 @@ and s-grade delete from their own code.
   `Usage\ResolveInterruptedSpend` (5/20/60/180/300 s, then a warning) price pending generations —
   of an interrupted turn, or of a completed turn whose failover attempt / sub-agent was cut off —
   budgeting each via `BudgetGuard::recordOnce()` per generation id, then write one `resolved`
-  delta row and fire `Usage\Events\InterruptedSpendResolved` once (`billable()`, `debitKey()` =
-  `debit:turn:{turnId}:interrupted`, `turnId`, `meta`).
+  delta row and fire `Usage\Events\InterruptedSpendResolved` once per settled run (`billable()`,
+  `debitKey()` = `debit:turn:{turnId}:interrupted:{invocationId}`, `turnId`, `meta`).
 - Hardening: pending ids are recorded eagerly on a generation's first chunk; nothing in the
   pricing path throws into the turn (a refused queue settles with what priced); a missing key,
   a non-OpenRouter `spend.provider` or a 401/403 is one error log, not five retries; a zero cost
@@ -35,8 +35,13 @@ and s-grade delete from their own code.
   the event's once-guard is a short lock + a "done" marker set after the listeners return (a
   killed worker's redelivery fires again); a `sync` queue connection is detected; the inline
   window is off by default, never runs for failed turns and caps each request by the time
-  left; `Context::dehydrating()` strips a turn's spend and turn id/meta from jobs dispatched
-  mid-turn; with `usage.drain_spend` off interrupted rows carry no spend.
+  left; a turn's spend and turn id/meta never ride into a job hydrated by another Context (a
+  worker), while an in-process job (dispatchSync / sync / deferred / background) leaves the
+  live turn's intact; with `usage.drain_spend` off interrupted rows carry no spend; a nested
+  run that fails leaves the shared collector to the outer run; an app listener throwing on
+  `TurnUsageRecorded` no longer stops the pricing; `deferred` / `background` / `null` /
+  failover-onto-sync connections are detected like `sync`; a reused delta row is updated to
+  the retried sum; `TurnStopped` is announced for non-generator streams too.
 - `CreditMeter::chargeResolved($payer, $event)` charges that delta under its own key (failed turns
   waived; no free-turn waiver).
 - `TurnRunner::run(..., meta: [])` + `TurnContext::beginTurn()`/`endTurn()`: every turn starts

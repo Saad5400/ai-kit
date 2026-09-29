@@ -93,7 +93,9 @@ class RecordTurnUsage
 
         $this->trace->turn($usageEvent);
 
-        event(new TurnUsageRecorded($usageEvent));
+        // Its own rescue: an app listener that throws must not stop the
+        // cut-off generations below from being priced.
+        rescue(fn () => event(new TurnUsageRecorded($usageEvent)));
 
         // A generation cut off on the way to completion — a failover attempt,
         // a sub-agent — was still billed: price it after the fact.

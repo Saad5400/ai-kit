@@ -5,6 +5,7 @@ namespace Saad\AiKit\Support;
 use Illuminate\Support\Facades\Context;
 use Saad\AiKit\Gateway\SpendCollector;
 use Saad\AiKit\Streaming\TurnRunner;
+use Saad\AiKit\Usage\ActiveRuns;
 
 /**
  * The Context keys a turn's timing travels through. The gateway stamps time
@@ -158,6 +159,10 @@ class TurnContext
     {
         if (config('ai-kit.usage.drain_spend', true) && app()->bound(SpendCollector::class)) {
             app(SpendCollector::class)->flush();
+        }
+
+        if (app()->bound(ActiveRuns::class)) {
+            app(ActiveRuns::class)->flush();
         }
 
         Context::addHidden(static::TURN_ID_KEY, $turnId);

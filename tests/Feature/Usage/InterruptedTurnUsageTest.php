@@ -1,9 +1,13 @@
 <?php
 
+use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Bus\Dispatcher;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\Request;
+use Illuminate\Log\Context\Repository as ContextRepository;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\Event;
@@ -14,10 +18,13 @@ use Illuminate\Support\Sleep;
 use Laravel\Ai\Events\AgentFailed;
 use Laravel\Ai\Events\AgentStreamed;
 use Laravel\Ai\Exceptions\ProviderOverloadedException;
+use Laravel\Ai\Streaming\Events\StreamStart;
+use Laravel\Ai\Streaming\Events\TextDelta;
 use Saad\AiKit\Gateway\GenerationCostResolver;
 use Saad\AiKit\Gateway\GenerationCostUnavailable;
 use Saad\AiKit\Gateway\SpendCollector;
 use Saad\AiKit\Safety\BudgetGuard;
+use Saad\AiKit\Streaming\Events\TurnStopped;
 use Saad\AiKit\Streaming\StreamEventMapper;
 use Saad\AiKit\Streaming\ToolProgress;
 use Saad\AiKit\Streaming\TurnCancelledException;
@@ -201,7 +208,7 @@ it('records a stopped single-step answer and prices its cut-off step on the seco
         ->and($resolved->meta)->toBe(['user_id' => 7])
         ->and($resolved->stopped())->toBeTrue()
         ->and($resolved->billable())->toBeTrue()
-        ->and($resolved->debitKey())->toBe('debit:turn:t1:interrupted')
+        ->and($resolved->debitKey())->toBe('debit:turn:t1:interrupted:'.$row->invocation_id)
         ->and($resolved->turn->is($row))->toBeTrue()
         ->and($resolved->usage->status)->toBe('resolved')
         ->and($resolved->usage->invocation_id)->toBe($row->invocation_id)
@@ -542,7 +549,7 @@ it('holds a settlement another worker is running and retries it, then fires once
         ->and(app(BudgetGuard::class)->spentToday())->toEqualWithDelta(0.03, 1e-6);
 });
 
-it('keeps a turn\'s spend, pending ids, turn id and meta out of jobs dispatched mid-turn', function () {
+it('keeps a turn\'s spend, pending ids, turn id and meta out of a job hydrated by another Context', function () {
     TurnContext::beginTurn('r7', ['user_id' => 7]);
 
     $spend = app(SpendCollector::class);
@@ -552,13 +559,141 @@ it('keeps a turn\'s spend, pending ids, turn id and meta out of jobs dispatched 
 
     $payload = Context::dehydrate();
 
-    expect(array_keys($payload['data'] ?? []))->not->toContain('ai.openrouter_costs', 'ai.openrouter_generation_ids', 'ai.openrouter_pending_generation_ids')
-        ->and(array_keys($payload['hidden'] ?? []))->not->toContain(TurnContext::TURN_ID_KEY, TurnContext::TURN_META_KEY)
-        // The turn itself keeps them.
+    // A worker: a fresh Context hydrating the payload.
+    $worker = new ContextRepository(app('events'));
+    $worker->hydrate($payload);
+
+    expect($worker->get('ai.openrouter_costs'))->toBeNull()
+        ->and($worker->get('ai.openrouter_generation_ids'))->toBeNull()
+        ->and($worker->get('ai.openrouter_pending_generation_ids'))->toBeNull()
+        ->and($worker->getHidden(TurnContext::TURN_ID_KEY))->toBeNull()
+        ->and($worker->getHidden(TurnContext::TURN_META_KEY))->toBeNull()
+        // The live turn keeps them.
         ->and($spend->pendingGenerationIds())->toBe(['gen-2'])
+        ->and($spend->totalCost())->toEqualWithDelta(0.5, 1e-9)
         ->and(TurnContext::turnId())->toBe('r7');
 
     TurnContext::endTurn();
+});
+
+it('keeps the live turn\'s spend, turn id and meta through a job run in-process mid-turn', function () {
+    // The real queue, on the sync connection (both apps' phpunit default).
+    config()->set('queue.default', 'sync');
+    app()->forgetInstance('queue');
+    Queue::clearResolvedInstance('queue');
+
+    icChat(icSaveStep(), icAnswerStep('gen-final', 0.003));
+
+    RememberingNoteAgent::$afterSave = function () {
+        dispatch(new IcSyncProbeJob);
+
+        $GLOBALS['icAfterSync'] = [
+            'cost' => app(SpendCollector::class)->totalCost(),
+            'turn_id' => TurnContext::turnId(),
+            'meta' => TurnContext::turnMeta(),
+        ];
+    };
+
+    icRun('r10', meta: ['user_id' => 7]);
+
+    expect($GLOBALS['icSyncRan'] ?? false)->toBeTrue()
+        ->and($GLOBALS['icAfterSync']['cost'])->toEqualWithDelta(0.001, 1e-9)
+        ->and($GLOBALS['icAfterSync']['turn_id'])->toBe('r10')
+        ->and($GLOBALS['icAfterSync']['meta'])->toBe(['user_id' => 7])
+        ->and(UsageEvent::sole()->cost_usd)->toEqualWithDelta(0.004, 1e-9);
+});
+
+it('leaves the shared collector to the outer run when a nested run fails', function () {
+    icChat(icSaveStep());
+    $GLOBALS['icChat'][] = Http::response('upstream down', 502);
+    icChat(icAnswerStep('gen-final', 0.003));
+
+    // A sub-agent called from the tool fails; like laravel/ai's AgentTool,
+    // the tool turns that into a result and the outer run carries on.
+    RememberingNoteAgent::$afterSave = function () {
+        try {
+            (new RememberingNoteAgent)->forUser((object) ['id' => 7])->prompt('nested', provider: 'openrouter', model: 'test/model');
+        } catch (ProviderOverloadedException) {
+        }
+    };
+
+    expect(icRun('r11')->failed)->toBeFalse();
+
+    $failed = UsageEvent::query()->where('status', 'failed')->sole();
+    $outer = UsageEvent::query()->where('status', 'ok')->sole();
+
+    expect($failed->cost_usd)->toBeNull()
+        ->and($failed->context)->toMatchArray(['nested' => true])
+        // The outer turn keeps its completed step: billed with the turn.
+        ->and($outer->cost_usd)->toEqualWithDelta(0.004, 1e-9)
+        ->and($outer->generation_ids)->toBe(['gen-save', 'gen-final']);
+});
+
+it('prices the cut-off step even when an app listener on TurnUsageRecorded throws', function () {
+    Event::listen(TurnUsageRecorded::class, fn () => throw new RuntimeException('app listener broke'));
+
+    icChat(icAnswerStep());
+    icRun('r12', stopAtOnce: true);
+
+    Queue::assertPushed(ResolveInterruptedSpend::class, 1);
+});
+
+it('keys each settlement of one turn separately', function () {
+    $turn = fn (string $invocation) => new UsageEvent(['invocation_id' => $invocation, 'status' => 'stopped']);
+
+    $a = new InterruptedSpendResolved(new UsageEvent, $turn('inv-a'), 't1', 0.01, ['g1']);
+    $b = new InterruptedSpendResolved(new UsageEvent, $turn('inv-b'), 't1', 0.01, ['g2']);
+    $bare = new InterruptedSpendResolved(new UsageEvent, $turn('inv-c'), null, 0.01, ['g3']);
+
+    expect($a->debitKey())->toBe('debit:turn:t1:interrupted:inv-a')
+        ->and($b->debitKey())->toBe('debit:turn:t1:interrupted:inv-b')
+        ->and($bare->debitKey())->toBe('debit:turn:inv-c:interrupted:inv-c');
+});
+
+it('updates a reused delta row to what the retried event reports', function () {
+    icChat(icAnswerStep());
+    icRun('r13', stopAtOnce: true);
+
+    $row = UsageEvent::sole();
+    $spend = app(InterruptedSpend::class);
+
+    $GLOBALS['icThrowOnce'] = true;
+    Event::listen(InterruptedSpendResolved::class, function () {
+        if ($GLOBALS['icThrowOnce']) {
+            $GLOBALS['icThrowOnce'] = false;
+
+            throw new RuntimeException('ledger down');
+        }
+    });
+
+    expect(fn () => $spend->finish($row->id, ['g1' => 0.01], ['g1', 'g2'], 'r13', []))->toThrow(RuntimeException::class);
+
+    expect($spend->finish($row->id, ['g1' => 0.01, 'g2' => 0.02], ['g1', 'g2'], 'r13', []))->toBe(InterruptedSpend::FIRED);
+
+    $delta = UsageEvent::query()->where('status', 'resolved')->sole();
+
+    expect($delta->cost_usd)->toEqualWithDelta(0.03, 1e-9)
+        ->and($delta->generation_ids)->toBe(['g1', 'g2'])
+        ->and(end($GLOBALS['icResolved'])->costUsd)->toEqualWithDelta(0.03, 1e-9);
+});
+
+it('announces a stop on a stream it cannot throw into', function () {
+    $GLOBALS['icStopped'] = [];
+    Event::listen(TurnStopped::class, function (TurnStopped $event) {
+        $GLOBALS['icStopped'][] = $event->invocationId;
+    });
+
+    $buffer = new SpyTurnBuffer;
+    $buffer->start('r14');
+    $buffer->cancel('r14');
+
+    $events = new ArrayIterator([
+        (new StreamStart('s1', 'openrouter', 'test/model', time()))->withInvocationId('inv-plain'),
+        (new TextDelta('d1', 'm1', 'Hi', time()))->withInvocationId('inv-plain'),
+    ]);
+
+    expect(app(TurnRunner::class)->run('r14', fn () => $events, new StreamEventMapper, $buffer)->cancelled)->toBeTrue()
+        ->and($GLOBALS['icStopped'])->toBe(['inv-plain']);
 });
 
 it('reads a zero cost with counted tokens as "not yet" until the last attempt', function () {
@@ -573,17 +708,36 @@ it('reads a zero cost with counted tokens as "not yet" until the last attempt', 
         ->and($resolver->fetch('gen-empty'))->toBe(0.0);
 });
 
-it('does not queue delayed attempts on a sync connection', function () {
+it('never queues delayed attempts on a connection that cannot hold them', function (array $connection, bool $queueable) {
+    config()->set('queue.connections.sync', ['driver' => 'sync']);
+    config()->set('queue.connections.probe', $connection);
+    config()->set('ai-kit.spend.connection', 'probe');
+    app()->forgetInstance('queue');
+    Queue::clearResolvedInstance('queue');
+
+    expect(app(InterruptedSpend::class)->queueable())->toBe($queueable);
+})->with([
+    'sync' => [['driver' => 'sync'], false],
+    'deferred' => [['driver' => 'deferred'], false],
+    'background' => [['driver' => 'background'], false],
+    'null' => [['driver' => 'null'], false],
+    'failover onto sync' => [['driver' => 'failover', 'connections' => ['sync']], false],
+    'database' => [['driver' => 'database', 'table' => 'jobs', 'queue' => 'default'], true],
+]);
+
+it('settles without queueing on a sync connection', function () {
     Log::spy();
     config()->set('queue.default', 'sync');
-    config()->set('queue.connections.sync', ['driver' => 'sync']);
+    app()->forgetInstance('queue');
+    Queue::clearResolvedInstance('queue');
 
     icChat(icAnswerStep());
     icRun('r8', stopAtOnce: true);
 
-    Queue::assertNothingPushed();
+    // Nothing ran the attempts back-to-back inside the turn.
+    expect($GLOBALS['icLookups'])->toBe([]);
 
-    Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message, array $context) => str_contains($context['reason'] ?? '', 'sync'));
+    Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message, array $context) => str_contains($context['reason'] ?? '', 'cannot hold a delayed job'));
 });
 
 it('records no spend of its own and prices nothing while the app drains the collector itself', function () {
@@ -608,3 +762,14 @@ it('caps the inline window by the time left, however many ids', function () {
     expect($resolver->resolveMany(['a', 'b', 'c']))->toBe([])
         ->and($GLOBALS['icLookups'])->toBe([]);
 });
+
+class IcSyncProbeJob implements ShouldQueue
+{
+    use Dispatchable;
+    use Queueable;
+
+    public function handle(): void
+    {
+        $GLOBALS['icSyncRan'] = true;
+    }
+}

@@ -30,4 +30,22 @@ class ActiveRuns
     {
         unset($this->prompts[$invocationId]);
     }
+
+    /**
+     * Whether another run is still in flight — i.e. `$invocationId` runs
+     * NESTED inside it (a sub-agent called from a tool).
+     */
+    public function hasOtherThan(string $invocationId): bool
+    {
+        return array_diff_key($this->prompts, [$invocationId => true]) !== [];
+    }
+
+    /**
+     * Forget every run — a new top-level turn starts (a run abandoned
+     * without an outcome must not make the next one look nested).
+     */
+    public function flush(): void
+    {
+        $this->prompts = [];
+    }
 }

@@ -7,8 +7,11 @@ use Illuminate\Support\Collection;
 
 /**
  * Read-side API over the usage events — the numbers budget checks and
- * OpenRouter reconciliation are built on. Only completed turns (ok/paused)
- * carry cost; failed_over rows are excluded from spend sums by having none.
+ * OpenRouter reconciliation are built on. Cost is carried by completed
+ * turns (ok/paused), by interrupted ones (stopped/failed: the steps they
+ * completed) and by `resolved` delta rows (their cut-off generations,
+ * priced later, sharing the turn's invocation id); failed_over rows are
+ * excluded from spend sums by having none.
  */
 class TurnSpend
 {

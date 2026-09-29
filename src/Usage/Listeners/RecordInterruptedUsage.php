@@ -89,7 +89,13 @@ class RecordInterruptedUsage
         // still holds spend earlier usage rows already counted: the row then
         // carries no spend of its own (and prices nothing) rather than
         // counting it twice.
-        $drains = (bool) config('ai-kit.usage.drain_spend', true);
+        //
+        // A NESTED run (a sub-agent whose failure laravel/ai's AgentTool turns
+        // into a tool result, so the outer run carries on) leaves the shared
+        // collector alone as well: it holds the outer run's completed steps,
+        // and whatever the nested run spent belongs to the outer turn's row.
+        $nested = $this->runs->hasOtherThan($invocationId);
+        $drains = (bool) config('ai-kit.usage.drain_spend', true) && ! $nested;
 
         $cost = $drains ? $this->spend->totalCost() : 0.0;
         $generationIds = $drains ? $this->spend->generationIds() : [];
@@ -143,6 +149,7 @@ class RecordInterruptedUsage
             'context' => array_filter([
                 ...$flags,
                 'turn_id' => $turnId,
+                'nested' => $nested ?: null,
                 'pending_generation_ids' => $pending !== [] ? $pending : null,
             ], fn ($value) => $value !== null) ?: null,
             'created_at' => now(),
@@ -150,7 +157,9 @@ class RecordInterruptedUsage
 
         $this->trace->turn($usageEvent);
 
-        event(new TurnUsageRecorded($usageEvent, $interruption));
+        // Its own rescue: an app listener that throws must not stop the
+        // cut-off generations from being priced.
+        rescue(fn () => event(new TurnUsageRecorded($usageEvent, $interruption)));
 
         $this->interrupted->track($usageEvent, $pending, $turnId, TurnContext::turnMeta());
     }

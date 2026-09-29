@@ -53,15 +53,40 @@ class GatewayServiceProvider extends ServiceProvider
         }
     }
 
+    /**
+     * Hidden Context key a dehydrated payload carries: the token of the live
+     * Context it was copied from.
+     */
+    public const CONTEXT_ORIGIN_KEY = 'ai-kit.context_origin';
+
+    /** @var \WeakMap<ContextRepository, string>|null */
+    protected static ?\WeakMap $origins = null;
+
     public function boot(): void
     {
         // Laravel serialises Context into every job dispatched mid-turn and
-        // re-hydrates it in the job: a turn's spend (and its pending
-        // generations, its turn id and meta) must never ride along, or the
-        // job's own usage row — or a second settlement under the same turn
-        // id — would count it again. The dispatching turn keeps its values:
-        // dehydrate() works on a copy.
-        Context::dehydrating(function (ContextRepository $context): void {
+        // re-hydrates it in the job. A turn's spend (its pending generations,
+        // its turn id and meta) must never ride into a job that runs
+        // ELSEWHERE — a worker's own usage row, or a second settlement under
+        // the same turn id, would count it again. But a job run IN-PROCESS
+        // (dispatchSync, a sync / deferred / background connection) is
+        // hydrated back into the very Context the live turn is using: strip
+        // it there and the turn loses its own spend. So the payload is
+        // stamped with a token of the Context it came from, and stripped on
+        // hydration only when that Context is not the one hydrating it.
+        Context::dehydrating(function (ContextRepository $copy): void {
+            $copy->addHidden(self::CONTEXT_ORIGIN_KEY, self::originToken($this->app->make(ContextRepository::class)));
+        });
+
+        Context::hydrated(function (ContextRepository $context): void {
+            $origin = $context->getHidden(self::CONTEXT_ORIGIN_KEY);
+
+            $context->forgetHidden(self::CONTEXT_ORIGIN_KEY);
+
+            if (is_string($origin) && $origin === (self::$origins[$context] ?? null)) {
+                return;
+            }
+
             $spend = $this->app->make(ContextSpendCollector::class);
 
             $context->forget([
@@ -74,6 +99,17 @@ class GatewayServiceProvider extends ServiceProvider
 
             $context->forgetHidden([TurnContext::TURN_ID_KEY, TurnContext::TURN_META_KEY]);
         });
+    }
+
+    /**
+     * A random token per live Context instance, held weakly: a later job's
+     * fresh (scoped) Context in the same worker process never matches it.
+     */
+    protected static function originToken(ContextRepository $context): string
+    {
+        self::$origins ??= new \WeakMap;
+
+        return self::$origins[$context] ??= bin2hex(random_bytes(16));
     }
 
     /**
