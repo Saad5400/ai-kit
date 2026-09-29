@@ -14,6 +14,9 @@ use Laravel\Ai\Streaming\Events\StreamEnd;
 use Laravel\Ai\Streaming\Events\StreamEvent;
 use Laravel\Ai\Streaming\Events\ToolApprovalRequest;
 use Saad\AiKit\Safety\KillSwitch;
+use Saad\AiKit\Streaming\Events\TurnStopped;
+use Saad\AiKit\Support\TurnContext;
+use Saad\AiKit\Usage\Events\InterruptedSpendResolved;
 use Throwable;
 
 /**
@@ -24,11 +27,15 @@ use Throwable;
  * binding, the cancel generator, the buffer sink, the catch-all, and one
  * finally that cleans up every exit path.
  *
+ * SPEND: every run opens with {@see TurnContext::beginTurn()} — a clean
+ * spend collector (an inline or sync-queued turn shares its caller's
+ * Context, so the worker's per-job reset does not cover it) and the turn's
+ * id + `$meta`, which the usage module stamps on the `stopped`/`failed` row
+ * it writes for an interrupted turn and hands to
+ * {@see InterruptedSpendResolved}.
+ *
  * WHAT STAYS APP-SIDE, deliberately: model/user resolution, prompt
- * assembly, metering, per-turn spend reset (catodemy's TurnProviderSpend is
- * an app-level accumulator; the kit's SpendCollector is a per-call
- * scratchpad the usage module drains, so there is no kit-level reset to
- * own here), and — above all — THE TERMINAL EVENT. The runner holds
+ * assembly, metering, and — above all — THE TERMINAL EVENT. The runner holds
  * `done`/`error` back and surfaces them on the {@see TurnOutcome}; the app
  * writes its own `finish()`/`fail()`, because its completion payload
  * (credit outcome, grounding, persisted message) only exists after the
@@ -100,9 +107,12 @@ class TurnRunner
      * the failure was a wire `error` event that carried no message);
      * without it the exception's own message is used, mirroring the
      * mapper's raw default — public apps should always pass a localized
-     * resolver.
+     * resolver. `$meta` (queue-serialisable) rides along to
+     * {@see InterruptedSpendResolved} — put what the app needs to find the
+     * payer there.
      *
      * @param  Closure(): iterable<StreamEvent>  $stream
+     * @param  array<string, mixed>  $meta
      */
     public function run(
         string $turnId,
@@ -112,6 +122,7 @@ class TurnRunner
         ?string $feature = null,
         ?Authenticatable $actingAs = null,
         ?Closure $failMessage = null,
+        array $meta = [],
     ): TurnOutcome {
         $resolveFailure = fn (?Throwable $e): string => $failMessage !== null
             ? (string) $failMessage($e)
@@ -122,6 +133,7 @@ class TurnRunner
         $swapped = false;
         $result = null;
         $provider = null;
+        $opened = false;
 
         // ONE outer try/finally owns every cleanup from here on — the
         // ToolProgress unbind and the guard restore run on EVERY exit
@@ -137,6 +149,12 @@ class TurnRunner
             if ($this->killSwitch?->engaged($feature)) {
                 return TurnOutcome::failed(new StreamResult, (string) __('ai-kit::safety.killed'), code: ErrorCode::KILLED);
             }
+
+            // A clean spend collector and the turn's id + app metadata, which
+            // the usage module stamps on an interrupted turn's row and hands
+            // to InterruptedSpendResolved; unbound in the finally.
+            TurnContext::beginTurn($turnId, $meta);
+            $opened = true;
 
             // Label every model call this turn makes so the usage rows are
             // attributable; inherited by any pre-pass the app runs inside
@@ -227,6 +245,10 @@ class TurnRunner
         } finally {
             ToolProgress::unbind();
 
+            if ($opened) {
+                TurnContext::endTurn();
+            }
+
             if ($swapped) {
                 $previousUser !== null ? $guard->setUser($previousUser) : Auth::forgetGuards();
             }
@@ -313,11 +335,15 @@ class TurnRunner
      */
     protected function interrupt(iterable $stream, iterable $events, StreamEvent $last): void
     {
+        $invocationId = $stream instanceof StreamableAgentResponse ? $stream->invocationId : $last->invocationId;
+
         if (! $events instanceof Generator || ! $events->valid()) {
+            // Nothing to throw into (a plain iterator, an exhausted stream):
+            // the run is stopped all the same, and its spend still counts.
+            $this->announceStop($invocationId);
+
             return;
         }
-
-        $invocationId = $stream instanceof StreamableAgentResponse ? $stream->invocationId : $last->invocationId;
 
         if ($invocationId !== null && app()->bound(InterruptedTurns::class)) {
             app(InterruptedTurns::class)->sealTracked($invocationId);
@@ -329,6 +355,18 @@ class TurnRunner
             // The vendor's catch ran and rethrew it — the expected exit.
         } catch (Throwable $e) {
             report($e);
+        }
+
+        // laravel/ai reports no AgentFailed for it (the throw landed at the
+        // response's iterator, outside its loop): announce the stop, so the
+        // usage module records the stopped turn's spend.
+        $this->announceStop($invocationId);
+    }
+
+    protected function announceStop(?string $invocationId): void
+    {
+        if ($invocationId !== null) {
+            rescue(fn () => event(new TurnStopped($invocationId)));
         }
     }
 

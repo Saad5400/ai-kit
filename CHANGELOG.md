@@ -3,6 +3,53 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.14.1 — 2026-09-28
+
+Interrupted turns: usage rows for stopped and failed turns, and the cut-off step priced after the
+fact (owner ruling 2026-09-28 — a stopped turn is debited up to the stop, a failed turn stays free
+but counts toward the budget). See the README, "Stopped and failed turns"; it lists what catodemy
+and s-grade delete from their own code.
+
+- Usage: `RecordInterruptedUsage` writes ONE `stopped` / `failed` row per interrupted turn (from
+  laravel/ai's `AgentFailed`, and from the new `Streaming\Events\TurnStopped` that `TurnRunner`
+  fires after settling a stop — laravel/ai reports none for it) with the completed steps' exact
+  cost, generation ids and tokens, then fires `TurnUsageRecorded` with the interruption named
+  (`$interruption`, `interrupted()`/`stopped()`/`failed()`; the constructor stays BC). No second
+  row when a run already has one (a stop that lost to completion). `usage.record_interrupted`.
+- Gateway: a streamed step that does not complete (a stop, an error frame, a thrown failure, an
+  abandoned stream) is recorded too — priced when its `usage.cost` already arrived (this changes
+  the old "an error-frame step records nothing"), otherwise as a PENDING generation.
+- `SpendCollector` gains `recordPendingGeneration()` and `pendingGenerationIds()` (an id that is
+  also a completed generation is never pending); `flush()` clears them. `ContextSpendCollector`
+  and `FakeSpendCollector` (+ `assertPending()`) implement them — a custom collector must too.
+- `GenerationCostResolver` (`GET /generation?id=` → `data.total_cost`) and the queued
+  `Usage\ResolveInterruptedSpend` (5/20/60/180/300 s, then a warning) price pending generations —
+  of an interrupted turn, or of a completed turn whose failover attempt / sub-agent was cut off —
+  budgeting each via `BudgetGuard::recordOnce()` per generation id, then write one `resolved`
+  delta row and fire `Usage\Events\InterruptedSpendResolved` once per settled run (`billable()`,
+  `debitKey()` = `debit:turn:{turnId}:interrupted:{invocationId}`, `turnId`, `meta`).
+- Hardening: pending ids are recorded eagerly on a generation's first chunk; nothing in the
+  pricing path throws into the turn (a refused queue settles with what priced); a missing key,
+  a non-OpenRouter `spend.provider` or a 401/403 is one error log, not five retries; a zero cost
+  with counted tokens is "not yet" until the last attempt; give-up logs the last HTTP status;
+  the event's once-guard is a short lock + a "done" marker set after the listeners return (a
+  killed worker's redelivery fires again); a `sync` queue connection is detected; the inline
+  window is off by default, never runs for failed turns and caps each request by the time
+  left; a turn's spend and turn id/meta never ride into a job hydrated by another Context (a
+  worker), while an in-process job (dispatchSync / sync / deferred / background) leaves the
+  live turn's intact; with `usage.drain_spend` off interrupted rows carry no spend; a nested
+  run that fails leaves the shared collector to the outer run; an app listener throwing on
+  `TurnUsageRecorded` no longer stops the pricing; `deferred` / `background` / `null` /
+  failover-onto-sync connections are detected like `sync`; a reused delta row is updated to
+  the retried sum; `TurnStopped` is announced for non-generator streams too.
+- `CreditMeter::chargeResolved($payer, $event)` charges that delta under its own key (failed turns
+  waived; no free-turn waiver).
+- `TurnRunner::run(..., meta: [])` + `TurnContext::beginTurn()`/`endTurn()`: every turn starts
+  with a flushed collector (sync-driver / inline turns share their caller's Context) and carries
+  its turn id and app meta to the events above.
+- Config: `ai-kit.spend` (`resolve_interrupted`, `retry_delays_seconds`, an opt-in inline window,
+  queue and cache store).
+
 ## 0.14.0 — 2026-09-28
 
 laravel/ai 1.0. Compatibility with `laravel/ai ^1.0` + `laravel/mcp ^1.0` (1.0 conflicts with

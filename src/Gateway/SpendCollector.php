@@ -2,6 +2,8 @@
 
 namespace Saad\AiKit\Gateway;
 
+use Saad\AiKit\Usage\InterruptedSpend;
+
 /**
  * Receives the exact provider cost and generation ids the gateway captures
  * from OpenRouter responses. The streamed/non-streamed split is deliberate:
@@ -11,6 +13,13 @@ namespace Saad\AiKit\Gateway;
  * The read side is part of the contract because the usage module records
  * turns from what the collector accumulated; a collector that cannot be
  * read back cannot be metered.
+ *
+ * PENDING generations (0.14.1) are streamed steps that have not completed:
+ * the gateway records one on the step's first chunk and retires it when the
+ * step completes (recordGenerationId()). What is still pending when a usage
+ * row is written was cut off by a stop or a mid-stream failure — billed by
+ * OpenRouter, but without the final chunk's `usage.cost` — and is priced
+ * afterwards by {@see InterruptedSpend}.
  */
 interface SpendCollector
 {
@@ -31,7 +40,21 @@ interface SpendCollector
     public function generationIds(?bool $streamed = null): array;
 
     /**
-     * Clear all captured values.
+     * Record a generation that was interrupted before its cost arrived.
+     */
+    public function recordPendingGeneration(string $generationId): void;
+
+    /**
+     * Interrupted generations still waiting for a price, deduplicated. An id
+     * also recorded through {@see recordGenerationId()} (its step completed
+     * after all) is never pending, so it can never be priced twice.
+     *
+     * @return list<string>
+     */
+    public function pendingGenerationIds(): array;
+
+    /**
+     * Clear all captured values, pending generations included.
      */
     public function flush(): void;
 }

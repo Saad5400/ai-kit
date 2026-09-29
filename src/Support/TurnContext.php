@@ -3,6 +3,9 @@
 namespace Saad\AiKit\Support;
 
 use Illuminate\Support\Facades\Context;
+use Saad\AiKit\Gateway\SpendCollector;
+use Saad\AiKit\Streaming\TurnRunner;
+use Saad\AiKit\Usage\ActiveRuns;
 
 /**
  * The Context keys a turn's timing travels through. The gateway stamps time
@@ -19,6 +22,12 @@ class TurnContext
     public const TTFT_KEY = 'ai-kit.turn.ttft_ms';
 
     public const FLAGS_KEY = 'ai-kit.turn.flags';
+
+    /** The app's id for the turn being run (TurnRunner's `$turnId`). */
+    public const TURN_ID_KEY = 'ai-kit.turn.id';
+
+    /** App metadata for the turn, handed to InterruptedSpendResolved. */
+    public const TURN_META_KEY = 'ai-kit.turn.meta';
 
     public static function startedAtKey(string $invocationId): string
     {
@@ -127,5 +136,58 @@ class TurnContext
     public static function nowMs(): int
     {
         return (int) (microtime(true) * 1000);
+    }
+
+    /**
+     * Open a top-level turn: name it, attach the app's metadata, and start
+     * the spend collector clean. {@see TurnRunner}
+     * calls this for every run; an app that drives a turn without the runner
+     * calls it (and {@see endTurn()}) itself.
+     *
+     * The flush is not redundant with the queue worker: the worker gives
+     * every job a fresh Context, but a `dispatchSync()` / sync-driver job
+     * re-hydrates its CALLER's Context, and an HTTP-inline turn or a job
+     * running several turns shares one — so rounds another turn left on the
+     * collector would be absorbed into this turn's usage row. Skipped when
+     * `ai-kit.usage.drain_spend` is off: the app owns the collector then.
+     *
+     * Hidden context, so the metadata stays out of log records.
+     *
+     * @param  array<string, mixed>  $meta  must be queue-serialisable
+     */
+    public static function beginTurn(string $turnId, array $meta = []): void
+    {
+        if (config('ai-kit.usage.drain_spend', true) && app()->bound(SpendCollector::class)) {
+            app(SpendCollector::class)->flush();
+        }
+
+        if (app()->bound(ActiveRuns::class)) {
+            app(ActiveRuns::class)->flush();
+        }
+
+        Context::addHidden(static::TURN_ID_KEY, $turnId);
+        Context::addHidden(static::TURN_META_KEY, $meta);
+    }
+
+    public static function endTurn(): void
+    {
+        Context::forgetHidden([static::TURN_ID_KEY, static::TURN_META_KEY]);
+    }
+
+    public static function turnId(): ?string
+    {
+        $id = Context::getHidden(static::TURN_ID_KEY);
+
+        return is_string($id) && $id !== '' ? $id : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function turnMeta(): array
+    {
+        $meta = Context::getHidden(static::TURN_META_KEY, []);
+
+        return is_array($meta) ? $meta : [];
     }
 }

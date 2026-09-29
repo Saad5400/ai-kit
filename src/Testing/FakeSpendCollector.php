@@ -18,6 +18,9 @@ class FakeSpendCollector implements SpendCollector
     /** @var list<array{id: string, streamed: bool}> */
     protected array $generationIds = [];
 
+    /** @var list<string> */
+    protected array $pending = [];
+
     public function recordCost(float $usd, bool $streamed): void
     {
         $this->costs[] = ['usd' => $usd, 'streamed' => $streamed];
@@ -44,10 +47,29 @@ class FakeSpendCollector implements SpendCollector
         )));
     }
 
+    public function recordPendingGeneration(string $generationId): void
+    {
+        $this->pending[] = $generationId;
+    }
+
+    public function pendingGenerationIds(): array
+    {
+        return array_values(array_diff(array_values(array_unique($this->pending)), $this->generationIds()));
+    }
+
     public function flush(): void
     {
         $this->costs = [];
         $this->generationIds = [];
+        $this->pending = [];
+    }
+
+    /**
+     * @param  list<string>  $generationIds
+     */
+    public function assertPending(array $generationIds): void
+    {
+        Assert::assertSame($generationIds, $this->pendingGenerationIds(), 'The pending (unpriced) generation ids differ.');
     }
 
     public function assertTotalCost(float $usd, ?bool $streamed = null): void
@@ -63,6 +85,7 @@ class FakeSpendCollector implements SpendCollector
     {
         Assert::assertSame([], $this->costs, 'Expected no costs to be recorded, but some were.');
         Assert::assertSame([], $this->generationIds, 'Expected no generation ids to be recorded, but some were.');
+        Assert::assertSame([], $this->pending, 'Expected no pending generations to be recorded, but some were.');
     }
 
     /**

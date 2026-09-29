@@ -208,6 +208,8 @@ return [
     | turn; set it to false while an app still drains the collector itself
     | (dual-write transition). Apps label turns by setting the
     | `feature_context_key` Context value before prompting.
+    | `record_interrupted` also writes one `stopped` / `failed` row for a
+    | turn that did not complete (laravel/ai's AgentFailed) — see `spend`.
     |
     */
 
@@ -216,6 +218,7 @@ return [
         'drain_spend' => true,
         'feature_context_key' => 'ai-kit.feature',
         'record_failovers' => true,
+        'record_interrupted' => true,
 
         // One structured log record per turn / failover attempt, with OTel
         // GenAI attribute names. null channel = the default log channel.
@@ -934,6 +937,45 @@ return [
         'usd_to_sar' => 3.75,
         'free_turn_max_cost_usd' => (float) env('AI_KIT_FREE_TURN_MAX_COST_USD', 0.0006),
         'credits_per_message_estimate' => 10,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Interrupted spend
+    |--------------------------------------------------------------------------
+    |
+    | A turn the user stops, or that fails, gets ONE usage row (status
+    | `stopped` / `failed`, `usage.record_interrupted`) with the exact cost of
+    | the steps it completed, and TurnUsageRecorded names the interruption.
+    | A step the interruption cut off never received its `usage.cost`, yet
+    | OpenRouter bills it: its generation is priced afterwards from
+    | `GET /generation?id=` (the key of the laravel/ai provider named by
+    | `provider`, whose driver must be `openrouter`) by the queued
+    | ResolveInterruptedSpend — one attempt per `retry_delays_seconds`
+    | entry, then it gives up with a warning — each priced generation
+    | recorded on the daily budget (`record_budget`, keyed per generation
+    | id), and the total reported ONCE as a `resolved` delta row +
+    | InterruptedSpendResolved. A worker must drain `connection` / `queue`
+    | (a `sync` connection is detected and skipped). `sync_window_seconds`
+    | > 0 first tries inline at the end of a stopped turn (never a failed
+    | one; each request capped by the time left) — off, because the stats
+    | are rarely ready that soon and it holds the user's worker.
+    | `resolve_interrupted` false skips the pricing entirely. The once-guard
+    | lives in `cache_store` (null = the safety cache store).
+    |
+    */
+
+    'spend' => [
+        'resolve_interrupted' => true,
+        'provider' => 'openrouter',
+        'record_budget' => true,
+        'retry_delays_seconds' => [5, 20, 60, 180, 300],
+        'sync_window_seconds' => 0,
+        'sync_backoff_ms' => [500, 1000, 1500, 3000],
+        'request_timeout_seconds' => 3,
+        'connection' => null,
+        'queue' => null,
+        'cache_store' => null,
     ],
 
     /*

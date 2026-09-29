@@ -27,7 +27,9 @@ use Laravel\Ai\Streaming\Events\ToolCall as ToolCallEvent;
 use Laravel\Ai\Tools\ToolNameResolver;
 use Saad\AiKit\Catalog\ModelRouting;
 use Saad\AiKit\Streaming\ErrorCode;
+use Saad\AiKit\Streaming\TurnCancelledException;
 use Saad\AiKit\Support\TurnContext;
+use Saad\AiKit\Usage\InterruptedSpend;
 use Throwable;
 
 /**
@@ -44,6 +46,9 @@ use Throwable;
  *    be silently discarded by TextGenerationLoop)
  *  - audioFormat(): tolerant of the mimes stock's exact-match list throws on
  *  - parseTextResponse(): captures generation id + exact cost (non-streamed)
+ *  - processTextStream(): a step cut off by a stop or a mid-stream failure
+ *    is recorded too — priced if its cost arrived, else as a PENDING
+ *    generation the kit prices afterwards (InterruptedSpend)
  *  - processTextStream()/parseServerSentEvents(): stock's stream loop over a
  *    tapped body — each chunk is read for generation id, cost and upstream,
  *    DeepSeek `reasoning_content` is renamed to `reasoning`, the first token
@@ -767,8 +772,13 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     /**
      * Stock 1.0's stream loop, run over a tapped body ({@see tapChunk()}),
      * then the step's spend is recorded and the response re-wrapped with
-     * what the tap saw. An error frame ends stock's loop with null; that
-     * step records nothing, as it bills nothing.
+     * what the tap saw.
+     *
+     * A step that does NOT complete — an error frame ends stock's loop with
+     * null, a stop throws {@see TurnCancelledException} in at the yield, a
+     * dropped connection throws out of the parse, a consumer abandons the
+     * generator — is still billed by OpenRouter for what it generated, so
+     * the finally records it too ({@see recordInterruptedStep()}).
      *
      * @return Generator<int, StreamEvent, mixed, StepResponse|null>
      */
@@ -780,7 +790,15 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     ): Generator {
         $tap = new StreamTap($streamBody, $this->markupLeakFilter());
 
-        $step = yield from parent::processTextStream($invocationId, $provider, $model, $tap);
+        $step = null;
+
+        try {
+            $step = yield from parent::processTextStream($invocationId, $provider, $model, $tap);
+        } finally {
+            if (! $step instanceof StepResponse) {
+                $this->recordInterruptedStep($tap);
+            }
+        }
 
         if (! $step instanceof StepResponse) {
             return $step;
@@ -796,6 +814,22 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
         }
 
         return InspectedStepResponse::from($step)->inspected($tap->filter->leaked(), $tap->filter->removed(), $tap->upstream);
+    }
+
+    /**
+     * The spend of a step that never completed. Its generation id is already
+     * PENDING (recorded on its first chunk, {@see tapChunk()}), for
+     * {@see InterruptedSpend} to price once OpenRouter's generation stats
+     * exist; a cost that already arrived (a usage frame ahead of the error
+     * frame) prices it here instead, like any other step's. A step cut off
+     * before its first chunk has no id and billed nothing.
+     */
+    protected function recordInterruptedStep(StreamTap $tap): void
+    {
+        if ($tap->generationId !== null && $tap->cost !== null) {
+            $this->spend->recordGenerationId($tap->generationId, streamed: true);
+            $this->spend->recordCost($tap->cost, streamed: true);
+        }
     }
 
     /**
@@ -837,6 +871,15 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     protected function tapChunk(StreamTap $tap, array $data): array
     {
         if (is_string($data['id'] ?? null) && $data['id'] !== '') {
+            // Pending from the first chunk that names it — OpenRouter bills
+            // the generation from here on — until the step completes
+            // (recordGenerationId() retires it). Eager, not in a finally: a
+            // stop unwinds these generators by destruction, which a reference
+            // cycle can defer into the next turn.
+            if ($tap->generationId !== $data['id']) {
+                $this->spend->recordPendingGeneration($data['id']);
+            }
+
             $tap->generationId = $data['id'];
         }
 

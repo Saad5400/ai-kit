@@ -4,6 +4,8 @@ use Saad\AiKit\Credits\ChargeResult;
 use Saad\AiKit\Credits\CreditCalculator;
 use Saad\AiKit\Credits\CreditMeter;
 use Saad\AiKit\Testing\FakeCreditDebitor;
+use Saad\AiKit\Usage\Events\InterruptedSpendResolved;
+use Saad\AiKit\Usage\UsageEvent;
 
 function meter(?FakeCreditDebitor $debitor = null): array
 {
@@ -107,4 +109,34 @@ it('passes the write-off through when the balance clamps at zero', function () {
 
     expect($result->creditsCharged)->toBe(10)
         ->and($result->writeOff)->toBe(18);
+});
+
+function resolvedSpend(string $turnStatus, float $cost = 0.0002): InterruptedSpendResolved
+{
+    $turn = new UsageEvent(['invocation_id' => 'inv-1', 'status' => $turnStatus]);
+
+    return new InterruptedSpendResolved(new UsageEvent(['status' => 'resolved']), $turn, 'turn-1', $cost, ['gen-1']);
+}
+
+it('charges the late-priced cut-off step of a stopped turn under its own key, with no free-turn waiver', function () {
+    [$meter, $debitor] = meter();
+
+    // Under the chit-chat ceiling: a stopped cheap answer is exactly what must pay.
+    $result = $meter->chargeResolved('user:1', resolvedSpend('stopped'));
+
+    expect($result->isCharged())->toBeTrue()
+        ->and($result->costSource)->toBe('generation_lookup');
+
+    $debitor->assertDebited($result->creditsCharged, 'debit:turn:turn-1:interrupted:inv-1');
+    expect($debitor->debits[0]['meta'])->toMatchArray(['turn_id' => 'turn-1', 'generation_ids' => ['gen-1']]);
+
+    expect($meter->chargeResolved('user:1', resolvedSpend('stopped'))->status)->toBe(ChargeResult::STATUS_ALREADY_CHARGED);
+});
+
+it('waives the late-priced spend of a failed turn', function () {
+    [$meter, $debitor] = meter();
+
+    expect($meter->chargeResolved('user:1', resolvedSpend('failed'))->waiveReason)->toBe('failed_turn');
+
+    $debitor->assertNothingDebited();
 });

@@ -8,7 +8,9 @@ use Laravel\Ai\Events\AgentStreamed;
 use Laravel\Ai\Models\Conversation;
 use Saad\AiKit\Gateway\SpendCollector;
 use Saad\AiKit\Support\TurnContext;
+use Saad\AiKit\Usage\ActiveRuns;
 use Saad\AiKit\Usage\Events\TurnUsageRecorded;
+use Saad\AiKit\Usage\InterruptedSpend;
 use Saad\AiKit\Usage\TraceLogger;
 use Saad\AiKit\Usage\UsageEvent;
 
@@ -30,6 +32,8 @@ class RecordTurnUsage
     public function __construct(
         protected SpendCollector $spend,
         protected TraceLogger $trace,
+        protected ?InterruptedSpend $interrupted = null,
+        protected ?ActiveRuns $runs = null,
     ) {}
 
     public function handle(AgentPrompted $event): void
@@ -39,12 +43,14 @@ class RecordTurnUsage
 
     protected function record(AgentPrompted $event): void
     {
+        $this->runs?->forget($event->invocationId);
+
         $response = $event->response;
         $usage = $response->usage;
         $model = $response->meta->model ?? $event->prompt->model;
         $participant = $response->conversationUser;
 
-        [$cost, $generationIds] = $this->collectSpend();
+        [$cost, $generationIds, $pending] = $this->collectSpend();
         [$durationMs, $ttftMs] = TurnContext::consume($event->invocationId);
 
         // What the gateway's step guard observed this turn — a wrap-up
@@ -87,24 +93,36 @@ class RecordTurnUsage
 
         $this->trace->turn($usageEvent);
 
-        event(new TurnUsageRecorded($usageEvent));
+        // Its own rescue: an app listener that throws must not stop the
+        // cut-off generations below from being priced.
+        rescue(fn () => event(new TurnUsageRecorded($usageEvent)));
+
+        // A generation cut off on the way to completion — a failover attempt,
+        // a sub-agent — was still billed: price it after the fact.
+        $this->interrupted?->track($usageEvent, $pending, TurnContext::turnId(), TurnContext::turnMeta());
     }
 
     /**
      * Read the collector's cost and generation ids, clearing it unless the
      * app still drains it itself (dual-write transition).
      *
-     * @return array{0: ?float, 1: list<string>}
+     * @return array{0: ?float, 1: list<string>, 2: list<string>}
      */
     protected function collectSpend(): array
     {
         $cost = $this->spend->totalCost();
         $generationIds = $this->spend->generationIds();
-
-        if (config('ai-kit.usage.drain_spend', true)) {
-            $this->spend->flush();
+        if (! config('ai-kit.usage.drain_spend', true)) {
+            // The app drains the collector itself; its pending generations
+            // stay with it (priced here, they would be priced again by the
+            // next row that reads the undrained collector).
+            return [$cost > 0 ? $cost : null, $generationIds, []];
         }
 
-        return [$cost > 0 ? $cost : null, $generationIds];
+        $pending = $this->spend->pendingGenerationIds();
+
+        $this->spend->flush();
+
+        return [$cost > 0 ? $cost : null, $generationIds, $pending];
     }
 }
