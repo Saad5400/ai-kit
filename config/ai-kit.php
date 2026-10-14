@@ -667,6 +667,97 @@ return [
                 'sort_order' => 200,
             ],
         ],
+
+        /*
+        | Retrieval models (DECISIONS.md #29, DRAFT) — the slugs the
+        | `embeddings` and `rerank` lanes may point at. A SEPARATE registry
+        | from `models` above on purpose: that list is the user-facing chat
+        | menu (synced into apps' `ai_models`, priced as ×N of the default,
+        | one `recommended` per task) and nobody picks a reranker in a chat.
+        | Merges by slug like `models`, so an app may add an entry.
+        |
+        |   kind                  embeddings | rerank
+        |   dimensions            native vector length (embeddings)
+        |   matryoshka            a prefix of the vector is itself an embedding,
+        |                         so the driver may truncate + re-normalise
+        |   dimensions_parameter  the provider honours a `dimensions` request
+        |                         field for this slug (otherwise the driver
+        |                         truncates locally when `matryoshka`)
+        |   query_instruction     prefix for QUERIES only (instruction-tuned
+        |                         embedders); the lane's own key overrides it
+        |   max_input_tokens      per input text (embeddings) / per document +
+        |                         query (rerank)
+        |   *_usd_*               DISPLAY ONLY (#26c); spend is what the
+        |                         provider reports per call
+        |
+        | Prices: the public OpenRouter listing on 2026-10-15 (embeddings,
+        | MEASURED); rerank per-1k-search figures are the vendors' published
+        | rates (the listing exposes none). `dimensions_parameter` is set only
+        | where the upstream API is known to honour it (OpenAI); the rest fall
+        | back to local Matryoshka truncation, which is valid for all four.
+        */
+        'retrieval_models' => [
+            'openai/text-embedding-3-small' => [
+                'kind' => 'embeddings',
+                'label' => 'OpenAI text-embedding-3-small',
+                'dimensions' => 1536,
+                'matryoshka' => true,
+                'dimensions_parameter' => true,
+                'max_input_tokens' => 8192,
+                'input_usd_per_million' => 0.02,
+            ],
+            'openai/text-embedding-3-large' => [
+                'kind' => 'embeddings',
+                'label' => 'OpenAI text-embedding-3-large',
+                'dimensions' => 3072,
+                'matryoshka' => true,
+                'dimensions_parameter' => true,
+                'max_input_tokens' => 8192,
+                'input_usd_per_million' => 0.13,
+            ],
+            'qwen/qwen3-embedding-8b' => [
+                'kind' => 'embeddings',
+                'label' => 'Qwen3 Embedding 8B',
+                'dimensions' => 4096,
+                'matryoshka' => true,
+                'dimensions_parameter' => false,
+                'query_instruction' => "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
+                'max_input_tokens' => 32768,
+                'input_usd_per_million' => 0.01,
+            ],
+            'google/gemini-embedding-001' => [
+                'kind' => 'embeddings',
+                'label' => 'Gemini Embedding 001',
+                'dimensions' => 3072,
+                'matryoshka' => true,
+                'dimensions_parameter' => false,
+                'max_input_tokens' => 2048,
+                'input_usd_per_million' => 0.15,
+            ],
+            'cohere/rerank-v3.5' => [
+                'kind' => 'rerank',
+                'label' => 'Cohere Rerank 3.5',
+                'max_input_tokens' => 4096,
+                'usd_per_thousand_searches' => 1.0,
+            ],
+            'cohere/rerank-4-fast' => [
+                'kind' => 'rerank',
+                'label' => 'Cohere Rerank 4 Fast',
+                'max_input_tokens' => 32768,
+                'usd_per_thousand_searches' => 2.0,
+            ],
+            'cohere/rerank-4-pro' => [
+                'kind' => 'rerank',
+                'label' => 'Cohere Rerank 4 Pro',
+                'max_input_tokens' => 32768,
+                'usd_per_thousand_searches' => 2.5,
+            ],
+            'voyageai/rerank-2.5-lite' => [
+                'kind' => 'rerank',
+                'label' => 'Voyage rerank-2.5-lite',
+                'max_input_tokens' => 32000,
+            ],
+        ],
     ],
 
     /*
@@ -852,6 +943,82 @@ return [
 
     'authoring' => [
         'model' => env('AI_KIT_AUTHORING_MODEL', 'deepseek/deepseek-v4-pro-0813'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Embeddings (retrieval)
+    |--------------------------------------------------------------------------
+    |
+    | DECISIONS.md #29 (DRAFT, for the owner to rule). The fleet's embedding
+    | model, bound to `Saad\AiKit\Rag\Embeddings\Embedder` by the `rag`
+    | module. The default is catodemy's model at the time of the move —
+    | `openai/text-embedding-3-small` @ 1536 — so adopting the lane changes
+    | nothing; a different default ships only after an eval clears #28b's bar.
+    |
+    | `dimensions` is index DDL in every consuming app (a `vector(N)` column):
+    | changing it, or the model, means re-embedding the corpus. Below the
+    | model's native size the driver asks the provider for that size or
+    | truncates a Matryoshka vector itself (see `catalog.retrieval_models`);
+    | otherwise a size mismatch throws rather than corrupt an index.
+    | `query_instruction` (null = the registry entry's) prefixes QUERIES only.
+    | `driver`: `openrouter` | `fake` (deterministic, offline).
+    |
+    */
+
+    'embeddings' => [
+        'model' => env('AI_KIT_EMBEDDINGS_MODEL', 'openai/text-embedding-3-small'),
+        'dimensions' => (int) env('AI_KIT_EMBEDDINGS_DIMENSIONS', 1536),
+        'query_instruction' => env('AI_KIT_EMBEDDINGS_QUERY_INSTRUCTION'),
+        'driver' => env('AI_KIT_EMBEDDINGS_DRIVER', 'openrouter'),
+        'batch_size' => 100,
+        'timeout_seconds' => 60,
+        'attempts' => 2,
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Rerank (retrieval)
+    |--------------------------------------------------------------------------
+    |
+    | DECISIONS.md #29 (DRAFT). The cross-encoder that re-scores a search's
+    | top candidates, bound to `Saad\AiKit\Rag\Rerank\Reranker`. Shipping a
+    | lane does not switch reranking ON anywhere — an app decides when to call
+    | it (catodemy: `search.rerank.enabled`, adopted only if its eval shows a
+    | gain). Default `cohere/rerank-v3.5`: the cheaper of the two models
+    | MEASURED working on OpenRouter's `/rerank` (2026-10-15, Arabic/English),
+    | Arabic among its officially supported languages.
+    |
+    | `timeout_ms` is the TOTAL budget per request (one attempt, no retries —
+    | it sits on a user's latency path); past it the request comes back
+    | failed and the caller keeps its own order. `top_n` null = score every
+    | document. `driver`: `openrouter` | `fake` | `null` (keeps input order).
+    |
+    */
+
+    'rerank' => [
+        'model' => env('AI_KIT_RERANK_MODEL', 'cohere/rerank-v3.5'),
+        'driver' => env('AI_KIT_RERANK_DRIVER', 'openrouter'),
+        'top_n' => null,
+        'timeout_ms' => (int) env('AI_KIT_RERANK_TIMEOUT_MS', 800),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | RAG module
+    |--------------------------------------------------------------------------
+    |
+    | `provider` is the laravel/ai provider whose `ai.providers.{name}.key`
+    | and `.url` both retrieval drivers call (an app configures nothing new).
+    | `record_budget` adds each call's provider-reported cost to the daily
+    | BudgetGuard (needs the safety module) — retrieval spends the same key
+    | the chat turns do.
+    |
+    */
+
+    'rag' => [
+        'provider' => 'openrouter',
+        'record_budget' => true,
     ],
 
     /*

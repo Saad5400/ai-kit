@@ -191,6 +191,39 @@ it('resolves every shared lane to a declared catalog entry', function () {
 });
 
 /*
+ * DECISIONS.md #29 (draft): the retrieval lanes resolve to entries of the
+ * RIGHT KIND in `catalog.retrieval_models` — never to the chat menu, which is
+ * user-facing and synced into apps' `ai_models` tables. The embeddings default
+ * is catodemy's geometry at the time of the move, so adopting the lane
+ * re-embeds nothing.
+ */
+it('resolves the retrieval lanes to declared retrieval entries, outside the chat menu', function () {
+    $catalog = app(Catalog::class);
+    $retrieval = config('ai-kit.catalog.retrieval_models');
+
+    expect($catalog->embeddingsModel())->toBe('openai/text-embedding-3-small')
+        ->and($catalog->embeddingsDimensions())->toBe(1536)
+        ->and($catalog->rerankModel())->toBe('cohere/rerank-v3.5')
+        ->and($retrieval[$catalog->embeddingsModel()]['kind'] ?? null)->toBe('embeddings')
+        ->and($retrieval[$catalog->rerankModel()]['kind'] ?? null)->toBe('rerank')
+        // The default size must be one the default model can produce.
+        ->and($retrieval[$catalog->embeddingsModel()]['dimensions'])->toBeGreaterThanOrEqual($catalog->embeddingsDimensions());
+
+    foreach ($retrieval as $slug => $entry) {
+        expect($catalog->find($slug))->toBeNull("retrieval model {$slug} leaked into the chat menu")
+            ->and($entry['kind'])->toBeIn(['embeddings', 'rerank'])
+            ->and($entry['label'] ?? null)->toBeString();
+
+        if ($entry['kind'] === 'embeddings') {
+            // Every embedding candidate must fit pgvector's 2000-dim HNSW cap at
+            // the size the fleet stores, which only Matryoshka truncation gives.
+            expect($entry['dimensions'])->toBeInt()
+                ->and($entry['dimensions'] <= 2000 || ($entry['matryoshka'] ?? false) === true)->toBeTrue("{$slug} cannot be stored under HNSW's 2000-dim cap");
+        }
+    }
+});
+
+/*
  * The picker renders `label` and orders by `sort_order` (DECISIONS.md #28b),
  * so a row missing either is a row the user sees as a bare slug or in the
  * wrong place. `sort_order` must agree with price, because "sorted by price"

@@ -130,6 +130,36 @@ class Catalog
     }
 
     /**
+     * The fleet's EMBEDDING model (DECISIONS.md #29, draft) — the slug the
+     * `embeddings` lane's driver sends, from `catalog.retrieval_models`, never
+     * from the chat menu. Read the vectors through the bound
+     * `Saad\AiKit\Rag\Embeddings\Embedder` rather than calling a provider.
+     */
+    public function embeddingsModel(): string
+    {
+        return (string) config('ai-kit.embeddings.model', 'openai/text-embedding-3-small');
+    }
+
+    /**
+     * The vector length the `embeddings` lane produces — index DDL in every
+     * consuming app (`vector(N)`), so a change means re-embedding.
+     */
+    public function embeddingsDimensions(): int
+    {
+        return (int) config('ai-kit.embeddings.dimensions', 1536);
+    }
+
+    /**
+     * The fleet's RERANK model (DECISIONS.md #29, draft). Having a lane does
+     * not switch reranking on: the app decides when to call the bound
+     * `Saad\AiKit\Rag\Rerank\Reranker`.
+     */
+    public function rerankModel(): string
+    {
+        return (string) config('ai-kit.rerank.model', 'cohere/rerank-v3.5');
+    }
+
+    /**
      * The one recommended model for a task — the sync command's invariant
      * guarantees at most one; should data drift live, the first in source
      * order wins.
