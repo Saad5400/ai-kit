@@ -1,0 +1,159 @@
+{
+ "k": 3,
+ "n_scored": 11,
+ "false_positive_rate_on_negatives": 0.3333333333333333,
+ "slices": {
+  "all": {
+   "n": 11,
+   "recall": 0.697,
+   "hit1": 0.6364,
+   "mrr": 0.6818,
+   "ndcg": 0.5499
+  },
+  "caller:assistant": {
+   "n": 2,
+   "recall": 0.8333,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 0.6125
+  },
+  "caller:user": {
+   "n": 9,
+   "recall": 0.6667,
+   "hit1": 0.5556,
+   "mrr": 0.6111,
+   "ndcg": 0.5359
+  },
+  "intent:bulk": {
+   "n": 1,
+   "recall": 0.6667,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 0.5364
+  },
+  "intent:explain": {
+   "n": 5,
+   "recall": 0.6,
+   "hit1": 0.4,
+   "mrr": 0.5,
+   "ndcg": 0.4054
+  },
+  "intent:moment": {
+   "n": 1,
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 1.0
+  },
+  "intent:navigate": {
+   "n": 3,
+   "recall": 0.6667,
+   "hit1": 0.6667,
+   "mrr": 0.6667,
+   "ndcg": 0.5989
+  },
+  "intent:resource": {
+   "n": 1,
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 0.6885
+  },
+  "label:needs_label": {
+   "n": 1,
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 1.0
+  },
+  "label:silver": {
+   "n": 10,
+   "recall": 0.6667,
+   "hit1": 0.6,
+   "mrr": 0.65,
+   "ndcg": 0.5048
+  },
+  "phen:dialect": {
+   "n": 1,
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 0.3333
+  },
+  "phen:mixed_script": {
+   "n": 2,
+   "recall": 1.0,
+   "hit1": 0.5,
+   "mrr": 0.75,
+   "ndcg": 0.5134
+  }
+ },
+ "per_query": {
+  "s01": {
+   "recall": 1.0,
+   "hit1": 0.0,
+   "mrr": 0.5,
+   "ndcg": 0.6934264036172708
+  },
+  "s02": {
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 0.3333333333333333
+  },
+  "s03": {
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 1.0
+  },
+  "s04": {
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 0.6885288809404666
+  },
+  "s05": {
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 0.7967075809905066
+  },
+  "s06": {
+   "recall": 0.0,
+   "hit1": 0.0,
+   "mrr": 0.0,
+   "ndcg": 0.0
+  },
+  "s07": {
+   "recall": 0.0,
+   "hit1": 0.0,
+   "mrr": 0.0,
+   "ndcg": 0.0
+  },
+  "s08": {
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 1.0
+  },
+  "s09": {
+   "recall": 0.6666666666666666,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 0.5364180057596336
+  },
+  "s10": {
+   "recall": 1.0,
+   "hit1": 1.0,
+   "mrr": 1.0,
+   "ndcg": 1.0
+  },
+  "s11": {
+   "recall": 0.0,
+   "hit1": 0.0,
+   "mrr": 0.0,
+   "ndcg": 0.0
+  }
+ }
+}

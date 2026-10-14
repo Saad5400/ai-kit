@@ -1,0 +1,13 @@
+{"gid": "s01", "hits": [{"kind": "step", "id": "X"}, {"kind": "moment", "id": "L1", "t_ms": 170000}, {"kind": "moment", "id": "L1", "t_ms": 120000}, {"kind": "step", "id": "L1"}]}
+{"gid": "s02", "hits": [{"kind": "moment", "id": "L2", "t_ms": 10000}, {"kind": "step", "id": "L2"}]}
+{"gid": "s03", "hits": [{"kind": "moment", "id": "L3", "t_ms": 5000}]}
+{"gid": "s04", "hits": [{"kind": "resource", "id": "F2"}, {"kind": "step", "id": "F1"}, {"kind": "resource", "id": "F1"}]}
+{"gid": "s05", "hits": [{"kind": "step", "id": "L5"}, {"kind": "chapter", "id": "CH1"}]}
+{"gid": "s06", "hits": [{"kind": "step", "id": "Z0"}, {"kind": "step", "id": "Z1"}, {"kind": "step", "id": "Z2"}, {"kind": "step", "id": "Z3"}, {"kind": "step", "id": "Z4"}, {"kind": "step", "id": "Z5"}, {"kind": "step", "id": "Z6"}, {"kind": "step", "id": "Z7"}, {"kind": "step", "id": "Z8"}, {"kind": "step", "id": "Z9"}, {"kind": "step", "id": "L6"}]}
+{"gid": "s07", "hits": [{"kind": "step", "id": "?"}]}
+{"gid": "s08", "hits": [{"kind": "step", "id": "L8"}]}
+{"gid": "s09", "hits": [{"kind": "step", "id": "L11"}, {"kind": "step", "id": "L9"}, {"kind": "step", "id": "L9"}, {"kind": "step", "id": "L10"}]}
+{"gid": "s10", "hits": [{"kind": "step", "id": "L12"}]}
+{"gid": "n01", "hits": [{"kind": "step", "id": "A"}]}
+{"gid": "n02", "hits": []}
+{"gid": "n03", "hits": []}
