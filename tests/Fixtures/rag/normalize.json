@@ -1,0 +1,573 @@
+{
+    "_source": "Generated from catodemy origin/main fc11c288 — App\\Services\\Search\\SearchQueryText::normalizeArabic / normalizeTitle / tokens and App\\Support\\ArabicText::canonicalize. Do not hand-edit expected values; regenerate.",
+    "constants": {
+        "marks": "ًٌٍَُِّْـٰ",
+        "fold_from": "أإآةىؤئ",
+        "fold_to": "اااهيءء",
+        "digits_from": "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
+        "digits_to": "01234567890123456789",
+        "translate_from": "أإآةىؤئ٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹ًٌٍَُِّْـٰ",
+        "translate_to": "اااهيءء01234567890123456789"
+    },
+    "cases": [
+        {
+            "note": "tashkeel",
+            "input": "مُحَاضَرَة",
+            "canonicalize": "مُحَاضَرَة",
+            "normalize": "محاضره",
+            "normalize_lower": "محاضره",
+            "tokens": [
+                "محاضره"
+            ]
+        },
+        {
+            "note": "tatweel",
+            "input": "عـلـم",
+            "canonicalize": "عـلـم",
+            "normalize": "علم",
+            "normalize_lower": "علم",
+            "tokens": [
+                "علم"
+            ]
+        },
+        {
+            "note": "superscript alef",
+            "input": "هٰذا",
+            "canonicalize": "هٰذا",
+            "normalize": "هذا",
+            "normalize_lower": "هذا",
+            "tokens": [
+                "هذا"
+            ]
+        },
+        {
+            "note": "alef variants",
+            "input": "أإآا",
+            "canonicalize": "أإآا",
+            "normalize": "اااا",
+            "normalize_lower": "اااا",
+            "tokens": [
+                "اااا"
+            ]
+        },
+        {
+            "note": "alef maqsura",
+            "input": "مستشفى",
+            "canonicalize": "مستشفى",
+            "normalize": "مستشفي",
+            "normalize_lower": "مستشفي",
+            "tokens": [
+                "مستشفي"
+            ]
+        },
+        {
+            "note": "hamza on waw",
+            "input": "مسؤول",
+            "canonicalize": "مسؤول",
+            "normalize": "مسءول",
+            "normalize_lower": "مسءول",
+            "tokens": [
+                "مسءول"
+            ]
+        },
+        {
+            "note": "hamza on yeh",
+            "input": "مسئول",
+            "canonicalize": "مسئول",
+            "normalize": "مسءول",
+            "normalize_lower": "مسءول",
+            "tokens": [
+                "مسءول"
+            ]
+        },
+        {
+            "note": "bare hamza",
+            "input": "مسءول",
+            "canonicalize": "مسءول",
+            "normalize": "مسءول",
+            "normalize_lower": "مسءول",
+            "tokens": [
+                "مسءول"
+            ]
+        },
+        {
+            "note": "arabic-indic digit",
+            "input": "محاضرة ٥",
+            "canonicalize": "محاضرة ٥",
+            "normalize": "محاضره 5",
+            "normalize_lower": "محاضره 5",
+            "tokens": [
+                "محاضره",
+                "5"
+            ]
+        },
+        {
+            "note": "persian digits",
+            "input": "۱۴۴۴",
+            "canonicalize": "۱۴۴۴",
+            "normalize": "1444",
+            "normalize_lower": "1444",
+            "tokens": [
+                "1444"
+            ]
+        },
+        {
+            "note": "mixed digits and dash",
+            "input": "كويز ١ — 1445",
+            "canonicalize": "كويز ١ — 1445",
+            "normalize": "كويز 1 — 1445",
+            "normalize_lower": "كويز 1 — 1445",
+            "tokens": [
+                "كويز",
+                "1",
+                "—",
+                "1445"
+            ]
+        },
+        {
+            "note": "latin case kept by normalize, lowered by normalize_lower",
+            "input": "OsMoSiS Java",
+            "canonicalize": "OsMoSiS Java",
+            "normalize": "OsMoSiS Java",
+            "normalize_lower": "osmosis java",
+            "tokens": [
+                "OsMoSiS",
+                "Java"
+            ]
+        },
+        {
+            "note": "presentation forms (shaped PDF glyphs)",
+            "input": "ﺍﻟﻘﻀﺎﻳﺎ ﺍﻟﻤﺮﻛﺒﺔ",
+            "canonicalize": "القضايا المركبة",
+            "normalize": "القضايا المركبه",
+            "normalize_lower": "القضايا المركبه",
+            "tokens": [
+                "القضايا",
+                "المركبه"
+            ]
+        },
+        {
+            "note": "lam-alef ligature",
+            "input": "ﻻ يوجد",
+            "canonicalize": "لا يوجد",
+            "normalize": "لا يوجد",
+            "normalize_lower": "لا يوجد",
+            "tokens": [
+                "لا",
+                "يوجد"
+            ]
+        },
+        {
+            "note": "allah ligature",
+            "input": "ﷲ",
+            "canonicalize": "الله",
+            "normalize": "الله",
+            "normalize_lower": "الله",
+            "tokens": [
+                "الله"
+            ]
+        },
+        {
+            "note": "isolated tashkeel presentation form",
+            "input": "ﺑﹶ",
+            "canonicalize": "بَ",
+            "normalize": "ب",
+            "normalize_lower": "ب",
+            "tokens": [
+                "ب"
+            ]
+        },
+        {
+            "note": "bidi + zero-width controls",
+            "input": "‏حلقة​ for‫ loop‬﻿",
+            "canonicalize": "حلقة for loop",
+            "normalize": "حلقه for loop",
+            "normalize_lower": "حلقه for loop",
+            "tokens": [
+                "حلقه",
+                "for",
+                "loop"
+            ]
+        },
+        {
+            "note": "bidi isolates",
+            "input": "⁦Java⁩ جافا",
+            "canonicalize": "Java جافا",
+            "normalize": "Java جافا",
+            "normalize_lower": "java جافا",
+            "tokens": [
+                "Java",
+                "جافا"
+            ]
+        },
+        {
+            "note": "shattered word",
+            "input": "م ث ال",
+            "canonicalize": "مثال",
+            "normalize": "مثال",
+            "normalize_lower": "مثال",
+            "tokens": [
+                "مثال"
+            ]
+        },
+        {
+            "note": "shattered word inside prose",
+            "input": "شرح م ث ال الأول",
+            "canonicalize": "شرح مثال الأول",
+            "normalize": "شرح مثال الاول",
+            "normalize_lower": "شرح مثال الاول",
+            "tokens": [
+                "شرح",
+                "مثال",
+                "الاول"
+            ]
+        },
+        {
+            "note": "short words are not shattered",
+            "input": "من في ما",
+            "canonicalize": "من في ما",
+            "normalize": "من في ما",
+            "normalize_lower": "من في ما",
+            "tokens": [
+                "من",
+                "في",
+                "ما"
+            ]
+        },
+        {
+            "note": "shattered run before a final newline (PCRE $)",
+            "input": "م ث ال\n",
+            "canonicalize": "مثال\n",
+            "normalize": "مثال\n",
+            "normalize_lower": "مثال\n",
+            "tokens": [
+                "مثال"
+            ]
+        },
+        {
+            "note": "shattered run before an inner newline",
+            "input": "م ث ال\nبعد",
+            "canonicalize": "م ث ال\nبعد",
+            "normalize": "م ث ال\nبعد",
+            "normalize_lower": "م ث ال\nبعد",
+            "tokens": [
+                "م",
+                "ث",
+                "ال",
+                "بعد"
+            ]
+        },
+        {
+            "note": "shattered run with tabs",
+            "input": "ب\tت ث\tجميل",
+            "canonicalize": "بتث\tجميل",
+            "normalize": "بتث\tجميل",
+            "normalize_lower": "بتث\tجميل",
+            "tokens": [
+                "بتث",
+                "جميل"
+            ]
+        },
+        {
+            "note": "combining hamza composes then folds",
+            "input": "أحمد",
+            "canonicalize": "أحمد",
+            "normalize": "احمد",
+            "normalize_lower": "احمد",
+            "tokens": [
+                "احمد"
+            ]
+        },
+        {
+            "note": "combining hamza on waw",
+            "input": "ؤ",
+            "canonicalize": "ؤ",
+            "normalize": "ء",
+            "normalize_lower": "ء",
+            "tokens": [
+                "ء"
+            ]
+        },
+        {
+            "note": "combining maddah composes then folds",
+            "input": "آخر",
+            "canonicalize": "آخر",
+            "normalize": "اخر",
+            "normalize_lower": "اخر",
+            "tokens": [
+                "اخر"
+            ]
+        },
+        {
+            "note": "marks outside the fold set survive",
+            "input": "ـٗكتابٖ",
+            "canonicalize": "ـٗكتابٖ",
+            "normalize": "ٗكتابٖ",
+            "normalize_lower": "ٗكتابٖ",
+            "tokens": [
+                "ٗكتابٖ"
+            ]
+        },
+        {
+            "note": "persian letters are not folded",
+            "input": "یک کتاب",
+            "canonicalize": "یک کتاب",
+            "normalize": "یک کتاب",
+            "normalize_lower": "یک کتاب",
+            "tokens": [
+                "یک",
+                "کتاب"
+            ]
+        },
+        {
+            "note": "emoji",
+            "input": "📎 درس ١",
+            "canonicalize": "📎 درس ١",
+            "normalize": "📎 درس 1",
+            "normalize_lower": "📎 درس 1",
+            "tokens": [
+                "📎",
+                "درس",
+                "1"
+            ]
+        },
+        {
+            "note": "code with tsquery metacharacters",
+            "input": "for (int i = 0; i < n; i++) {",
+            "canonicalize": "for (int i = 0; i < n; i++) {",
+            "normalize": "for (int i = 0; i < n; i++) {",
+            "normalize_lower": "for (int i = 0; i < n; i++) {",
+            "tokens": [
+                "for",
+                "int",
+                "i",
+                "=",
+                "0;",
+                "i",
+                "n;",
+                "i++",
+                "{"
+            ]
+        },
+        {
+            "note": "quotes and backticks",
+            "input": "'quoted' \"x\" `y`",
+            "canonicalize": "'quoted' \"x\" `y`",
+            "normalize": "'quoted' \"x\" `y`",
+            "normalize_lower": "'quoted' \"x\" `y`",
+            "tokens": [
+                "quoted",
+                "x",
+                "y"
+            ]
+        },
+        {
+            "note": "boolean operators",
+            "input": "a&b|c!d:*e",
+            "canonicalize": "a&b|c!d:*e",
+            "normalize": "a&b|c!d:*e",
+            "normalize_lower": "a&b|c!d:*e",
+            "tokens": [
+                "a",
+                "b",
+                "c",
+                "d",
+                "e"
+            ]
+        },
+        {
+            "note": "backslash",
+            "input": "a\\b",
+            "canonicalize": "a\\b",
+            "normalize": "a\\b",
+            "normalize_lower": "a\\b",
+            "tokens": [
+                "a",
+                "b"
+            ]
+        },
+        {
+            "note": "extra spaces",
+            "input": "  spaced   out  ",
+            "canonicalize": "  spaced   out  ",
+            "normalize": "  spaced   out  ",
+            "normalize_lower": "  spaced   out  ",
+            "tokens": [
+                "spaced",
+                "out"
+            ]
+        },
+        {
+            "note": "leading NUL",
+            "input": "\u0000abc def",
+            "canonicalize": "\u0000abc def",
+            "normalize": "\u0000abc def",
+            "normalize_lower": "\u0000abc def",
+            "tokens": [
+                "abc",
+                "def"
+            ]
+        },
+        {
+            "note": "no-break space",
+            "input": "a b",
+            "canonicalize": "a b",
+            "normalize": "a b",
+            "normalize_lower": "a b",
+            "tokens": [
+                "a",
+                "b"
+            ]
+        },
+        {
+            "note": "em space",
+            "input": "a b",
+            "canonicalize": "a b",
+            "normalize": "a b",
+            "normalize_lower": "a b",
+            "tokens": [
+                "a",
+                "b"
+            ]
+        },
+        {
+            "note": "next line control",
+            "input": "ab",
+            "canonicalize": "ab",
+            "normalize": "ab",
+            "normalize_lower": "ab",
+            "tokens": [
+                "a",
+                "b"
+            ]
+        },
+        {
+            "note": "line separator",
+            "input": "a\u2028b",
+            "canonicalize": "a\u2028b",
+            "normalize": "a\u2028b",
+            "normalize_lower": "a\u2028b",
+            "tokens": [
+                "a",
+                "b"
+            ]
+        },
+        {
+            "note": "dotted capital I",
+            "input": "İstanbul",
+            "canonicalize": "İstanbul",
+            "normalize": "İstanbul",
+            "normalize_lower": "i̇stanbul",
+            "tokens": [
+                "İstanbul"
+            ]
+        },
+        {
+            "note": "greek final sigma",
+            "input": "ΣΟΦΟΣ",
+            "canonicalize": "ΣΟΦΟΣ",
+            "normalize": "ΣΟΦΟΣ",
+            "normalize_lower": "σοφος",
+            "tokens": [
+                "ΣΟΦΟΣ"
+            ]
+        },
+        {
+            "note": "sharp s",
+            "input": "Straße ẞ",
+            "canonicalize": "Straße ẞ",
+            "normalize": "Straße ẞ",
+            "normalize_lower": "straße ß",
+            "tokens": [
+                "Straße",
+                "ẞ"
+            ]
+        },
+        {
+            "note": "full-width latin is not folded",
+            "input": "ＪＡＶＡ",
+            "canonicalize": "ＪＡＶＡ",
+            "normalize": "ＪＡＶＡ",
+            "normalize_lower": "ｊａｖａ",
+            "tokens": [
+                "ＪＡＶＡ"
+            ]
+        },
+        {
+            "note": "superscript survives",
+            "input": "x² + y²",
+            "canonicalize": "x² + y²",
+            "normalize": "x² + y²",
+            "normalize_lower": "x² + y²",
+            "tokens": [
+                "x²",
+                "+",
+                "y²"
+            ]
+        },
+        {
+            "note": "empty",
+            "input": "",
+            "canonicalize": "",
+            "normalize": "",
+            "normalize_lower": "",
+            "tokens": []
+        },
+        {
+            "note": "whitespace only",
+            "input": " \t ",
+            "canonicalize": " \t ",
+            "normalize": " \t ",
+            "normalize_lower": " \t ",
+            "tokens": []
+        },
+        {
+            "note": "dialect + english term",
+            "input": "قصدي حق ال MULTITHREADED",
+            "canonicalize": "قصدي حق ال MULTITHREADED",
+            "normalize": "قصدي حق ال MULTITHREADED",
+            "normalize_lower": "قصدي حق ال multithreaded",
+            "tokens": [
+                "قصدي",
+                "حق",
+                "ال",
+                "MULTITHREADED"
+            ]
+        },
+        {
+            "note": "arabic typed on an english layout",
+            "input": "hda hgyg' td hgw,vi",
+            "canonicalize": "hda hgyg' td hgw,vi",
+            "normalize": "hda hgyg' td hgw,vi",
+            "normalize_lower": "hda hgyg' td hgw,vi",
+            "tokens": [
+                "hda",
+                "hgyg",
+                "td",
+                "hgw,vi"
+            ]
+        },
+        {
+            "note": "ordinal",
+            "input": "الفصل الخامس",
+            "canonicalize": "الفصل الخامس",
+            "normalize": "الفصل الخامس",
+            "normalize_lower": "الفصل الخامس",
+            "tokens": [
+                "الفصل",
+                "الخامس"
+            ]
+        },
+        {
+            "note": "teh marbuta + alef hamza",
+            "input": "الأسئلة المتكررة",
+            "canonicalize": "الأسئلة المتكررة",
+            "normalize": "الاسءله المتكرره",
+            "normalize_lower": "الاسءله المتكرره",
+            "tokens": [
+                "الاسءله",
+                "المتكرره"
+            ]
+        }
+    ]
+}
