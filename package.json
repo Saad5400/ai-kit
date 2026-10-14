@@ -1,6 +1,6 @@
 {
     "name": "@saad5400/ai-kit",
-    "version": "0.14.1",
+    "version": "0.15.0",
     "description": "Frontend half of saad/ai-kit: the SSE wire contract, a reader for it, an ordered segment timeline, a sanitized markdown pipeline, and thin Vue + Svelte components.",
     "license": "UNLICENSED",
     "private": false,
@@ -23,6 +23,7 @@
         "./cards": "./js/core/cards.ts",
         "./markdown": "./js/core/markdown.ts",
         "./resizable": "./js/core/resizable.ts",
+        "./rag/normalize": "./js/rag/normalize.ts",
         "./vue/resizable": "./js/vue/resizable.ts",
         "./svelte/resizable": "./js/svelte/resizable.ts",
         "./vue/*": "./js/vue/*",

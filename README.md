@@ -19,7 +19,7 @@ Toggled per app via `config/ai-kit.php` → `modules.*`:
 | `usage` | on | `TurnSpend`, canonical usage events, turn traces + TTFT metrics |
 | `catalog` | on | `CatalogSource` (config and/or DB), `ai-kit:sync-models`, `ModelRouting` |
 | `safety` | on | Central kill switch, `BudgetGuard`, concurrency caps, degraded mode |
-| `rag` | off | Hybrid retriever (pgvector + RRF), embedder/chunker |
+| `rag` | off | Retrieval: `Embedder` + `Reranker` contracts bound to the `embeddings`/`rerank` lanes (OpenRouter, fake, null drivers). The pure pieces need no toggle: Arabic normaliser (+ TS twin), fusion, glossary expansion, the bulk search tool base, eval metrics + gate — see [Retrieval](#retrieval-rag-module) |
 | `credits` | off | Generalized wallets, `CreditCalculator`, idempotent meter base |
 | `bench` | off | Scenario benchmark for tool-calling assistants: `TurnDriver` contract, `BenchRunner`, graders (+ optional LLM judge), pass@k JSON/Markdown report, `ai-kit:bench` — see [docs/BENCH.md](docs/BENCH.md) |
 
@@ -34,6 +34,10 @@ The kit carries the fleet's **model decisions** ([`docs/DECISIONS.md`](docs/DECI
 'vision'    => ['model' => 'google/gemini-3.1-flash-lite', 'fallback_model' => 'google/gemini-3.5-flash-lite'],
 'documents' => ['model' => 'google/gemini-3.1-flash-lite', 'fallback_model' => 'google/gemini-3.5-flash-lite'],
 'authoring' => ['model' => 'deepseek/deepseek-v4-pro-0813'],
+
+// Retrieval (DECISIONS.md #29, DRAFT) — served by the `rag` module's contracts.
+'embeddings' => ['model' => 'openai/text-embedding-3-small', 'dimensions' => 1536],
+'rerank'     => ['model' => 'cohere/rerank-v3.5', 'timeout_ms' => 800],
 ```
 
 | Lane | Read through | What routes here |
@@ -42,10 +46,51 @@ The kit carries the fleet's **model decisions** ([`docs/DECISIONS.md`](docs/DECI
 | `vision` | `Catalog::visionModel()` / `visionFallbackModel()` | The eyes-only pass: an image → text or structured JSON. |
 | `documents` | `Catalog::documentsModel()` / `documentsFallbackModel()` | Anything the provider reads FROM A FILE: native scanned-PDF reads, ASR, whole-document summary/translation. Hard capability floor — must accept `file` and `audio`. |
 | `authoring` | `Catalog::authoringModel()` | Admin-triggered, review-gated drafting. Rare, never on a student's latency budget. |
+| `embeddings` | `Catalog::embeddingsModel()` / `embeddingsDimensions()`; vectors through `Rag\Embeddings\Embedder` | Corpus and query embeddings. `dimensions` is index DDL in the app (`vector(N)`): changing model or size is a re-embed. Draft #29. |
+| `rerank` | `Catalog::rerankModel()`; scores through `Rag\Rerank\Reranker` | Re-scoring a search's top candidates. Having the lane switches nothing on — the app decides when to call it. Draft #29. |
 
-Every lane resolves to a model the shipped catalog also declares, so it inherits that entry's `fallbacks` and price cap for free; a test holds it there. An app key that ships EMPTY falls through to the kit — which is the intended shape, since the whole point of #28 is that a model changes here and reaches three apps through a version bump.
+Every lane resolves to a model the shipped catalog also declares, so it inherits that entry's `fallbacks` and price cap for free; a test holds it there. The two retrieval lanes resolve to `catalog.retrieval_models` instead — a separate registry, because the chat menu is user-facing and nobody picks a reranker. An app key that ships EMPTY falls through to the kit — which is the intended shape, since the whole point of #28 is that a model changes here and reaches three apps through a version bump.
 
 A default only moves when it is **same-or-cheaper AND same-or-faster AND same-or-smarter** — measured, not assumed. The `catalog.models` docblock carries the numbers behind the current pins.
+
+## Retrieval (`rag` module)
+
+Everything an app needs to search its own content with literal + semantic matching, for people and for its assistant, without owning any retrieval mechanics. The app keeps its SQL, its access rules and its data; the kit owns the parts every app would otherwise copy.
+
+**Plumbing** — turn the module on and resolve the contracts:
+
+```php
+// config/ai-kit.php (the app's)
+'modules' => ['rag' => true],
+```
+
+```php
+use Saad\AiKit\Rag\Embeddings\Embedder;
+use Saad\AiKit\Rag\Rerank\Reranker;
+
+$vectors = app(Embedder::class)->embedDocuments($chunks);      // list<list<float>>, lane dimensions
+$query   = app(Embedder::class)->embedQueries([$q])[0];        // query instruction applied
+$cacheKey = 'emb:'.hash('sha256', app(Embedder::class)->geometry().'|'.$q);
+
+$scores = app(Reranker::class)->rerank($q, $passages, topN: 20); // list<RerankScore{index, score}>, best first
+$many   = app(Reranker::class)->rerankMany($requests);           // concurrent; a failed one carries ->failure
+```
+
+Both contracts are resolved fresh on every `make()`, so a runtime config change (a test, an eval variant setting `ai-kit.rerank.model`) applies to the next resolution. Drivers: `ai-kit.embeddings.driver` = `openrouter` | `fake`; `ai-kit.rerank.driver` = `openrouter` | `fake` | `null`. An app with its own backend binds its class to the contract in its own provider. Requests go to the `ai.providers.{ai-kit.rag.provider}` key and url the chat turns already use — nothing new to configure. `RerankFailed` (or a failed `RerankResponse`) means "keep your own order": the rerank driver makes one attempt with a hard `timeout_ms` because it sits on a user's latency path. Every call raises `Rag\Events\RetrievalSpend` with the provider-reported cost, which feeds the daily `BudgetGuard` (`rag.record_budget`).
+
+Embedding geometry is enforced: a vector that is not exactly `dimensions` long throws, unless the model is registered as Matryoshka-trained, in which case it is truncated and re-normalised (or the provider is asked for the size, where `catalog.retrieval_models` says it honours `dimensions`). `geometry()` is `{model}:{dimensions}` — plus `|qi:<hash>` when a query instruction applies — so a query-vector cache keyed on it can never serve vectors from another model.
+
+**The pure pieces** (no module needed):
+
+| Namespace | What it is |
+|---|---|
+| `Rag\Text\ArabicNormalizer` | THE match-side folding: canonicalise (shaped PDF glyphs, bidi controls, shattered words, NFC), strip tashkeel/tatweel, fold أإآ→ا ة→ه ى→ي ؤئ→ء, Arabic-Indic/Persian digits → ASCII. `normalize()`, `normalizeLower()`, `tokens()`, `translateSql($column)`, and the `TRANSLATE_FROM/TO` pair for `translate()` indexes. Folding is match-only; never display it. |
+| `js/rag/normalize.ts` | Its byte-identical TypeScript twin (`@saad5400/ai-kit/rag/normalize`), for client filters and highlighting. Both sides are tested against one fixture generated from catodemy's server code. |
+| `Rag\Text\KeyboardLayout` | `toArabic()` / `toLatin()` between US and Arabic (101) keystrokes (`hda hgyg' td hgw,vi` → «ايش الغلط في الصوره»). Transliteration only; deciding it was a mistake is the caller's job. |
+| `Rag\Fusion\{Rrf, MinMax, ConvexCombination, Scores}` | Pure statics over keys: RRF (k = 60, weights per list), min-max (observed or theoretical floor), normalised weighted fusion; one deterministic order (score desc, key asc). |
+| `Rag\Glossary\{GlossaryTerm, GlossarySource, ArrayGlossarySource, OrdinalExpander, GlossaryExpander, QueryExpansion}` | Query expansion over app-supplied data: OR-groups per query position (folded), "also searched" display pairs, and whole-query rewrites (preferred spelling, then other-script forms). Longest phrase first; one Arabic proclitic tried. The original query is never replaced. |
+| `Rag\Tools\BulkSearchTool` + `Rag\Search\{RetrievedHit, HitGroup, Confidence}` | The base of an app's one assistant search tool: `queries[1..N]` + `detail`, one `search()` call for all of them, each hit printed once under its best query with "also matches query N", a passage/char budget filled round-robin, and "no confident match" + at most two weak hits. Every passage line starts `Passage N`. |
+| `Rag\Eval\{GoldenSet, GoldenItem, RunRecord, Metrics, EvalReport, Gate}` | Golden-set eval: Recall@k, Hit@1, MRR@k, nDCG@k (moment ±15 s rule), negatives' false-positive rate, slices by intent/caller/label/course/phenomenon, p50/p95, and the "don't regress" gate with a snapshot fingerprint. The app supplies the engine closure. |
 
 ## The model menu
 

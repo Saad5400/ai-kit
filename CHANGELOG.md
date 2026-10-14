@@ -3,6 +3,44 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
+## 0.15.0 — unreleased (branch `feat/rag-v0.15`, tag after review)
+
+Retrieval for the fleet — the `rag` module, written for catodemy's unified search v2 and
+usable by any app. Opt-in (`modules.rag`), and with defaults chosen so adopting it changes
+nothing: the `embeddings` lane IS catodemy's current model and size. DECISIONS.md #29
+("Retrieval lanes") is a DRAFT for the owner to rule on. See the README, "Retrieval".
+
+- Lanes: `ai-kit.embeddings` (`openai/text-embedding-3-small` @ 1536, `query_instruction`,
+  `driver` openrouter|fake, batching) and `ai-kit.rerank` (`cohere/rerank-v3.5`,
+  `timeout_ms` 800, `driver` openrouter|fake|null); `ai-kit.rag` (`provider`,
+  `record_budget`). `Catalog::embeddingsModel()` / `embeddingsDimensions()` /
+  `rerankModel()`.
+- `catalog.retrieval_models`: the embedding and rerank slugs with native dimensions,
+  Matryoshka/`dimensions` support and query instructions — a registry of its own, kept out
+  of the chat menu. Embedding prices are the public OpenRouter listing of 2026-10-15.
+- `Rag\Embeddings\Embedder` (`embedDocuments`, `embedQueries`, `dimensions`, `model`,
+  `geometry`) with `OpenRouterEmbedder` (geometry enforced; Matryoshka sizing by request
+  field or local truncate + re-normalise; no `dimensions` field at the native size, so the
+  request is byte-identical to catodemy's driver) and `FakeEmbedder` (bit-identical to
+  catodemy's). `Vectors` (normalize, truncate, cosine).
+- `Rag\Rerank\Reranker` (`rerank`, `rerankMany`, `model`) with `OpenRouterReranker` (one
+  attempt, hard timeout, concurrent `rerankMany` via `Http::pool`, per-request failures as
+  `RerankResponse::$failure`, `RerankFailed`), `FakeReranker` (term overlap / custom scorer /
+  `failing()`), `NullReranker` (keeps input order).
+- `Rag\Events\RetrievalSpend` per call with the provider-reported cost; fed into the daily
+  `BudgetGuard` when the safety module is on and `rag.record_budget` is true.
+- `Rag\Text\ArabicNormalizer` + its TypeScript twin `js/rag/normalize.ts` (new export
+  `@saad5400/ai-kit/rag/normalize`): catodemy's match-side folding byte for byte, both sides
+  tested against one fixture generated from catodemy's server code. `Rag\Text\KeyboardLayout`.
+- `Rag\Fusion\{Rrf, MinMax, ConvexCombination, Scores}` — pure statics; RRF reproduces
+  catodemy's own `Rrf` expectations bit for bit.
+- `Rag\Glossary\*` — the expansion mechanism over app-supplied terms (+ `OrdinalExpander`).
+- `Rag\Tools\BulkSearchTool` + `SearchResultsRenderer` and `Rag\Search\{RetrievedHit,
+  HitGroup, Confidence}` — the base of an app's one multi-query assistant search tool.
+- `Rag\Eval\{GoldenSet, GoldenItem, RunRecord, Metrics, EvalReport, Gate, GateResult}` —
+  golden-set metrics held to catodemy's `eval_metrics.py` by a parity test, and the
+  "don't regress" gate.
+
 ## 0.14.1 — 2026-09-28
 
 Interrupted turns: usage rows for stopped and failed turns, and the cut-off step priced after the
