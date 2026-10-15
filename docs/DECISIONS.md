@@ -346,6 +346,9 @@ recommendation at decision time.
     (d) The timing models are speech-to-text slugs, not chat models, so they are
     exempt from #28a's "every lane resolves to a catalog entry"; the words models
     are catalog entries and must carry `audio`.
+    (e) The mechanics are the kit's (0.15.1): `Transcription\WordTimingClient` (the clock,
+    usage rows in `ai_usage_events`) and `Transcription\TranscriptAligner` (the join). An
+    app keeps its words prompt and glue.
 
 ## Deviation ledger
 

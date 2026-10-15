@@ -3,7 +3,26 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
-## 0.15.0 — unreleased (branch `feat/rag-v0.15`, tag after review)
+## 0.15.1 — unreleased (branch `fix/transcription-kit-0.15.1`, tag after review)
+
+The transcription lane's mechanics move into the kit (DECISIONS.md #30), so an app keeps only
+its prompt and glue. New `Saad\AiKit\Transcription` namespace:
+
+- `WordTimingClient::transcribe($audio, $format, $language, …)` — word-level timestamps from
+  the lane's timing model on OpenRouter's `/audio/transcriptions` (`verbose_json`, word
+  granularity) through `Rag\Support\OpenRouterEndpoint`; primary → primary → fallback, then
+  `WordTimingFailed`. Each answered call writes an `ai_usage_events` row (agent = the client,
+  feature = the ambient usage feature, provider-reported cost) when the usage module is on.
+  Returns `WordTimings` (`words` as `TimedWord`s in ms, `text`, `costUsd`, `model`,
+  `silent()` = no words AND no text).
+- `TranscriptAligner::align($words, $text, $clipMs)` → `Alignment` (`segments` as
+  `AlignedSegment`s, `anchorRate`): difflib-exact anchoring of a free-text transcript onto
+  the word times, then 4-20 s sentence cuts. Hardened against catodemy QA's 2026-10-15
+  repros: text after the last anchor runs on at speaking pace instead of piling onto one
+  instant, every segment is capped at 80 tokens / 600 characters, and times are
+  non-decreasing and clamped to `[0, $clipMs]`.
+
+## 0.15.0 — 2026-10-15
 
 Retrieval for the fleet — the `rag` module, written for catodemy's unified search v2 and
 usable by any app. Opt-in (`modules.rag`), and with defaults chosen so adopting it changes
