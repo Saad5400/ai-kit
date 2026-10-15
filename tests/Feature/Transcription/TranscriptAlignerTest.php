@@ -118,11 +118,60 @@ it('never lets a clock time past the clip end leak out of the clip', function ()
     expect(max(array_map(fn (AlignedSegment $s) => $s->endMs, $segments)))->toBeLessThanOrEqual(300_000);
 });
 
-it('runs unanchored trailing text at speaking pace, not to the end of the clip', function () {
-    // One unmatched English term after the last anchor at 1.4 s, in a 300 s clip.
-    $segments = (new TranscriptAligner)->align([tw(0, 400, 'نوعه'), tw(1000, 1400, 'يعني')], 'نوعه يعني String', 300_000)->segments;
+it('runs unanchored trailing text at speaking pace — not piled onto one instant, not to the clip end', function () {
+    // Three unmatched English terms (22 characters with spaces) after the last
+    // anchor at 1.4 s, in a 300 s clip: 22 × 80 ms → they run to ~3.2 s.
+    // (H2, first half: without the pace they all sit at 1.4 s.)
+    $segments = (new TranscriptAligner)->align(
+        [tw(0, 400, 'نوعه'), tw(1000, 1400, 'يعني')],
+        'نوعه يعني String Integer Double',
+        300_000,
+    )->segments;
 
-    expect($segments[count($segments) - 1]->endMs)->toBeLessThan(3_000);
+    expect(spans($segments))->toBe([[0, 3160]]);
+});
+
+it('caps a segment at 80 tokens even when the clock places every one inside 20 s', function () {
+    // (H2, second half: 150 anchored words over 15 s, no punctuation — no
+    // duration rule fires, only the token cap.)
+    $words = steadyWords(150, 100);
+
+    $segments = (new TranscriptAligner)->align($words, implode(' ', array_map(fn (TimedWord $w) => $w->text, $words)), 20_000)->segments;
+
+    expect(array_map(fn (AlignedSegment $s) => count(explode(' ', $s->text)), $segments))->toBe([80, 70]);
+});
+
+it('caps a segment at 600 characters even under 80 tokens and 20 s', function () {
+    // 60 anchored 15-character words over 6 s: 960 characters, no other rule fires.
+    $words = array_map(fn (int $i) => tw($i * 100, $i * 100 + 90, sprintf('word%011d', $i)), range(0, 59));
+
+    $segments = (new TranscriptAligner)->align($words, implode(' ', array_map(fn (TimedWord $w) => $w->text, $words)), 10_000)->segments;
+
+    expect(count($segments))->toBe(2)
+        ->and(max(array_map(fn (AlignedSegment $s) => mb_strlen($s->text), $segments)))->toBeLessThanOrEqual(600);
+});
+
+it('never leaves a zero-length segment squeezed against the clip end', function () {
+    // The clock heard the last word right at the clip's end and the text ends
+    // with a new sentence there: once clamped it would be [10 000, 10 000].
+    $segments = (new TranscriptAligner)->align(
+        [tw(0, 2000, 'اول'), tw(2000, 4500, 'جملة.'), tw(9990, 10_400, 'ثاني.')],
+        'اول جملة. ثاني.',
+        10_000,
+    )->segments;
+
+    foreach ($segments as $s) {
+        expect($s->endMs - $s->startMs)->toBeGreaterThanOrEqual(500)
+            ->and($s->endMs)->toBeLessThanOrEqual(10_000);
+    }
+
+    expect(implode(' ', array_map(fn (AlignedSegment $s) => $s->text, $segments)))->toBe('اول جملة. ثاني.');
+});
+
+it('gives a lone squeezed segment the minimum length ending at the clip end', function () {
+    $segments = (new TranscriptAligner)->align([tw(10_200, 10_600, 'كلمة.')], 'كلمة.', 10_000)->segments;
+
+    expect(spans($segments))->toBe([[9500, 10_000]]);
 });
 
 it('aligns a worst-case 300 s window (repetitive tokens) in bounded time', function () {

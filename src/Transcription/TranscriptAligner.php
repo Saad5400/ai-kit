@@ -27,7 +27,9 @@ namespace Saad\AiKit\Transcription;
  *  5. cut a segment after sentence punctuation once it is ≥ 4 s long, after a
  *     comma once ≥ 12 s, unconditionally at 20 s — and at 80 tokens / 600
  *     characters whatever the clock says, so text the clock cannot place (a
- *     repetition loop) still lands in caption-sized segments.
+ *     repetition loop) still lands in caption-sized segments;
+ *  6. a segment squeezed to nothing against the clip's end is folded into the
+ *     one before it (or given the minimum length ending at the clip's end).
  *
  * With no words at all every token is interpolated across the clip, so the
  * text survives with coarse times. Pure and stateless: no I/O, no config.
@@ -189,6 +191,13 @@ final class TranscriptAligner
         $chars = 0;
 
         foreach ($tokens as $i => $token) {
+            // The character cap cuts BEFORE the token that would cross it.
+            if ($current !== [] && $chars + mb_strlen($token) > self::SEGMENT_MAX_CHARS) {
+                $segments[] = $current;
+                $current = [];
+                $chars = 0;
+            }
+
             $current[] = $i;
             $chars += mb_strlen($token) + 1;
             $duration = $times[$i][1] - $times[$current[0]][0];
@@ -196,8 +205,7 @@ final class TranscriptAligner
             if ((preg_match(self::SENTENCE_END, $token) === 1 && $duration >= self::SENTENCE_MIN_MS)
                 || (preg_match(self::CLAUSE_END, $token) === 1 && $duration >= self::CLAUSE_MIN_MS)
                 || $duration >= self::SEGMENT_MAX_MS
-                || count($current) >= self::SEGMENT_MAX_TOKENS
-                || $chars >= self::SEGMENT_MAX_CHARS) {
+                || count($current) >= self::SEGMENT_MAX_TOKENS) {
                 $segments[] = $current;
                 $current = [];
                 $chars = 0;
@@ -209,17 +217,37 @@ final class TranscriptAligner
         }
 
         $ceiling = $clipMs !== null && $clipMs > 0 ? $clipMs : PHP_INT_MAX;
+        $out = [];
 
-        return array_map(function (array $indices) use ($tokens, $times, $ceiling): AlignedSegment {
+        foreach ($segments as $indices) {
             $start = $times[$indices[0]][0];
             $last = $indices[array_key_last($indices)];
+            $text = implode(' ', array_map(fn (int $i): string => $tokens[$i], $indices));
+            $end = min(max($times[$last][1], $start + self::MIN_SEGMENT_MS), max($ceiling, $start));
 
-            return new AlignedSegment(
-                startMs: $start,
-                endMs: min(max($times[$last][1], $start + self::MIN_SEGMENT_MS), max($ceiling, $start)),
-                text: implode(' ', array_map(fn (int $i): string => $tokens[$i], $indices)),
-            );
-        }, $segments);
+            // Squeezed against the clip's end (start == end once clamped): a
+            // zero-length cue is invalid and a player would stretch it past
+            // the window. Fold it into the previous segment when that stays
+            // within the caps; otherwise give it the minimum length that still
+            // ends at the clip's end.
+            if ($end - $start < self::MIN_SEGMENT_MS) {
+                $previous = $out === [] ? null : $out[array_key_last($out)];
+
+                if ($previous !== null
+                    && count(preg_split('/\s+/u', $previous->text) ?: []) + count($indices) <= self::SEGMENT_MAX_TOKENS
+                    && mb_strlen($previous->text) + 1 + mb_strlen($text) <= self::SEGMENT_MAX_CHARS) {
+                    $out[array_key_last($out)] = new AlignedSegment($previous->startMs, max($previous->endMs, $end), $previous->text.' '.$text);
+
+                    continue;
+                }
+
+                $start = max($previous->startMs ?? 0, min($start, $end - self::MIN_SEGMENT_MS), 0);
+            }
+
+            $out[] = new AlignedSegment($start, $end, $text);
+        }
+
+        return $out;
     }
 
     /**

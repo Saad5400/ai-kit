@@ -87,3 +87,26 @@ it('retries the primary once, then the fallback, then throws', function () {
     expect(fn () => (new WordTimingClient)->transcribe('A', 'mp3', model: 'x/clock', fallbackModel: 'y/clock'))
         ->toThrow(WordTimingFailed::class, 'Word timestamps unavailable from x/clock and y/clock');
 });
+
+it('records a billed reply that has no words array, and surfaces the spend when every attempt fails', function () {
+    // The provider billed each answer but none carried word times.
+    Http::fake([STT => Http::response(['text' => 'كلام', 'usage' => ['cost' => 0.002]])]);
+
+    try {
+        (new WordTimingClient)->transcribe('A', 'mp3');
+        $this->fail('expected WordTimingFailed');
+    } catch (WordTimingFailed $e) {
+        expect($e->spentUsd)->toEqualWithDelta(0.006, 1e-9);
+    }
+
+    expect(UsageEvent::query()->pluck('status')->all())->toBe(['failed', 'failed', 'failed'])
+        ->and(UsageEvent::query()->sum('cost_usd'))->toEqualWithDelta(0.006, 1e-9);
+});
+
+it("reports the whole ladder's cost when a later attempt succeeds", function () {
+    Http::fake([STT => Http::sequence()
+        ->push(['text' => 'كلام', 'usage' => ['cost' => 0.002]])
+        ->push(sttAnswer([['word' => 'كلام', 'start' => 0, 'end' => 0.4]], 'كلام', cost: 0.001))]);
+
+    expect((new WordTimingClient)->transcribe('A', 'mp3')->costUsd)->toEqualWithDelta(0.003, 1e-9);
+});

@@ -3,7 +3,23 @@
 Releases are git tags on `main`. Earlier history is recorded per milestone in
 [`docs/PLAN.md`](docs/PLAN.md); this file starts at 0.11.0 and is the log from here on.
 
-## 0.15.1 — unreleased (branch `fix/transcription-kit-0.15.1`, tag after review)
+## 0.15.2 — unreleased (branch `fix/transcription-kit-0.15.2`, tag after review)
+
+Transcription hardening from catodemy's second QA pass (2026-10-15).
+
+- `WordTimingClient`: a reply the provider BILLED but the client cannot use (no `words`
+  array) is now recorded — an `ai_usage_events` row with status `failed` and its cost —
+  before it is rejected. `WordTimingFailed::$spentUsd` carries what the whole ladder spent,
+  and a successful answer's `costUsd` is the whole ladder's, so no billed reply is lost from
+  a caller's meter.
+- `TranscriptAligner`: the 600-character cap now cuts BEFORE the token that would cross it
+  (a segment is never over 600); a segment squeezed to nothing against the clip's end is
+  folded into the previous one (within the caps) or given the 500 ms minimum ending at the
+  clip's end — never a zero-length cue a player stretches past the window. Each half of
+  0.15.1's loop fix (speaking-pace tail; 80-token / 600-character cap) is now pinned by its
+  own test.
+
+## 0.15.1 — 2026-10-15
 
 The transcription lane's mechanics move into the kit (DECISIONS.md #30), so an app keeps only
 its prompt and glue. New `Saad\AiKit\Transcription` namespace:

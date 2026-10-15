@@ -20,10 +20,12 @@ use Throwable;
  * and drops the `words` array, the only part wanted here.
  *
  * primary → primary → fallback; when every attempt fails it throws
- * {@see WordTimingFailed} and the caller decides how to degrade. Each answered
- * call writes an `ai_usage_events` row (agent = this class, feature = the
- * ambient usage feature, provider-reported cost) when the usage module is on,
- * so speech-to-text spend is visible beside the agent turns.
+ * {@see WordTimingFailed} — carrying what the ladder spent — and the caller
+ * decides how to degrade. Each ANSWERED call writes an `ai_usage_events` row
+ * (agent = this class, feature = the ambient usage feature, provider-reported
+ * cost; status `failed` when the reply was billed but unusable) when the usage
+ * module is on, so speech-to-text spend is visible beside the agent turns. The
+ * returned cost is the whole ladder's.
  */
 class WordTimingClient
 {
@@ -54,11 +56,16 @@ class WordTimingClient
     ): WordTimings {
         $primary = $this->model($model);
         $fallback = $fallbackModel ?? app(Catalog::class)->transcriptionTimingFallbackModel();
+        $spent = 0.0;
         $last = null;
 
         foreach ([$primary, $primary, $fallback !== '' ? $fallback : $primary] as $slug) {
             try {
-                return $this->request($slug, $audio, $format, $language, $timeoutSeconds);
+                $timings = $this->request($slug, $audio, $format, $language, $timeoutSeconds, $spent);
+
+                // The answer's cost is the whole ladder's: a billed but unusable
+                // earlier reply is still spend.
+                return new WordTimings($timings->words, $timings->text, $spent > 0.0 ? $spent : $timings->costUsd, $timings->model);
             } catch (Throwable $e) {
                 $last = $e;
             }
@@ -66,11 +73,16 @@ class WordTimingClient
 
         throw new WordTimingFailed(
             "Word timestamps unavailable from {$primary}".($fallback !== $primary ? " and {$fallback}" : '').': '.($last?->getMessage() ?? 'unknown'),
-            previous: $last,
+            $spent,
+            $last,
         );
     }
 
-    private function request(string $model, string $audio, string $format, ?string $language, int $timeoutSeconds): WordTimings
+    /**
+     * One call. A billed answer is RECORDED (usage row + $spent) before it is
+     * judged, so a reply the client then rejects is never lost from the meter.
+     */
+    private function request(string $model, string $audio, string $format, ?string $language, int $timeoutSeconds, float &$spent): WordTimings
     {
         $endpoint = $this->endpoint ?? OpenRouterEndpoint::make('openrouter');
         $started = hrtime(true);
@@ -90,13 +102,11 @@ class WordTimingClient
         }
 
         $rows = $response->json('words');
-
-        if (! is_array($rows)) {
-            throw new WordTimingFailed("{$model} answered with no `words` array.");
-        }
+        $cost = OpenRouterEndpoint::cost($response->json('usage'));
+        $spent += $cost ?? 0.0;
 
         $words = [];
-        foreach ($rows as $row) {
+        foreach (is_array($rows) ? $rows : [] as $row) {
             $text = is_array($row) ? trim((string) ($row['word'] ?? $row['text'] ?? '')) : '';
 
             if ($text === '' || ! is_numeric($row['start'] ?? null) || ! is_numeric($row['end'] ?? null)) {
@@ -111,17 +121,21 @@ class WordTimingClient
         $timings = new WordTimings(
             words: $words,
             text: trim((string) $response->json('text', '')),
-            costUsd: OpenRouterEndpoint::cost($response->json('usage')),
+            costUsd: $cost,
             model: $model,
         );
 
-        $this->recordUsage($timings, $endpoint->provider(), (int) ((hrtime(true) - $started) / 1_000_000), $response->json('usage.seconds'));
+        $this->recordUsage($timings, $endpoint->provider(), (int) ((hrtime(true) - $started) / 1_000_000), $response->json('usage.seconds'), is_array($rows) ? 'ok' : 'failed');
+
+        if (! is_array($rows)) {
+            throw new WordTimingFailed("{$model} answered with no `words` array.");
+        }
 
         return $timings;
     }
 
     /** One `ai_usage_events` row per answered call — never allowed to fail the call. */
-    private function recordUsage(WordTimings $timings, string $provider, int $durationMs, mixed $audioSeconds): void
+    private function recordUsage(WordTimings $timings, string $provider, int $durationMs, mixed $audioSeconds, string $status): void
     {
         if (config('ai-kit.modules.usage', true) !== true) {
             return;
@@ -137,7 +151,7 @@ class WordTimingClient
             'cost_usd' => $timings->costUsd,
             'cost_source' => $timings->costUsd !== null ? 'provider' : null,
             'duration_ms' => $durationMs,
-            'status' => 'ok',
+            'status' => $status,
             'context' => array_filter([
                 'audio_seconds' => is_numeric($audioSeconds) ? (float) $audioSeconds : null,
                 'words' => count($timings->words),
