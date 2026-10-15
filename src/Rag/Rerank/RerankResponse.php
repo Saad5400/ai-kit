@@ -4,8 +4,9 @@ namespace Saad\AiKit\Rag\Rerank;
 
 /**
  * The outcome of one request inside {@see Reranker::rerankMany()}: its scores,
- * or why there are none (`timeout`, `http_<status>`, `connection`,
- * `bad_response`).
+ * or why there are none: `disabled` / `budget` (the {@see GuardedReranker}
+ * policy), `timeout`, `http_<status>`, `connection`, `bad_response`,
+ * `no_api_key`. Any failure means "keep your own order".
  */
 final class RerankResponse
 {

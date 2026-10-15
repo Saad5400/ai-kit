@@ -12,12 +12,14 @@ use Saad\AiKit\Rag\Embeddings\OpenRouterEmbedder;
 use Saad\AiKit\Rag\Events\RetrievalSpend;
 use Saad\AiKit\Rag\Listeners\RecordRetrievalBudget;
 use Saad\AiKit\Rag\Rerank\FakeReranker;
+use Saad\AiKit\Rag\Rerank\GuardedReranker;
 use Saad\AiKit\Rag\Rerank\NullReranker;
 use Saad\AiKit\Rag\Rerank\OpenRouterReranker;
 use Saad\AiKit\Rag\Rerank\Reranker;
+use Saad\AiKit\Safety\BudgetGuard;
 
 /**
- * The `rag` module (DECISIONS.md #29, DRAFT): binds the `embeddings` and
+ * The `rag` module (DECISIONS.md #29): binds the `embeddings` and
  * `rerank` lanes to their contracts. The pure pieces — Text, Fusion,
  * Glossary, Tools, Eval — need no module and no binding.
  *
@@ -47,12 +49,24 @@ class RagServiceProvider extends ServiceProvider
         $this->app->bind(Reranker::class, function (Application $app): Reranker {
             $driver = (string) $app['config']->get('ai-kit.rerank.driver', 'openrouter');
 
-            return match ($driver) {
+            $reranker = match ($driver) {
                 'openrouter' => OpenRouterReranker::fromConfig(),
                 'fake' => new FakeReranker(model: (string) $app['config']->get('ai-kit.rerank.model', 'fake')),
                 'null', 'none' => new NullReranker,
                 default => throw new InvalidArgumentException("Unknown ai-kit.rerank.driver [{$driver}] (openrouter|fake|null)."),
             };
+
+            // #29a/c: off until the app's eval enables it, and never past the
+            // per-search ceiling or an exhausted daily budget — in every case
+            // the caller gets a failed response and keeps its fused order.
+            $ceiling = $app['config']->get('ai-kit.rerank.max_usd_per_search');
+
+            return new GuardedReranker(
+                $reranker,
+                enabled: (bool) $app['config']->get('ai-kit.rerank.enabled', false),
+                maxUsdPerSearch: is_numeric($ceiling) ? (float) $ceiling : null,
+                budget: $app->bound(BudgetGuard::class) ? $app->make(BudgetGuard::class) : null,
+            );
         });
     }
 
@@ -64,5 +78,11 @@ class RagServiceProvider extends ServiceProvider
         if ($this->app['config']->get('ai-kit.modules.safety') === true) {
             Event::listen(RetrievalSpend::class, RecordRetrievalBudget::class);
         }
+
+        Event::listen(RetrievalSpend::class, static function (RetrievalSpend $event): void {
+            if ($event->lane === 'rerank') {
+                GuardedReranker::auditReportedCost($event->model, $event->requests, $event->costUsd);
+            }
+        });
     }
 }

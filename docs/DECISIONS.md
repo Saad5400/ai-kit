@@ -270,44 +270,52 @@ recommendation at decision time.
     choose nothing" are the same row. `sort_order` encodes the price order and a test
     holds it to it.
 
-29. **Retrieval lanes — DRAFT, NOT IN FORCE until Saad rules** (proposed 2026-10-15 by
-    the kit lane of catodemy's unified search v2, `docs/search-unification-plan-v2.md` §5;
-    shipped in v0.15.0 behind the opt-in `rag` module, with defaults chosen so that adopting
-    it changes nothing). Trigger: catodemy had the only embedding driver in the fleet, private
-    to the app, with no usage metering, and search v2 needs a reranker too; s-grade and uqucc
-    will want both. Under #28's rule ("a model decision is made once, here") they are lanes.
+29. **Retrieval lanes — RULED 2026-10-15 by the program manager for the owner**
+    (proposed the same day by the kit lane of catodemy's unified search v2,
+    `docs/search-unification-plan-v2.md` §5; shipped in v0.15.0 behind the opt-in `rag`
+    module, with defaults chosen so that adopting it changes nothing). Trigger: catodemy
+    had the only embedding driver in the fleet, private to the app, with no usage metering,
+    and search v2 needs a reranker too; s-grade and uqucc will want both. Under #28's rule
+    ("a model decision is made once, here") they are lanes.
     (a) **Two more shared lanes**, `embeddings` {`model`, `dimensions`, `query_instruction`,
-    `driver`} and `rerank` {`model`, `driver`, `top_n`, `timeout_ms`}, read through
-    `Catalog::embeddingsModel()` / `embeddingsDimensions()` / `rerankModel()` and served by
-    the `Saad\AiKit\Rag` contracts (`Embeddings\Embedder`, `Rerank\Reranker`) that the `rag`
-    module binds. Apps call the contracts, never a provider endpoint, and their own keys ship
-    EMPTY and inherit, as in #28a.
-    (b) **Defaults.** `embeddings` = `openai/text-embedding-3-small` @ 1536, catodemy's model
-    at the time of the move — the lane re-embeds nothing. `rerank` = `cohere/rerank-v3.5`,
-    the cheaper of the two models MEASURED working on OpenRouter's `/rerank` (2026-10-15,
-    Arabic/English pair; ~$1 per 1k searches against ~$2 for `rerank-4-fast`), with Arabic
-    among its supported languages. A lane does NOT switch reranking on: each app adopts it
-    only when its own eval shows a gain. Either default moves only under #28b's bar
-    (same-or-cheaper, same-or-faster, same-or-smarter), measured by the app's retrieval eval
-    on its own data; an embedding swap is a re-embed in every consuming app, so it is a
-    release of its own.
-    (c) **The retrieval models are a separate registry**, `catalog.retrieval_models`, not
+    `driver`} and `rerank` {`enabled`, `model`, `driver`, `top_n`, `timeout_ms`,
+    `max_usd_per_search`}, read through `Catalog::embeddingsModel()` /
+    `embeddingsDimensions()` / `rerankModel()` and served by the `Saad\AiKit\Rag` contracts
+    (`Embeddings\Embedder`, `Rerank\Reranker`) that the `rag` module binds. Apps call the
+    contracts, never a provider endpoint, and their own keys ship EMPTY and inherit, as in
+    #28a. **Defaults:** `embeddings` = `openai/text-embedding-3-small` @ 1536, catodemy's
+    model at the time of the move, so the lane re-embeds nothing; `rerank` =
+    `cohere/rerank-v3.5`, the cheaper of the two models MEASURED working on OpenRouter's
+    `/rerank` (2026-10-15, Arabic/English pair; ~$1 per 1k searches against ~$2 for
+    `rerank-4-fast`). **Reranking is OFF by default** (`rerank.enabled` false): a consuming
+    app turns it on only once its own eval shows a gain, and until then every request
+    answers `disabled` and the caller keeps its fused order. `voyageai/rerank-2.5-lite` and
+    `qwen/qwen3-reranker-8b` sit in the registry as eval candidates. Either default moves
+    only under #28b's bar (same-or-cheaper, same-or-faster, same-or-smarter), measured by
+    the app's retrieval eval on its own data; an embedding swap is a re-embed in every
+    consuming app, so it is a release of its own.
+    (b) **Retrieval spend counts toward the daily BudgetGuard** — it rides the same
+    OpenRouter key the chat turns do (`rag.record_budget`, default on). Spend is what the
+    provider reports per call (#26c), raised as `Rag\Events\RetrievalSpend`; an exhausted
+    daily budget also stops reranking (`budget`).
+    (c) **A per-search spend ceiling**, `rerank.max_usd_per_search` (default $0.01, about
+    ten times one Cohere v3.5 search): a search (one query and its candidates) whose
+    ESTIMATED cost from the registry price exceeds it is not sent; it degrades to fused
+    order with the reason `budget` (`diagnostics.rerank='budget'` in catodemy) rather than
+    failing. The estimate only guards — it never prices anything — and a reported cost
+    above the ceiling is logged so a stale registry price shows up.
+    (d) **The retrieval models are a separate registry**, `catalog.retrieval_models`, not
     entries in `catalog.models`: that list is the user-facing chat menu (synced into
     `ai_models`, priced as ×N of the default, one `recommended` per task) and nobody picks a
     reranker in a chat. Each entry records what the drivers need (native dimensions,
     Matryoshka truncation, whether the provider honours `dimensions`, the query
-    instruction). A lane guard holds both lanes to entries of the right kind.
-    (d) **Spend** is what the provider reports per call (#26c), raised as
-    `Rag\Events\RetrievalSpend` and, by default (`rag.record_budget`), added to the daily
-    `BudgetGuard` — retrieval spends the same key the chat turns do.
-    (e) **The match-side text contract moves into the kit**: `Text\ArabicNormalizer` (+ its
+    instruction, the guard price). A lane guard holds both lanes to entries of the right
+    kind.
+    (e) **The match-side text contract lives in the kit**: `Text\ArabicNormalizer` (+ its
     TypeScript twin `js/rag/normalize.ts`) is catodemy's folding byte for byte, including its
     2026-08-05 hamza-carrier ruling (ؤ/ئ → ء). Its constants are index DDL in every app that
     builds a `translate()` index from them, so changing the folding is an owner call AND a
     rebuild migration in each app — never an edit in the kit alone.
-    *For Saad to rule:* the two defaults in (b); whether retrieval spend counts toward the
-    daily budget (d); and whether a per-search spend ceiling belongs in the kit given the
-    shared $20/week OpenRouter cap.
 
 ## Deviation ledger
 

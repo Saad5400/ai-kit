@@ -669,7 +669,7 @@ return [
         ],
 
         /*
-        | Retrieval models (DECISIONS.md #29, DRAFT) — the slugs the
+        | Retrieval models (DECISIONS.md #29) — the slugs the
         | `embeddings` and `rerank` lanes may point at. A SEPARATE registry
         | from `models` above on purpose: that list is the user-facing chat
         | menu (synced into apps' `ai_models`, priced as ×N of the default,
@@ -687,8 +687,9 @@ return [
         |                         embedders); the lane's own key overrides it
         |   max_input_tokens      per input text (embeddings) / per document +
         |                         query (rerank)
-        |   *_usd_*               DISPLAY ONLY (#26c); spend is what the
-        |                         provider reports per call
+        |   *_usd_*               never a price (#26c — spend is what the
+        |                         provider reports per call); the rerank
+        |                         rates feed only the per-search ceiling
         |
         | Prices: the public OpenRouter listing on 2026-10-15 (embeddings,
         | MEASURED); rerank per-1k-search figures are the vendors' published
@@ -752,10 +753,20 @@ return [
                 'max_input_tokens' => 32768,
                 'usd_per_thousand_searches' => 2.5,
             ],
+            // Candidates for the reranker eval (#29a), listed on OpenRouter
+            // 2026-10-15. Voyage bills tokens (query × documents + documents)
+            // at the vendor's published rate; Qwen's price is not published
+            // there, so the per-search ceiling cannot cap it.
             'voyageai/rerank-2.5-lite' => [
                 'kind' => 'rerank',
                 'label' => 'Voyage rerank-2.5-lite',
                 'max_input_tokens' => 32000,
+                'usd_per_million_tokens' => 0.02,
+            ],
+            'qwen/qwen3-reranker-8b' => [
+                'kind' => 'rerank',
+                'label' => 'Qwen3 Reranker 8B',
+                'max_input_tokens' => 40960,
             ],
         ],
     ],
@@ -950,7 +961,7 @@ return [
     | Embeddings (retrieval)
     |--------------------------------------------------------------------------
     |
-    | DECISIONS.md #29 (DRAFT, for the owner to rule). The fleet's embedding
+    | DECISIONS.md #29. The fleet's embedding
     | model, bound to `Saad\AiKit\Rag\Embeddings\Embedder` by the `rag`
     | module. The default is catodemy's model at the time of the move —
     | `openai/text-embedding-3-small` @ 1536 — so adopting the lane changes
@@ -981,26 +992,32 @@ return [
     | Rerank (retrieval)
     |--------------------------------------------------------------------------
     |
-    | DECISIONS.md #29 (DRAFT). The cross-encoder that re-scores a search's
-    | top candidates, bound to `Saad\AiKit\Rag\Rerank\Reranker`. Shipping a
-    | lane does not switch reranking ON anywhere — an app decides when to call
-    | it (catodemy: `search.rerank.enabled`, adopted only if its eval shows a
-    | gain). Default `cohere/rerank-v3.5`: the cheaper of the two models
-    | MEASURED working on OpenRouter's `/rerank` (2026-10-15, Arabic/English),
-    | Arabic among its officially supported languages.
+    | DECISIONS.md #29. The cross-encoder that re-scores a search's top
+    | candidates, bound to `Saad\AiKit\Rag\Rerank\Reranker`. `enabled` is
+    | OFF: an app turns it on (AI_KIT_RERANK_ENABLED, or its own published
+    | config) only once its eval shows a gain (#29a); while off, every request
+    | comes back failed with reason `disabled`. Default model
+    | `cohere/rerank-v3.5`: the cheaper of the two models MEASURED working on
+    | OpenRouter's `/rerank` (2026-10-15, Arabic/English), Arabic among its
+    | officially supported languages.
     |
     | `timeout_ms` is the TOTAL budget per request (one attempt, no retries —
-    | it sits on a user's latency path); past it the request comes back
-    | failed and the caller keeps its own order. `top_n` null = score every
-    | document. `driver`: `openrouter` | `fake` | `null` (keeps input order).
+    | it sits on a user's latency path). `max_usd_per_search` caps one
+    | request (one query and its candidates) by its ESTIMATED cost from the
+    | registry price (#29c); an exhausted daily BudgetGuard stops reranking
+    | too. Past any of them the request comes back failed (`timeout`,
+    | `budget`, …) and the caller keeps its own order. `top_n` null = score
+    | every document. `driver`: `openrouter` | `fake` | `null` (keeps order).
     |
     */
 
     'rerank' => [
+        'enabled' => (bool) env('AI_KIT_RERANK_ENABLED', false),
         'model' => env('AI_KIT_RERANK_MODEL', 'cohere/rerank-v3.5'),
         'driver' => env('AI_KIT_RERANK_DRIVER', 'openrouter'),
         'top_n' => null,
         'timeout_ms' => (int) env('AI_KIT_RERANK_TIMEOUT_MS', 800),
+        'max_usd_per_search' => (float) env('AI_KIT_RERANK_MAX_USD_PER_SEARCH', 0.01),
     ],
 
     /*

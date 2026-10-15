@@ -191,7 +191,7 @@ it('resolves every shared lane to a declared catalog entry', function () {
 });
 
 /*
- * DECISIONS.md #29 (draft): the retrieval lanes resolve to entries of the
+ * DECISIONS.md #29: the retrieval lanes resolve to entries of the
  * RIGHT KIND in `catalog.retrieval_models` — never to the chat menu, which is
  * user-facing and synced into apps' `ai_models` tables. The embeddings default
  * is catodemy's geometry at the time of the move, so adopting the lane

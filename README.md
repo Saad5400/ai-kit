@@ -35,9 +35,9 @@ The kit carries the fleet's **model decisions** ([`docs/DECISIONS.md`](docs/DECI
 'documents' => ['model' => 'google/gemini-3.1-flash-lite', 'fallback_model' => 'google/gemini-3.5-flash-lite'],
 'authoring' => ['model' => 'deepseek/deepseek-v4-pro-0813'],
 
-// Retrieval (DECISIONS.md #29, DRAFT) — served by the `rag` module's contracts.
+// Retrieval (DECISIONS.md #29) — served by the `rag` module's contracts.
 'embeddings' => ['model' => 'openai/text-embedding-3-small', 'dimensions' => 1536],
-'rerank'     => ['model' => 'cohere/rerank-v3.5', 'timeout_ms' => 800],
+'rerank'     => ['enabled' => false, 'model' => 'cohere/rerank-v3.5', 'timeout_ms' => 800, 'max_usd_per_search' => 0.01],
 ```
 
 | Lane | Read through | What routes here |
@@ -46,8 +46,8 @@ The kit carries the fleet's **model decisions** ([`docs/DECISIONS.md`](docs/DECI
 | `vision` | `Catalog::visionModel()` / `visionFallbackModel()` | The eyes-only pass: an image → text or structured JSON. |
 | `documents` | `Catalog::documentsModel()` / `documentsFallbackModel()` | Anything the provider reads FROM A FILE: native scanned-PDF reads, ASR, whole-document summary/translation. Hard capability floor — must accept `file` and `audio`. |
 | `authoring` | `Catalog::authoringModel()` | Admin-triggered, review-gated drafting. Rare, never on a student's latency budget. |
-| `embeddings` | `Catalog::embeddingsModel()` / `embeddingsDimensions()`; vectors through `Rag\Embeddings\Embedder` | Corpus and query embeddings. `dimensions` is index DDL in the app (`vector(N)`): changing model or size is a re-embed. Draft #29. |
-| `rerank` | `Catalog::rerankModel()`; scores through `Rag\Rerank\Reranker` | Re-scoring a search's top candidates. Having the lane switches nothing on — the app decides when to call it. Draft #29. |
+| `embeddings` | `Catalog::embeddingsModel()` / `embeddingsDimensions()`; vectors through `Rag\Embeddings\Embedder` | Corpus and query embeddings. `dimensions` is index DDL in the app (`vector(N)`): changing model or size is a re-embed. #29. |
+| `rerank` | `Catalog::rerankModel()`; scores through `Rag\Rerank\Reranker` | Re-scoring a search's top candidates. OFF until the app's eval shows a gain (`rerank.enabled`); capped per search (`max_usd_per_search`). #29. |
 
 Every lane resolves to a model the shipped catalog also declares, so it inherits that entry's `fallbacks` and price cap for free; a test holds it there. The two retrieval lanes resolve to `catalog.retrieval_models` instead — a separate registry, because the chat menu is user-facing and nobody picks a reranker. An app key that ships EMPTY falls through to the kit — which is the intended shape, since the whole point of #28 is that a model changes here and reaches three apps through a version bump.
 
@@ -76,7 +76,7 @@ $scores = app(Reranker::class)->rerank($q, $passages, topN: 20); // list<RerankS
 $many   = app(Reranker::class)->rerankMany($requests);           // concurrent; a failed one carries ->failure
 ```
 
-Both contracts are resolved fresh on every `make()`, so a runtime config change (a test, an eval variant setting `ai-kit.rerank.model`) applies to the next resolution. Drivers: `ai-kit.embeddings.driver` = `openrouter` | `fake`; `ai-kit.rerank.driver` = `openrouter` | `fake` | `null`. An app with its own backend binds its class to the contract in its own provider. Requests go to the `ai.providers.{ai-kit.rag.provider}` key and url the chat turns already use — nothing new to configure. `RerankFailed` (or a failed `RerankResponse`) means "keep your own order": the rerank driver makes one attempt with a hard `timeout_ms` because it sits on a user's latency path. Every call raises `Rag\Events\RetrievalSpend` with the provider-reported cost, which feeds the daily `BudgetGuard` (`rag.record_budget`).
+Both contracts are resolved fresh on every `make()`, so a runtime config change (a test, an eval variant setting `ai-kit.rerank.model`) applies to the next resolution. Drivers: `ai-kit.embeddings.driver` = `openrouter` | `fake`; `ai-kit.rerank.driver` = `openrouter` | `fake` | `null`. An app with its own backend binds its class to the contract in its own provider. Requests go to the `ai.providers.{ai-kit.rag.provider}` key and url the chat turns already use — nothing new to configure. `RerankFailed` (or a failed `RerankResponse`) means "keep your own order" — report its `reason`/`failure` (`disabled`, `budget`, `timeout`, `http_429`, …) in your diagnostics. The bound reranker is wrapped in `GuardedReranker`: it answers `disabled` until the app sets `ai-kit.rerank.enabled` (OFF by default — turn it on once your eval shows a gain), and `budget` when the daily `BudgetGuard` is exhausted or one search is estimated above `rerank.max_usd_per_search`. The driver makes one attempt with a hard `timeout_ms` because it sits on a user's latency path. Every call raises `Rag\Events\RetrievalSpend` with the provider-reported cost, which feeds the daily `BudgetGuard` (`rag.record_budget`).
 
 Embedding geometry is enforced: a vector that is not exactly `dimensions` long throws, unless the model is registered as Matryoshka-trained, in which case it is truncated and re-normalised (or the provider is asked for the size, where `catalog.retrieval_models` says it honours `dimensions`). `geometry()` is `{model}:{dimensions}` — plus `|qi:<hash>` when a query instruction applies — so a query-vector cache keyed on it can never serve vectors from another model.
 

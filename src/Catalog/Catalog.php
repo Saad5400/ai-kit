@@ -130,7 +130,7 @@ class Catalog
     }
 
     /**
-     * The fleet's EMBEDDING model (DECISIONS.md #29, draft) — the slug the
+     * The fleet's EMBEDDING model (DECISIONS.md #29) — the slug the
      * `embeddings` lane's driver sends, from `catalog.retrieval_models`, never
      * from the chat menu. Read the vectors through the bound
      * `Saad\AiKit\Rag\Embeddings\Embedder` rather than calling a provider.
@@ -150,7 +150,7 @@ class Catalog
     }
 
     /**
-     * The fleet's RERANK model (DECISIONS.md #29, draft). Having a lane does
+     * The fleet's RERANK model (DECISIONS.md #29). Having a lane does
      * not switch reranking on: the app decides when to call the bound
      * `Saad\AiKit\Rag\Rerank\Reranker`.
      */

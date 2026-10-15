@@ -7,16 +7,26 @@ Releases are git tags on `main`. Earlier history is recorded per milestone in
 
 Retrieval for the fleet — the `rag` module, written for catodemy's unified search v2 and
 usable by any app. Opt-in (`modules.rag`), and with defaults chosen so adopting it changes
-nothing: the `embeddings` lane IS catodemy's current model and size. DECISIONS.md #29
-("Retrieval lanes") is a DRAFT for the owner to rule on. See the README, "Retrieval".
+nothing: the `embeddings` lane IS catodemy's current model and size, and reranking ships
+OFF. DECISIONS.md #29 ("Retrieval lanes", ruled 2026-10-15). See the README, "Retrieval".
+
+**laravel/ai is now `~1.2.2`** (was `^1.0`): the drift guard is re-pinned on 1.2.2 after
+reading every changed pinned file. One override was needed — 1.2's new Retry-After retry
+inside `withErrorHandling()` stacked on the kit's client retry (6 requests instead of 3
+before failover), so `retryAfterSeconds()` opts out while the kit's retry is on. OpenRouter
+reasoning-details replay (new in 1.2) is carried through the tap and re-wrap. An app on
+laravel/ai 1.0.x updates it together with the kit:
+`composer update saad/ai-kit laravel/ai -W`.
+
 
 - Lanes: `ai-kit.embeddings` (`openai/text-embedding-3-small` @ 1536, `query_instruction`,
-  `driver` openrouter|fake, batching) and `ai-kit.rerank` (`cohere/rerank-v3.5`,
-  `timeout_ms` 800, `driver` openrouter|fake|null); `ai-kit.rag` (`provider`,
-  `record_budget`). `Catalog::embeddingsModel()` / `embeddingsDimensions()` /
+  `driver` openrouter|fake, batching) and `ai-kit.rerank` (`enabled` false,
+  `cohere/rerank-v3.5`, `timeout_ms` 800, `max_usd_per_search` 0.01, `driver`
+  openrouter|fake|null); `ai-kit.rag` (`provider`, `record_budget`). `Catalog::embeddingsModel()` / `embeddingsDimensions()` /
   `rerankModel()`.
-- `catalog.retrieval_models`: the embedding and rerank slugs with native dimensions,
-  Matryoshka/`dimensions` support and query instructions — a registry of its own, kept out
+- `catalog.retrieval_models`: the embedding and rerank slugs (rerank candidates
+  `voyageai/rerank-2.5-lite` and `qwen/qwen3-reranker-8b` included) with native dimensions,
+  Matryoshka/`dimensions` support, query instructions and guard prices — a registry of its own, kept out
   of the chat menu. Embedding prices are the public OpenRouter listing of 2026-10-15.
 - `Rag\Embeddings\Embedder` (`embedDocuments`, `embedQueries`, `dimensions`, `model`,
   `geometry`) with `OpenRouterEmbedder` (geometry enforced; Matryoshka sizing by request
@@ -26,7 +36,10 @@ nothing: the `embeddings` lane IS catodemy's current model and size. DECISIONS.m
 - `Rag\Rerank\Reranker` (`rerank`, `rerankMany`, `model`) with `OpenRouterReranker` (one
   attempt, hard timeout, concurrent `rerankMany` via `Http::pool`, per-request failures as
   `RerankResponse::$failure`, `RerankFailed`), `FakeReranker` (term overlap / custom scorer /
-  `failing()`), `NullReranker` (keeps input order).
+  `failing()`), `NullReranker` (keeps input order). The module wraps whichever driver is
+  bound in `GuardedReranker`: `disabled` while `rerank.enabled` is off, `budget` past the
+  per-search ceiling (estimated from the registry price) or an exhausted daily budget —
+  always a failed response, never an exception out of `rerankMany()`.
 - `Rag\Events\RetrievalSpend` per call with the provider-reported cost; fed into the daily
   `BudgetGuard` when the safety module is on and `rag.record_budget` is true.
 - `Rag\Text\ArabicNormalizer` + its TypeScript twin `js/rag/normalize.ts` (new export
