@@ -9,6 +9,8 @@ Retrieval for the fleet — the `rag` module, written for catodemy's unified sea
 usable by any app. Opt-in (`modules.rag`), and with defaults chosen so adopting it changes
 nothing: the `embeddings` lane IS catodemy's current model and size, and reranking ships
 OFF. DECISIONS.md #29 ("Retrieval lanes", ruled 2026-10-15). See the README, "Retrieval".
+The same release adds the `transcription` lane (DECISIONS.md #30, ruled 2026-10-15): the words
+of a recording from an audio-input Gemini, its clock from a word-timestamp speech-to-text model.
 
 **laravel/ai is now `~1.2.2`** (was `^1.0`): the drift guard is re-pinned on 1.2.2 after
 reading every changed pinned file. One override was needed — 1.2's new Retry-After retry
@@ -53,6 +55,13 @@ laravel/ai 1.0.x updates it together with the kit:
 - `Rag\Eval\{GoldenSet, GoldenItem, RunRecord, Metrics, EvalReport, Gate, GateResult}` —
   golden-set metrics held to catodemy's `eval_metrics.py` by a parity test, and the
   "don't regress" gate.
+- Catalog: a `transcription` lane (DECISIONS.md #30, ruled 2026-10-15): `model` /
+  `fallback_model` write a recording's words (`google/gemini-3.8-flash` /
+  `google/gemini-3.1-flash-lite`), `timing_model` / `timing_fallback_model` supply word
+  timestamps from OpenRouter's speech-to-text endpoint (`elevenlabs/scribe-v2` /
+  `deepgram/nova-3`). `Catalog::transcriptionModel()`, `transcriptionFallbackModel()`,
+  `transcriptionTimingModel()`, `transcriptionTimingFallbackModel()`. Env overrides
+  `AI_KIT_TRANSCRIPTION_*`. `google/gemini-3.8-flash` now declares `audio`.
 
 ## 0.14.1 — 2026-09-28
 

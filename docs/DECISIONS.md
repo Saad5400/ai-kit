@@ -269,7 +269,6 @@ recommendation at decision time.
     (which is also the cheapest, and tagged both), so "×1" and "the one you get if you
     choose nothing" are the same row. `sort_order` encodes the price order and a test
     holds it to it.
-
 29. **Retrieval lanes — RULED 2026-10-15 by the program manager for the owner**
     (proposed the same day by the kit lane of catodemy's unified search v2,
     `docs/search-unification-plan-v2.md` §5; shipped in v0.15.0 behind the opt-in `rag`
@@ -316,6 +315,37 @@ recommendation at decision time.
     2026-08-05 hamza-carrier ruling (ؤ/ئ → ء). Its constants are index DDL in every app that
     builds a `translate()` index from them, so changing the folding is an owner call AND a
     rebuild migration in each app — never an edit in the kit alone.
+30. **Transcription is its own lane: words from one model, the clock from another —
+    RULED 2026-10-15** (program manager for Saad: "always whatever is better"; the
+    +$0.12 per audio hour is accepted). Trigger: catodemy's lecture transcripts rode the `documents` lane, asking
+    `gemini-3.1-flash-lite` for strict-JSON segments WITH timestamps, and both halves
+    came out wrong — English terms transliterated into Arabic letters (bad for search)
+    and segment times that drift with window length. Measured 2026-10-15 on six
+    5-minute Saudi-dialect programming-lecture clips (Java + Python, 2025 and 2026
+    recordings, one noisy): a listening judge (`gemini-4-argon`, three shuffled runs,
+    0-10) and segment-start error against Whisper large-v3 word times.
+    (a) **The WORDS** come from an audio-input model asked for a FREE-TEXT verbatim
+    transcript (dialect kept, English terms in Latin script, no timestamps):
+    `google/gemini-3.8-flash` (reasoning low) — overall 8.8, English terms 8.8, at
+    $0.13 per audio hour; fallback `google/gemini-3.1-flash-lite` (7.8 / 6.4, $0.07).
+    For reference: 3.1-pro-preview 9.4 ($0.69), 3.5-flash 9.1 ($0.42), 3.5-flash-lite
+    6.1 (ignores the Latin-script rule), the old JSON-segment call 5.6 / 1.8 ($0.12).
+    (b) **The CLOCK** comes from a speech-to-text model's word timestamps on
+    OpenRouter's `/audio/transcriptions` (`verbose_json`, word granularity), onto
+    which the caller aligns the words: `elevenlabs/scribe-v2` — median 0.45 s, 4% of
+    segments > 2 s, 0% > 5 s, $0.11/h; fallback `deepgram/nova-3` (0.35 s, 5.5%,
+    $0.26/h). Rejected: hosted `whisper-large-v3-turbo` ($0.01/h) hallucinates on
+    noisy audio (one clip's anchor rate 0.22, p90 error 42 s). The words model's own
+    JSON times: 3.6 s median at 300 s windows, 45 s at 600 s.
+    (c) Together ≈ **$0.24 per audio hour**, twice the old call's $0.12, for judge
+    8.8 vs 5.6 and timing ~10x tighter. It is a NEW lane, so #28b's
+    same-or-cheaper bar (which governs moving an existing default) does not bind it;
+    the spend increase was accepted in the ruling. `documents` and `vision` are
+    untouched: on images 3.8-flash measured 70% (#28a), so the ears and the eyes
+    are different decisions.
+    (d) The timing models are speech-to-text slugs, not chat models, so they are
+    exempt from #28a's "every lane resolves to a catalog entry"; the words models
+    are catalog entries and must carry `audio`.
 
 ## Deviation ledger
 

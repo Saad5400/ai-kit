@@ -168,6 +168,27 @@ it('ships the ruled shared chat, vision, documents and authoring defaults', func
 });
 
 /*
+ * DECISIONS.md #30: transcription is its own lane — words from an audio-input
+ * Gemini, the clock from a word-timestamp speech-to-text model. The words
+ * models must actually hear (`audio`); the timing models are speech-to-text
+ * slugs, deliberately outside the chat catalog.
+ */
+it('ships the ruled transcription lane: audio-capable words, a separate clock', function () {
+    $catalog = app(Catalog::class);
+
+    expect($catalog->transcriptionModel())->toBe('google/gemini-3.8-flash')
+        ->and($catalog->transcriptionFallbackModel())->toBe('google/gemini-3.1-flash-lite')
+        ->and($catalog->transcriptionTimingModel())->toBe('elevenlabs/scribe-v2')
+        ->and($catalog->transcriptionTimingFallbackModel())->toBe('deepgram/nova-3');
+
+    foreach ([$catalog->transcriptionModel(), $catalog->transcriptionFallbackModel()] as $id) {
+        expect($catalog->find($id)?->capabilities)->toContain('audio');
+    }
+
+    expect($catalog->find($catalog->transcriptionTimingModel()))->toBeNull();
+});
+
+/*
  * DECISIONS.md #28a: every lane the fleet shares resolves to a model the
  * shipped catalog also DECLARES, so a lane inherits that entry's fallbacks and
  * price cap instead of routing at a slug nothing here describes. A lane that
@@ -182,6 +203,8 @@ it('resolves every shared lane to a declared catalog entry', function () {
         'vision fallback' => $catalog->visionFallbackModel(),
         'documents' => $catalog->documentsModel(),
         'documents fallback' => $catalog->documentsFallbackModel(),
+        'transcription' => $catalog->transcriptionModel(),
+        'transcription fallback' => $catalog->transcriptionFallbackModel(),
         'authoring' => $catalog->authoringModel(),
     ];
 

@@ -516,7 +516,9 @@ return [
                 'output_usd_per_million' => 3.75,
                 'cache_read_usd_per_million' => 0.075,
                 'context_length' => 1048576,
-                'capabilities' => ['tools', 'vision', 'reasoning', 'structured_outputs'],
+                // `audio` verified 2026-10-15: it is the transcription lane's
+                // words model (DECISIONS.md #30).
+                'capabilities' => ['tools', 'vision', 'audio', 'reasoning', 'structured_outputs'],
                 'tasks' => ['chat', 'mcq', 'summary'],
                 'tags' => [],
                 'fallbacks' => [],
@@ -929,6 +931,51 @@ return [
     'documents' => [
         'model' => env('AI_KIT_DOCUMENTS_MODEL', 'google/gemini-3.1-flash-lite'),
         'fallback_model' => env('AI_KIT_DOCUMENTS_FALLBACK_MODEL', 'google/gemini-3.5-flash-lite'),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Transcription (speech → timestamped text)
+    |--------------------------------------------------------------------------
+    |
+    | Lecture recordings turned into searchable, timestamped transcripts
+    | (DECISIONS.md #30). It is its OWN lane, split out of `documents`, because
+    | one audio-input model asked for text AND timestamps does both badly, and
+    | because the measured best ears are not the measured best eyes:
+    |
+    |  - `model` / `fallback_model` write the WORDS: a free-text verbatim
+    |    transcript (dialect kept, English terms in Latin script). No JSON, no
+    |    timestamps — asking a Gemini for segment times is what made them drift.
+    |  - `timing_model` / `timing_fallback_model` supply only the CLOCK: a
+    |    speech-to-text model on OpenRouter's /audio/transcriptions endpoint
+    |    with word-level timestamps (`verbose_json`). The caller aligns the
+    |    words onto those times; the ASR's own wording is a last resort.
+    |
+    | Measured 2026-10-15 on six 5-minute Saudi-dialect programming-lecture
+    | clips (Java + Python, 2025 and 2026 recordings, one noisy), a listening
+    | judge (gemini-4-argon, three shuffled runs) scoring 0-10, timing against
+    | local Whisper word times:
+    |
+    |   words                      overall  english-terms   $/audio-hour
+    |   gemini-3.1-pro-preview       9.4        9.8            0.69
+    |   gemini-3.5-flash             9.1        9.2            0.42
+    |   gemini-3.8-flash             8.8        8.8            0.13   <- model
+    |   gemini-3.1-flash-lite        7.8        6.4            0.07   <- fallback
+    |   (old JSON-segment prompt)    5.6        1.8            0.12
+    |
+    |   clock (aligned)    median |start err|  >2 s   $/audio-hour
+    |   scribe-v2               0.33 s          3.5%      0.11   <- timing
+    |   nova-3                  0.29 s          2.6%      0.26   <- timing fallback
+    |   whisper-large-v3-turbo  0.34 s         10.3%      0.01   (hallucinates on noise)
+    |   Gemini's own segment times (600 s window)  45 s  86%
+    |
+    */
+
+    'transcription' => [
+        'model' => env('AI_KIT_TRANSCRIPTION_MODEL', 'google/gemini-3.8-flash'),
+        'fallback_model' => env('AI_KIT_TRANSCRIPTION_FALLBACK_MODEL', 'google/gemini-3.1-flash-lite'),
+        'timing_model' => env('AI_KIT_TRANSCRIPTION_TIMING_MODEL', 'elevenlabs/scribe-v2'),
+        'timing_fallback_model' => env('AI_KIT_TRANSCRIPTION_TIMING_FALLBACK_MODEL', 'deepgram/nova-3'),
     ],
 
     /*

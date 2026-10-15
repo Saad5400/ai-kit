@@ -119,6 +119,41 @@ class Catalog
     }
 
     /**
+     * The model that writes a recording's WORDS — a free-text verbatim
+     * transcript, dialect kept and English terms in Latin script, with no
+     * timestamps (DECISIONS.md #30). Must accept `audio` input.
+     */
+    public function transcriptionModel(): string
+    {
+        return (string) config('ai-kit.transcription.model', 'google/gemini-3.8-flash');
+    }
+
+    /** The model a transcription caller retries onto — see {@see transcriptionModel()}. */
+    public function transcriptionFallbackModel(): string
+    {
+        return (string) config('ai-kit.transcription.fallback_model', 'google/gemini-3.1-flash-lite');
+    }
+
+    /**
+     * The speech-to-text model that supplies a recording's CLOCK: word-level
+     * timestamps from OpenRouter's `/audio/transcriptions` endpoint
+     * (`response_format: verbose_json`, `timestamp_granularities: [word]`),
+     * onto which the caller aligns the words of {@see transcriptionModel()}
+     * (DECISIONS.md #30). A speech-to-text slug, not a chat model, so it is
+     * not a catalog entry.
+     */
+    public function transcriptionTimingModel(): string
+    {
+        return (string) config('ai-kit.transcription.timing_model', 'elevenlabs/scribe-v2');
+    }
+
+    /** The timing model a caller retries onto — see {@see transcriptionTimingModel()}. */
+    public function transcriptionTimingFallbackModel(): string
+    {
+        return (string) config('ai-kit.transcription.timing_fallback_model', 'deepgram/nova-3');
+    }
+
+    /**
      * The heavyweight model for admin-triggered, review-gated drafting — page
      * copy from a source document, proposed revisions, a course report's prose
      * (DECISIONS.md #28a). Rare and never on a student's latency budget, so it
