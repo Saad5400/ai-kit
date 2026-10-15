@@ -471,3 +471,37 @@ it('ends a budget-exhausted loop on a real answer: tools withheld on the last st
         ->and($end->usage->inputTokens)->toBe(3 + 7 + 10)
         ->and(TurnContext::flags())->toBe(['wrap_up' => 'blank_final']);
 });
+
+// ---------------------------------------------------------------------------
+// laravel/ai 1.2: OpenRouter reasoning details are replayed with tool calls
+// ---------------------------------------------------------------------------
+
+/*
+ * 1.2 merges streamed `reasoning_details` fragments into the step's
+ * replayBlocks and sends them back on the assistant message that carried the
+ * tool calls (signed reasoning for Gemini/Anthropic tool loops). The kit's
+ * tap rewrites chunks before stock reads them; the details must survive it
+ * and the inspected re-wrap.
+ */
+it('keeps streamed reasoning details through the tap and replays them with the tool call', function () {
+    Http::fake(['*' => Http::sequence()->push(OpenRouterSse::body([
+        guardChunk(['reasoning_details' => [['type' => 'reasoning.text', 'index' => 0, 'text' => 'Look ', 'signature' => null]]]),
+        guardChunk(['reasoning_details' => [['type' => 'reasoning.text', 'index' => 0, 'text' => 'it up.', 'signature' => 'sig-1']]]),
+        guardChunk(['tool_calls' => [['index' => 0, 'id' => 'c9', 'function' => ['name' => 'lookup', 'arguments' => '{"q":"x"}']]]], finishReason: 'tool_calls'),
+        OpenRouterSse::usageFrame(['prompt_tokens' => 3, 'completion_tokens' => 2, 'cost' => 0.0002]),
+    ]))->push(textStream('done'))]);
+
+    [, $step] = guardedStream(guardedGateway(), [new UserMessage('find x')], [lookupTool()]);
+
+    expect($step->replayBlocks)->toBe([['type' => 'reasoning.text', 'index' => 0, 'text' => 'Look it up.', 'signature' => 'sig-1']]);
+
+    guardedStream(guardedGateway(), [
+        new UserMessage('find x'),
+        new AssistantMessage('', collect($step->toolCalls), replayBlocks: $step->replayBlocks),
+        new ToolResultMessage(collect([new ToolResult('c9', 'lookup', ['q' => 'x'], 'found x', 'c9')])),
+    ], [lookupTool()]);
+
+    $assistant = collect(sentBodies()[1]['messages'])->firstWhere('role', 'assistant');
+
+    expect($assistant['reasoning_details'][0]['signature'] ?? null)->toBe('sig-1');
+});

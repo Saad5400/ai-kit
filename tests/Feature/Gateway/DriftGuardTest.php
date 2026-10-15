@@ -10,15 +10,22 @@ use Laravel\Ai\Storage\DatabaseConversationStore;
  * reads them and overrides a few seams. When laravel/ai changes any of
  * these files, this fails on purpose: upstream may have absorbed one of our
  * deltas (drop it), or changed a surface a hook leans on (re-check the hook).
- * After reconciling, refresh the hash here. Recorded against laravel/ai v1.0.0.
+ * After reconciling, refresh the hash here. Recorded against laravel/ai v1.2.2
+ * (re-pinned 2026-10-15 from v1.0.0 after reading every changed file's diff:
+ * upstream added a Retry-After retry inside withErrorHandling() — the gateway
+ * now opts out of it while its own client retry is on, see
+ * retryAfterSeconds() — and OpenRouter reasoning-details replay, which the
+ * tap and the inspected re-wrap carry through; the rest touches surfaces the
+ * kit does not hook).
  *
- * Versions BELOW the rebase version (the prefer-lowest CI cells) skip: their
- * sources are known to differ and there is nothing to reconcile — functional
- * tests carry compatibility there. At or above, the pins are enforced; a new
- * patch release changing these files is exactly the alarm this test exists
- * to raise.
+ * composer.json requires `~1.2.2` — the release these pins were verified
+ * against — so no consuming app resolves onto an unreviewed minor; moving to
+ * 1.3 is a kit release that re-runs this reconciliation. Within 1.2.x the
+ * pins are enforced: a patch release changing these files is exactly the
+ * alarm this test exists to raise. (Versions below the rebase version skip,
+ * for a local install that predates the constraint.)
  */
-const DRIFT_GUARD_REBASED_ON = '1.0.0';
+const DRIFT_GUARD_REBASED_ON = '1.2.2';
 
 it('vendor gateway sources are unchanged since the fork was rebased', function () {
     $installed = ltrim((string) InstalledVersions::getPrettyVersion('laravel/ai'), 'v');
@@ -41,8 +48,8 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         // chunk processed until the parser ends (the held leak tail is a
         // synthetic final chunk, emitted before TextEnd and tool calls);
         // and an Error frame returning null.
-        'Gateway/OpenRouter/Concerns/HandlesTextStreaming.php' => 'edb21b567ee8575f6b1ded539dbc5f805022b58b6477a5c52505a71e7495a191',
-        'Gateway/OpenRouter/Concerns/ParsesTextResponses.php' => 'b3367ebe29da3fc7d8e81bcf970b4e7de28f3fd276e7136efaec90ddd5e9dc26',
+        'Gateway/OpenRouter/Concerns/HandlesTextStreaming.php' => 'dfc5460431f71d2f87f1bed16c64a67a8c88dba9298897771919de60c1ed5dd7',
+        'Gateway/OpenRouter/Concerns/ParsesTextResponses.php' => 'a0e0eac548e9eb5a218b5aabb4de6689d43bdfeb63a989ed06150265e4c8ea7d',
         'Gateway/OpenRouter/Concerns/BuildsTextRequests.php' => '323379f22747ca5b2a8da67e5605a8c97736a09a2013904111ec7e01cef7546c',
         'Gateway/OpenRouter/Concerns/CreatesOpenRouterClient.php' => '0eb8db8712cf6fe41c50431047a3da6fdbc5b331268d63e60d9591a0b12af375',
         // Stock maps every audio attachment (Base64Audio, any StorableFile
@@ -50,9 +57,12 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         // format through audioFormat(), which the gateway overrides to be
         // tolerant; a missing mime reaches it as 'audio/mp3'.
         'Gateway/OpenRouter/Concerns/MapsAttachments.php' => 'a7c674a62ebf659cf320738033fe1b7bd30c8ccfb65bf9d394a8267f27f21689',
+        // 1.2: assistant messages that carry tool calls replay the step's
+        // reasoning_details (replayBlocks) — which the tap must leave intact.
+        'Gateway/OpenRouter/Concerns/MapsMessages.php' => '9e9d729ca2fc6687a6772366bb901e33c2be5246d0e846ba76cc2954414f34c6',
         // Declares the audioFormat() the gateway overrides (also used by the
         // transcription endpoint, after its pcm-to-wav conversion).
-        'Gateway/OpenRouter/OpenRouterGateway.php' => '58b8aa484fbc1f33300014537610d0540f2365f6aaa70f923aef52ffeb3a2c38',
+        'Gateway/OpenRouter/OpenRouterGateway.php' => '97dc203361348974ee7f3bd77d31014972049e3d5262cdfe60e252536f1b8ba1',
         // InspectedStepResponse::from() copies every constructor field; a
         // field added upstream would be silently dropped by the re-wrap.
         'Gateway/StepResponse.php' => 'cde94246dc683e812224858ded01f6f342becd3134f5e5796eee8f462b2a3a71',
@@ -62,12 +72,14 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         'Gateway/Concerns/ParsesServerSentEvents.php' => '6429c2393b9f9d3d1d6e6cee92d356bda84067151c3bca050635a6c06de7b649',
         // M2 additions — failover semantics the fallback chains and circuit
         // breaker ride on, and the event dispatch points metering listens to.
-        'Promptable.php' => '3b57caba0d069be9843180b90cbaa85745314c1b1e077610a504b095edb1697a',
+        'Promptable.php' => '258e8ccc0cf8b79539954355250b5baacf699929ac13a5d14049b0b2d19d1d76',
         // overloadedStatusCodes() extends this trait's list; recordStepFailure()
         // relies on withErrorHandling() wrapping ConnectionException into
         // ProviderConnectionException (a FailoverableException).
-        'Gateway/Concerns/HandlesFailoverErrors.php' => '94aa857c8decc7d25520881c0daf9bfebd18be3111dc97ee63b2a592fbdb9ded',
-        'Providers/Concerns/GeneratesText.php' => 'aa6a9dcd5792fb08e13611924c1447b472afe3c03d53a0d6f27807abeed4b5b6',
+        // 1.2: withErrorHandling() also retries once after a short Retry-After;
+        // retryAfterSeconds() is overridden to keep the kit's single policy.
+        'Gateway/Concerns/HandlesFailoverErrors.php' => '8dbe9e7371310a4c99e3c39c71400ed547adfe1ba88df94c21dd6ad7fdb10164',
+        'Providers/Concerns/GeneratesText.php' => 'fa5c2f0a57a05ab904cb165936dcf0887fbde4be14ece0f80808e5dba3677fc1',
         'Providers/Concerns/StreamsText.php' => '0278107e076268c99162c1c12fa2896cc1957550f559790c3d4f9b7aee4a803e',
         'Models/Conversation.php' => '0e51a0f5a3a8b8cfba83fd72dfb3dc30040071f124713420c96730706e0107ff',
         // M3 addition — EncryptedConversationStore extends this: it rides the
@@ -76,12 +88,12 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         // storeApprovalResults() and paginateConversationMessages() with
         // sealing folded in. The per-method pins below say WHICH of those
         // moved; re-diff each flagged body against the kit's copy.
-        'Storage/DatabaseConversationStore.php' => '6612d2b4da0e4fd5ca96a7fcbc4211359ee13b6bb48cc2ef7f5472e13bbc1de3',
+        'Storage/DatabaseConversationStore.php' => 'b7dcb9131430932665c10c918d12e9b2e15f6873815be32ac25af72924f8a231',
         // Classified-approvals seam — ClassifiedTool derives its pause from
         // InteractsWithApprovals::needsApproval(), keys idempotency on the
         // toolCallId the loop passes to executeTool(), and ResumeDecisions/
         // ApprovalCards mirror Decision and PendingApproval shapes.
-        'Gateway/TextGenerationLoop.php' => '9e22c360292422bd793d4456227b7a8bb5907c6ebbee92dbf94340100226471e',
+        'Gateway/TextGenerationLoop.php' => 'b77ec93e010dd93965a4e8e2c48bf6dbbc03f880fbe158838434fc6480ea17cf',
         'Gateway/Concerns/HandlesToolApprovals.php' => '305411bae4a65dca826d71c14c3df0cbc7264ace0439c14381ab9e096c821778',
         'Concerns/InteractsWithApprovals.php' => '43aae01afae1d0662c7afaae3c8e48517b75bb717349991250c9ef5f4298b880',
         'Approvals/Decision.php' => '86911eb064ae9466677e4ac5ec270719718d8175b007d8db3d4cfdfcc15d4948',
@@ -100,7 +112,7 @@ it('vendor gateway sources are unchanged since the fork was rebased', function (
         // the vendor is suspended in (so Generator::throw() lands there).
         'Middleware/RememberConversation.php' => '2c2e97b72eb41e7513a67f145b2cd43a54c39df8328a4b7a1bd4f437011af47f',
         'Gateway/RunContext.php' => 'e975204751087ce71d355bf220a292b3ae8ec15f181cf2eb555d19e0c9015925',
-        'Responses/StreamableAgentResponse.php' => '3cd45b98a530c4ad9c76ab1ed1866b071f74857b96560f04c38a338957a92d03',
+        'Responses/StreamableAgentResponse.php' => '632b7c1d1cb7f3d15b5266807eda1bcbd235bd547137e18e9f03c2d662ffaecf',
         'Events/StepFailed.php' => '65d74309ad7f81c02e02c15dd067f02f854dc3a7c2da7c5087146ae88f62025c',
         'Events/AgentFailed.php' => '80f4026f63ba6570b9832d245e2f81ae2dea3bca5a716da0656ff08c908dccf7',
     ];

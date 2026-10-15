@@ -2,7 +2,9 @@
 
 use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Sleep;
 use Laravel\Ai\Exceptions\AiException;
+use Laravel\Ai\Exceptions\RateLimitedException;
 use Laravel\Ai\Gateway\StepContext;
 use Laravel\Ai\Messages\UserMessage;
 use Saad\AiKit\Catalog\ModelDefinition;
@@ -112,6 +114,33 @@ it('honors a disabled retry policy', function () {
 
 // laravel/ai 1.0 moved reasoning onto StepResponse; the gateway's inspected
 // re-wrap must carry it or a non-streamed turn silently loses its thinking.
+/*
+ * laravel/ai 1.2 added its own retry inside withErrorHandling(): once more
+ * after a short Retry-After on a 429/overloaded response. Stacked on the
+ * kit's client retry it would replay the WHOLE retry cycle (3 → 6 requests)
+ * before failing over. The kit keeps one retry policy: its own.
+ */
+it('does not stack stock\'s Retry-After retry on top of the kit\'s own', function () {
+    Sleep::fake();
+    Http::fake(['*' => Http::response(['error' => ['message' => 'rate limited']], 429, ['Retry-After' => '1'])]);
+
+    expect(fn () => runTextStep(['retry' => ['backoff_ms' => 1]]))->toThrow(RateLimitedException::class);
+
+    Http::assertSentCount(3);
+});
+
+it('lets stock honour Retry-After when the kit\'s own retry is off', function () {
+    Sleep::fake();
+    Http::fake(['*' => Http::sequence()
+        ->push(['error' => ['message' => 'rate limited']], 429, ['Retry-After' => '1'])
+        ->push(OpenRouterSse::completion()),
+    ]);
+
+    expect(runTextStep(['retry' => ['attempts' => 1]])->text)->toBe('Hello.');
+
+    Http::assertSentCount(2);
+});
+
 it('keeps the non-streamed reasoning through the inspected re-wrap', function () {
     $body = OpenRouterSse::completion();
     $body['choices'][0]['message']['reasoning'] = 'The user said hi.';

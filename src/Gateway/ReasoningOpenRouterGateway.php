@@ -562,6 +562,24 @@ class ReasoningOpenRouterGateway extends OpenRouterGateway
     }
 
     /**
+     * laravel/ai 1.2 retries the whole request once more inside
+     * withErrorHandling() after a short (≤ 10 s) Retry-After on a 429 or an
+     * overloaded status. With the kit's own client retry on, that replays
+     * the ENTIRE retry cycle (3 requests become 6) before the failover the
+     * chain exists for — so there is one retry policy, the kit's. With the
+     * kit's retry off (`retry.attempts` ≤ 1), stock's Retry-After retry is
+     * left to do its job.
+     */
+    protected function retryAfterSeconds(Throwable $exception): ?int
+    {
+        if ((int) ($this->config['retry']['attempts'] ?? 3) > 1) {
+            return null;
+        }
+
+        return parent::retryAfterSeconds($exception);
+    }
+
+    /**
      * Retry transient upstream failures with linear backoff. Connection
      * exceptions are deliberately not retried: a call that already burned
      * its full timeout budget would only multiply latency.

@@ -9,7 +9,7 @@
         "illuminate/contracts": "^12.62|^13.15",
         "illuminate/database": "^12.62|^13.15",
         "illuminate/support": "^12.62|^13.15",
-        "laravel/ai": "^1.0",
+        "laravel/ai": "~1.2.2",
         "laravel/mcp": "^1.0",
         "symfony/process": "^7.0"
     },
